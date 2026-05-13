@@ -1,0 +1,11 @@
+{
+  "slug": "copilot-skill-controls",
+  "title": "Add mid-session skill management for Copilot provider. Wire up rpc.skills.enable(), rpc.skills.disable(), and rpc.skills.reload() SDK methods. Add UI toggles to enable/disable individual skills during an active session without restarting.",
+  "outcome": "upstreamed",
+  "phase": "phase-2-operation-level",
+  "upstream_ref": "upstream/main",
+  "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+  "notes": [
+    "All recipe operations already present in upstream"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "system-generated-turns",
+  "slug": "system-generated-turns",
+  "title": "Add support for system-generated turns: allow external events (file watchers, CI callbacks, MCP notifications, webhooks) to automatically trigger a new model turn in a provider session without explicit user input. This would extend the orchestration layer to accept synthetic turn requests alongside user-initiated ones, enabling autonomous agent workflows, background monitoring, and event-driven AI responses.",
+  "state": "defined",
+  "compatibility": "unknown",
+  "requested_at": "2026-04-28T07:32:15Z",
+  "updated_at": "2026-04-30T05:14:50Z",
+  "last_command": "explore",
+  "notes": "Phase advanced manually (--manual); artifact authored at exploration.md",
+  "apply": {},
+  "reconcile": {}
+}

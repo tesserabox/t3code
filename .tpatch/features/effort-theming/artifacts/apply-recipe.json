@@ -1,0 +1,30 @@
+{
+  "feature": "effort-theming",
+  "description": "Apply effort-theming feature",
+  "operations": [
+    {
+      "id": "01-modify-composerProviderRegistry",
+      "type": "replace-in-file",
+      "path": "apps/web/src/components/chat/composerProviderRegistry.tsx",
+      "description": "Modify composerProviderRegistry.tsx",
+      "search": "      : (resolveEffort(caps, rawEffort) ?? null);\n  const ultrathinkActive =\n    caps.promptInjectedEffortLevels.length > 0 && isClaudeUltrathinkPrompt(prompt);\n\n  return {\n    provider,",
+      "replace": "      : (resolveEffort(caps, rawEffort) ?? null);\n  const ultrathinkActive =\n    caps.promptInjectedEffortLevels.length > 0 && isClaudeUltrathinkPrompt(prompt);\n  const xhighActive =\n    !ultrathinkActive &&\n    promptEffort === \"xhigh\" &&\n    (provider === \"codex\" || provider === \"copilot\");\n\n  return {\n    provider,"
+    },
+    {
+      "id": "02-modify-composerProviderRegistry",
+      "type": "replace-in-file",
+      "path": "apps/web/src/components/chat/composerProviderRegistry.tsx",
+      "description": "Modify composerProviderRegistry.tsx",
+      "search": "      ? { composerSurfaceClassName: \"shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset]\" }\n      : {}),\n    ...(ultrathinkActive ? { modelPickerIconClassName: \"ultrathink-chroma\" } : {}),\n  };\n}\n",
+      "replace": "      ? { composerSurfaceClassName: \"shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset]\" }\n      : {}),\n    ...(ultrathinkActive ? { modelPickerIconClassName: \"ultrathink-chroma\" } : {}),\n    ...(xhighActive ? { composerFrameClassName: \"xhigh-frame\" } : {}),\n    ...(xhighActive\n      ? { composerSurfaceClassName: \"shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset]\" }\n      : {}),\n    ...(xhighActive ? { modelPickerIconClassName: \"xhigh-chroma\" } : {}),\n  };\n}\n"
+    },
+    {
+      "id": "03-modify-index",
+      "type": "replace-in-file",
+      "path": "apps/web/src/index.css",
+      "description": "Modify index.css",
+      "search": "  -webkit-background-clip: text;\n  animation: ultrathink-rainbow 10s linear infinite;\n}",
+      "replace": "  -webkit-background-clip: text;\n  animation: ultrathink-rainbow 10s linear infinite;\n}\n\n/* ── xhigh effort theming (GPT/Copilot Extra High) ─────────────── */\n\n@keyframes xhigh-pulse {\n  0% {\n    background-position: 0% 50%;\n  }\n  100% {\n    background-position: 200% 50%;\n  }\n}\n\n@keyframes xhigh-glow {\n  0% {\n    filter: hue-rotate(140deg) saturate(1.4) brightness(1.1);\n  }\n  50% {\n    filter: hue-rotate(180deg) saturate(1.6) brightness(1.3);\n  }\n  100% {\n    filter: hue-rotate(140deg) saturate(1.4) brightness(1.1);\n  }\n}\n\n.xhigh-frame {\n  --xhigh-spectrum: linear-gradient(\n    120deg,\n    #0ea5e9 0%,\n    #06b6d4 20%,\n    #14b8a6 40%,\n    #10b981 60%,\n    #06b6d4 80%,\n    #0ea5e9 100%\n  );\n  background-image: var(--xhigh-spectrum);\n  background-size: 220% 220%;\n  animation: xhigh-pulse 8s linear infinite;\n}\n\n.xhigh-chroma {\n  animation: xhigh-glow 4s ease-in-out infinite;\n}"
+    }
+  ]
+}

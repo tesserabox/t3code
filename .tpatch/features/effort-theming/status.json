@@ -1,0 +1,22 @@
+{
+  "id": "effort-theming",
+  "slug": "effort-theming",
+  "title": "Add visual theming for high-effort modes across providers. GPT xhigh gets a distinct animated border style similar to Claude ultrathink rainbow, but with a different color palette. Driven by effort selection in the composer, not prompt injection.",
+  "state": "blocked",
+  "compatibility": "unknown",
+  "requested_at": "2026-04-18T11:41:15Z",
+  "updated_at": "2026-05-13T08:00:31Z",
+  "last_command": "reconcile",
+  "notes": "Reconciliation blocked — manual intervention needed",
+  "apply": {
+    "completed_at": "2026-04-18T11:53:56Z",
+    "base_commit": "fc8a225a788a0590f38d2c2e9494cfb68a342fe0",
+    "has_patch": true
+  },
+  "reconcile": {
+    "attempted_at": "2026-05-13T08:00:31Z",
+    "upstream_ref": "upstream/main",
+    "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+    "outcome": "blocked"
+  }
+}

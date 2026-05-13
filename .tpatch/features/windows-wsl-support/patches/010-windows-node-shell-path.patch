@@ -1,0 +1,12 @@
+diff --git a/apps/server/scripts/cli.ts b/apps/server/scripts/cli.ts
+index efaa2b3b..18b634cf 100644
+--- a/apps/server/scripts/cli.ts
++++ b/apps/server/scripts/cli.ts
+@@ -151,7 +151,5 @@ const buildCmd = Command.make(
+           cwd: serverDir,
+           stdout: config.verbose ? "inherit" : "ignore",
+           stderr: "inherit",
+-          // Windows needs shell mode to resolve `.cmd` shims on PATH.
+-          shell: process.platform === "win32",
+         }),
+       );

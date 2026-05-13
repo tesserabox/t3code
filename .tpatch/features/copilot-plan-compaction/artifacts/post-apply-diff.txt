@@ -1,0 +1,5 @@
+ .tpatch/FEATURES.md                                |    2 +-
+ .../artifacts/post-apply.patch                     | 3801 +-------------------
+ .../features/copilot-plan-compaction/status.json   |    8 +-
+ apps/server/src/provider/Layers/CopilotAdapter.ts  |   31 +-
+ 4 files changed, 55 insertions(+), 3787 deletions(-)

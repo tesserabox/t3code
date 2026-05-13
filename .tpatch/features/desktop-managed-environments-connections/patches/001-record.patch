@@ -1,0 +1,1688 @@
+diff --git a/apps/desktop/src/clientPersistence.test.ts b/apps/desktop/src/clientPersistence.test.ts
+index 71b6b7df..1c917a90 100644
+--- a/apps/desktop/src/clientPersistence.test.ts
++++ b/apps/desktop/src/clientPersistence.test.ts
+@@ -73,6 +73,18 @@ const savedRegistryRecord: PersistedSavedEnvironmentRecord = {
+   lastConnectedAt: "2026-04-09T01:00:00.000Z",
+ };
+ 
++const managedSavedRegistryRecord: PersistedSavedEnvironmentRecord = {
++  ...savedRegistryRecord,
++  environmentId: EnvironmentId.make("environment-managed"),
++  label: "Ubuntu",
++  httpBaseUrl: "http://127.0.0.1:3881/",
++  wsBaseUrl: "ws://127.0.0.1:3881/",
++  management: {
++    kind: "desktop-managed",
++    environmentKey: "wsl:Ubuntu",
++  },
++};
++
+ describe("clientPersistence", () => {
+   it("persists and reloads client settings", () => {
+     const settingsPath = makeTempPath("client-settings.json");
+@@ -85,9 +97,12 @@ describe("clientPersistence", () => {
+   it("persists and reloads saved environment metadata", () => {
+     const registryPath = makeTempPath("saved-environments.json");
+ 
+-    writeSavedEnvironmentRegistry(registryPath, [savedRegistryRecord]);
++    writeSavedEnvironmentRegistry(registryPath, [savedRegistryRecord, managedSavedRegistryRecord]);
+ 
+-    expect(readSavedEnvironmentRegistry(registryPath)).toEqual([savedRegistryRecord]);
++    expect(readSavedEnvironmentRegistry(registryPath)).toEqual([
++      savedRegistryRecord,
++      managedSavedRegistryRecord,
++    ]);
+   });
+ 
+   it("persists encrypted saved environment secrets when encryption is available", () => {
+diff --git a/apps/desktop/src/clientPersistence.ts b/apps/desktop/src/clientPersistence.ts
+index ad08a003..635ee764 100644
+--- a/apps/desktop/src/clientPersistence.ts
++++ b/apps/desktop/src/clientPersistence.ts
+@@ -21,6 +21,17 @@ interface SavedEnvironmentRegistryDocument {
+   readonly records: readonly PersistedSavedEnvironmentStorageRecord[];
+ }
+ 
++function isPersistedSavedEnvironmentManagement(
++  value: unknown,
++): value is PersistedSavedEnvironmentStorageRecord["management"] {
++  return (
++    value === undefined ||
++    (Predicate.isObject(value) &&
++      value.kind === "desktop-managed" &&
++      typeof value.environmentKey === "string")
++  );
++}
++
+ export interface DesktopSecretStorage {
+   readonly isEncryptionAvailable: () => boolean;
+   readonly encryptString: (value: string) => Buffer;
+@@ -57,6 +68,7 @@ function isPersistedSavedEnvironmentStorageRecord(
+     typeof value.wsBaseUrl === "string" &&
+     typeof value.createdAt === "string" &&
+     (value.lastConnectedAt === null || typeof value.lastConnectedAt === "string") &&
++    isPersistedSavedEnvironmentManagement(value.management) &&
+     (value.encryptedBearerToken === undefined || typeof value.encryptedBearerToken === "string")
+   );
+ }
+@@ -84,6 +96,7 @@ function toPersistedSavedEnvironmentRecord(
+     wsBaseUrl: record.wsBaseUrl,
+     createdAt: record.createdAt,
+     lastConnectedAt: record.lastConnectedAt,
++    ...(record.management ? { management: record.management } : {}),
+   };
+ }
+ 
+@@ -134,6 +147,7 @@ export function writeSavedEnvironmentRegistry(
+             wsBaseUrl: record.wsBaseUrl,
+             createdAt: record.createdAt,
+             lastConnectedAt: record.lastConnectedAt,
++            ...(record.management ? { management: record.management } : {}),
+             encryptedBearerToken,
+           }
+         : record;
+@@ -189,7 +203,7 @@ export function writeSavedEnvironmentSecret(input: {
+       const encryptedBearerToken = input.secretStorage
+         .encryptString(input.secret)
+         .toString("base64");
+-      return {
++      const nextRecord: PersistedSavedEnvironmentStorageRecord = {
+         environmentId: record.environmentId,
+         label: record.label,
+         httpBaseUrl: record.httpBaseUrl,
+@@ -197,7 +211,11 @@ export function writeSavedEnvironmentSecret(input: {
+         createdAt: record.createdAt,
+         lastConnectedAt: record.lastConnectedAt,
+         encryptedBearerToken,
+-      } satisfies PersistedSavedEnvironmentStorageRecord;
++      };
++      if (record.management) {
++        nextRecord.management = record.management;
++      }
++      return nextRecord;
+     }),
+   } satisfies SavedEnvironmentRegistryDocument);
+   return found;
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index c0acd056..d0a4fc41 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -4,11 +4,10 @@ import * as FS from "node:fs";
+ import * as OS from "node:os";
+ import * as Path from "node:path";
+ 
+-import {
+-  createDefaultBackendTarget,
+-  type BackendTarget,
+-} from "./backendTarget.ts";
+-import { createDefaultBackendEnvironmentManager, type ManagedBackendEnvironment } from "./backendEnvironment.ts";
++import { createDefaultBackendTarget, type BackendTarget } from "./backendTarget.ts";
++import { createDefaultBackendEnvironmentManager } from "./backendEnvironment.ts";
++import { createDesktopManagedEnvironmentController } from "./managedBackendEnvironment.ts";
++import { registerDesktopManagedEnvironmentIpc } from "./managedBackendEnvironmentIpc.ts";
+ 
+ import {
+   app,
+@@ -108,8 +107,6 @@ const SET_SAVED_ENVIRONMENT_SECRET_CHANNEL = "desktop:set-saved-environment-secr
+ const REMOVE_SAVED_ENVIRONMENT_SECRET_CHANNEL = "desktop:remove-saved-environment-secret";
+ const GET_SERVER_EXPOSURE_STATE_CHANNEL = "desktop:get-server-exposure-state";
+ const SET_SERVER_EXPOSURE_MODE_CHANNEL = "desktop:set-server-exposure-mode";
+-const LIST_MANAGED_ENVIRONMENTS_CHANNEL = "desktop:list-managed-environments";
+-const PREPARE_MANAGED_ENVIRONMENT_REGISTRATION_CHANNEL = "desktop:prepare-managed-environment-registration";
+ const BASE_DIR = process.env.T3CODE_HOME?.trim() || Path.join(OS.homedir(), ".t3");
+ const STATE_DIR = Path.join(BASE_DIR, "userdata");
+ const DESKTOP_SETTINGS_PATH = Path.join(STATE_DIR, "desktop-settings.json");
+@@ -231,12 +228,6 @@ const backendEnvironmentManager = createDefaultBackendEnvironmentManager({
+   rootBaseDir: BASE_DIR,
+   appRoot: ROOT_DIR,
+ });
+-
+-function listManagedBackendEnvironments(): readonly ManagedBackendEnvironment[] {
+-  return backendEnvironmentManager
+-    .listEnvironments()
+-    .filter((environment) => environment.key !== backendEnvironmentManager.primaryEnvironment.key);
+-}
+ let desktopLogSink: RotatingFileSink | null = null;
+ let backendLogSink: RotatingFileSink | null = null;
+ let restoreStdIoCapture: (() => void) | null = null;
+@@ -599,12 +590,15 @@ function initializePackagedLogging(): void {
+   }
+ }
+ 
+-function captureBackendOutput(child: ChildProcess.ChildProcess): void {
++function captureBackendOutput(
++  child: ChildProcess.ChildProcess,
++  listeningDetector?: ServerListeningDetector | null,
++): void {
+   const attachStream = (stream: NodeJS.ReadableStream | null | undefined): void => {
+     stream?.on("data", (chunk: unknown) => {
+       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
+       backendLogSink?.write(buffer);
+-      backendListeningDetector?.push(buffer);
++      (listeningDetector ?? backendListeningDetector)?.push(buffer);
+     });
+   };
+ 
+@@ -612,6 +606,23 @@ function captureBackendOutput(child: ChildProcess.ChildProcess): void {
+   attachStream(child.stderr);
+ }
+ 
++const managedEnvironmentController = createDesktopManagedEnvironmentController({
++  backendEnvironmentManager,
++  primaryEnvironment: backendEnvironmentManager.primaryEnvironment,
++  loopbackHost: DESKTOP_LOOPBACK_HOST,
++  getPrimaryBackendPort: () => backendPort,
++  getBackendChildEnv: backendChildEnv,
++  getObservabilitySettings: () => backendObservabilitySettings,
++  getCaptureOutput: () => !isDevelopment,
++  captureBackendOutput: (child, listeningDetector) =>
++    captureBackendOutput(child, listeningDetector),
++  markExpectedExit: (child) => {
++    expectedBackendExitChildren.add(child);
++  },
++  isQuitting: () => isQuitting,
++  log: writeDesktopLogHeader,
++});
++
+ initializePackagedLogging();
+ 
+ if (process.platform === "linux") {
+@@ -813,6 +824,7 @@ function handleFatalStartupError(stage: string, error: unknown): void {
+     isQuitting = true;
+     dialog.showErrorBox("T3 Code failed to start", `Stage: ${stage}\n${message}${detail}`);
+   }
++  managedEnvironmentController.stopAll();
+   stopBackend();
+   restoreStdIoCapture?.();
+   app.quit();
+@@ -1570,7 +1582,7 @@ function registerIpcHandlers(): void {
+   ipcMain.removeAllListeners(GET_LOCAL_ENVIRONMENT_BOOTSTRAP_CHANNEL);
+   ipcMain.on(GET_LOCAL_ENVIRONMENT_BOOTSTRAP_CHANNEL, (event) => {
+     event.returnValue = {
+-      label: "Local environment",
++      label: backendEnvironmentManager.primaryEnvironment.displayLabel,
+       httpBaseUrl: backendHttpUrl || null,
+       wsBaseUrl: backendWsUrl || null,
+       bootstrapToken: backendBootstrapToken || undefined,
+@@ -1589,9 +1601,16 @@ function registerIpcHandlers(): void {
+     writeClientSettings(CLIENT_SETTINGS_PATH, rawSettings as ClientSettings);
+   });
+ 
++  registerDesktopManagedEnvironmentIpc({
++    ipcMain,
++    controller: managedEnvironmentController,
++  });
++
+   ipcMain.removeHandler(GET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL);
+   ipcMain.handle(GET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL, async () =>
+-    readSavedEnvironmentRegistry(SAVED_ENVIRONMENT_REGISTRY_PATH),
++    managedEnvironmentController.readHydratedSavedEnvironmentRegistry(
++      readSavedEnvironmentRegistry(SAVED_ENVIRONMENT_REGISTRY_PATH),
++    ),
+   );
+ 
+   ipcMain.removeHandler(SET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL);
+@@ -1600,10 +1619,11 @@ function registerIpcHandlers(): void {
+       throw new Error("Invalid saved environment registry payload.");
+     }
+ 
+-    writeSavedEnvironmentRegistry(
+-      SAVED_ENVIRONMENT_REGISTRY_PATH,
+-      rawRecords as readonly PersistedSavedEnvironmentRecord[],
+-    );
++    const previousRecords = readSavedEnvironmentRegistry(SAVED_ENVIRONMENT_REGISTRY_PATH);
++    const nextRecords = rawRecords as readonly PersistedSavedEnvironmentRecord[];
++
++    writeSavedEnvironmentRegistry(SAVED_ENVIRONMENT_REGISTRY_PATH, nextRecords);
++    managedEnvironmentController.syncAfterRegistryWrite(previousRecords, nextRecords);
+   });
+ 
+   ipcMain.removeHandler(GET_SAVED_ENVIRONMENT_SECRET_CHANNEL);
+@@ -1875,35 +1895,6 @@ function registerIpcHandlers(): void {
+       state: updateState,
+     } satisfies DesktopUpdateCheckResult;
+   });
+-
+-  ipcMain.removeHandler(LIST_MANAGED_ENVIRONMENTS_CHANNEL);
+-  ipcMain.handle(LIST_MANAGED_ENVIRONMENTS_CHANNEL, async () =>
+-    listManagedBackendEnvironments().map((environment) => ({
+-      key: environment.key,
+-      displayLabel: environment.displayLabel,
+-      kind: environment.kind,
+-    })),
+-  );
+-
+-  ipcMain.removeHandler(PREPARE_MANAGED_ENVIRONMENT_REGISTRATION_CHANNEL);
+-  ipcMain.handle(
+-    PREPARE_MANAGED_ENVIRONMENT_REGISTRATION_CHANNEL,
+-    async (_event, rawEnvironmentKey: string) => {
+-      const environment = backendEnvironmentManager.getEnvironment(rawEnvironmentKey);
+-      if (!environment) {
+-        throw new Error(`Unknown managed environment: ${rawEnvironmentKey}`);
+-      }
+-      // Ensure the target is ready (e.g., WSL server bundle installed)
+-      const ready = environment.target.ensureReady();
+-      return {
+-        key: environment.key,
+-        displayLabel: environment.displayLabel,
+-        kind: environment.kind,
+-        ready,
+-        baseDir: environment.baseDir,
+-      };
+-    },
+-  );
+ }
+ 
+ function getIconOption(): { icon: string } | Record<string, never> {
+@@ -2148,6 +2139,7 @@ app.on("before-quit", () => {
+   writeDesktopLogHeader("before-quit received");
+   clearUpdatePollTimer();
+   cancelBackendReadinessWait();
++  managedEnvironmentController.stopAll();
+   stopBackend();
+   restoreStdIoCapture?.();
+ });
+@@ -2197,6 +2189,7 @@ if (process.platform !== "win32") {
+     writeDesktopLogHeader("SIGINT received");
+     clearUpdatePollTimer();
+     cancelBackendReadinessWait();
++    managedEnvironmentController.stopAll();
+     stopBackend();
+     restoreStdIoCapture?.();
+     app.quit();
+@@ -2207,6 +2200,7 @@ if (process.platform !== "win32") {
+     isQuitting = true;
+     writeDesktopLogHeader("SIGTERM received");
+     clearUpdatePollTimer();
++    managedEnvironmentController.stopAll();
+     stopBackend();
+     restoreStdIoCapture?.();
+     app.quit();
+diff --git a/apps/desktop/src/managedBackendEnvironment.ts b/apps/desktop/src/managedBackendEnvironment.ts
+new file mode 100644
+index 00000000..ff10d8cb
+--- /dev/null
++++ b/apps/desktop/src/managedBackendEnvironment.ts
+@@ -0,0 +1,437 @@
++import * as ChildProcess from "node:child_process";
++import * as Crypto from "node:crypto";
++
++import type {
++  DesktopManagedEnvironmentCandidate,
++  DesktopManagedEnvironmentRegistration,
++  PersistedSavedEnvironmentRecord,
++} from "@t3tools/contracts";
++
++import type { BackendEnvironmentManager, ManagedBackendEnvironment } from "./backendEnvironment.ts";
++import { DEFAULT_DESKTOP_BACKEND_PORT, resolveDesktopBackendPort } from "./backendPort.ts";
++import { isBackendReadinessAborted, waitForHttpReady } from "./backendReadiness.ts";
++import { waitForBackendStartupReady } from "./backendStartupReadiness.ts";
++import { ServerListeningDetector } from "./serverListeningDetector.ts";
++
++interface BackendObservabilitySettings {
++  readonly otlpTracesUrl: string | undefined;
++  readonly otlpMetricsUrl: string | undefined;
++}
++
++interface ManagedBackendRuntime {
++  readonly environment: ManagedBackendEnvironment;
++  child: ChildProcess.ChildProcess | null;
++  port: number | null;
++  bootstrapToken: string | null;
++  httpBaseUrl: string | null;
++  wsBaseUrl: string | null;
++  startPromise: Promise<DesktopManagedEnvironmentRegistration> | null;
++  listeningDetector: ServerListeningDetector | null;
++  restartAttempt: number;
++  restartTimer: ReturnType<typeof setTimeout> | null;
++  expectedExit: boolean;
++}
++
++export interface DesktopManagedEnvironmentController {
++  listCandidates(): readonly DesktopManagedEnvironmentCandidate[];
++  prepareRegistration(environmentKey: string): Promise<DesktopManagedEnvironmentRegistration>;
++  readHydratedSavedEnvironmentRegistry(
++    records: readonly PersistedSavedEnvironmentRecord[],
++  ): Promise<readonly PersistedSavedEnvironmentRecord[]>;
++  syncAfterRegistryWrite(
++    previousRecords: readonly PersistedSavedEnvironmentRecord[],
++    nextRecords: readonly PersistedSavedEnvironmentRecord[],
++  ): void;
++  stopAll(): void;
++}
++
++interface CreateDesktopManagedEnvironmentControllerOptions {
++  readonly backendEnvironmentManager: BackendEnvironmentManager;
++  readonly primaryEnvironment: ManagedBackendEnvironment;
++  readonly loopbackHost: string;
++  readonly getPrimaryBackendPort: () => number;
++  readonly getBackendChildEnv: () => NodeJS.ProcessEnv;
++  readonly getObservabilitySettings: () => BackendObservabilitySettings;
++  readonly getCaptureOutput: () => boolean;
++  readonly captureBackendOutput: (
++    child: ChildProcess.ChildProcess,
++    listeningDetector: ServerListeningDetector,
++  ) => void;
++  readonly markExpectedExit: (child: ChildProcess.ChildProcess) => void;
++  readonly isQuitting: () => boolean;
++  readonly log: (message: string) => void;
++}
++
++function sanitizeLogValue(value: string): string {
++  return value.replace(/\s+/g, " ").trim();
++}
++
++function formatErrorMessage(error: unknown): string {
++  return error instanceof Error ? error.message : String(error);
++}
++
++function toDesktopManagedEnvironmentCandidate(
++  environment: ManagedBackendEnvironment,
++): DesktopManagedEnvironmentCandidate {
++  return {
++    key: environment.key,
++    label: environment.displayLabel,
++    kind: environment.kind,
++  };
++}
++
++function toManagedBackendRegistration(
++  runtime: ManagedBackendRuntime,
++): DesktopManagedEnvironmentRegistration {
++  if (!runtime.httpBaseUrl || !runtime.wsBaseUrl || !runtime.bootstrapToken) {
++    throw new Error(`Managed environment '${runtime.environment.key}' is not ready.`);
++  }
++
++  return {
++    key: runtime.environment.key,
++    label: runtime.environment.displayLabel,
++    kind: runtime.environment.kind,
++    httpBaseUrl: runtime.httpBaseUrl,
++    wsBaseUrl: runtime.wsBaseUrl,
++    bootstrapToken: runtime.bootstrapToken,
++  };
++}
++
++function clearRestartTimer(runtime: ManagedBackendRuntime): void {
++  if (runtime.restartTimer) {
++    clearTimeout(runtime.restartTimer);
++    runtime.restartTimer = null;
++  }
++}
++
++export function createDesktopManagedEnvironmentController(
++  options: CreateDesktopManagedEnvironmentControllerOptions,
++): DesktopManagedEnvironmentController {
++  const runtimes = new Map<string, ManagedBackendRuntime>();
++  const expectedRuntimeExitChildren = new WeakSet<ChildProcess.ChildProcess>();
++
++  function markChildExpectedExit(child: ChildProcess.ChildProcess): void {
++    expectedRuntimeExitChildren.add(child);
++    options.markExpectedExit(child);
++  }
++
++  function listEnvironments(): readonly ManagedBackendEnvironment[] {
++    return options.backendEnvironmentManager
++      .listEnvironments()
++      .filter((environment) => environment.key !== options.primaryEnvironment.key);
++  }
++
++  function requireEnvironment(environmentKey: string): ManagedBackendEnvironment {
++    const environment = options.backendEnvironmentManager.getEnvironment(environmentKey);
++    if (!environment || environment.key === options.primaryEnvironment.key) {
++      throw new Error(`Unknown managed environment '${environmentKey}'.`);
++    }
++    return environment;
++  }
++
++  function getOrCreateRuntime(environment: ManagedBackendEnvironment): ManagedBackendRuntime {
++    const existing = runtimes.get(environment.key);
++    if (existing) {
++      return existing;
++    }
++
++    const runtime: ManagedBackendRuntime = {
++      environment,
++      child: null,
++      port: null,
++      bootstrapToken: null,
++      httpBaseUrl: null,
++      wsBaseUrl: null,
++      startPromise: null,
++      listeningDetector: null,
++      restartAttempt: 0,
++      restartTimer: null,
++      expectedExit: false,
++    };
++    runtimes.set(environment.key, runtime);
++    return runtime;
++  }
++
++  function scheduleRestart(runtime: ManagedBackendRuntime, reason: string): void {
++    if (options.isQuitting() || runtime.expectedExit || runtime.restartTimer) {
++      return;
++    }
++
++    const delayMs = Math.min(500 * 2 ** runtime.restartAttempt, 10_000);
++    runtime.restartAttempt += 1;
++    options.log(
++      `managed backend exited unexpectedly key=${runtime.environment.key} reason=${sanitizeLogValue(reason)} restartMs=${delayMs}`,
++    );
++
++    runtime.restartTimer = setTimeout(() => {
++      runtime.restartTimer = null;
++      void ensureRegistration(runtime.environment.key).catch((error) => {
++        options.log(
++          `managed backend restart failed key=${runtime.environment.key} message=${sanitizeLogValue(formatErrorMessage(error))}`,
++        );
++      });
++    }, delayMs);
++    runtime.restartTimer.unref();
++  }
++
++  function stopEnvironment(environmentKey: string): void {
++    const runtime = runtimes.get(environmentKey);
++    if (!runtime) {
++      return;
++    }
++
++    clearRestartTimer(runtime);
++    runtime.expectedExit = true;
++    runtime.listeningDetector = null;
++
++    const child = runtime.child;
++    runtime.child = null;
++    runtime.startPromise = null;
++    runtimes.delete(environmentKey);
++
++    if (!child) {
++      return;
++    }
++
++    if (child.exitCode === null && child.signalCode === null) {
++      markChildExpectedExit(child);
++      child.kill("SIGTERM");
++      setTimeout(() => {
++        if (child.exitCode === null && child.signalCode === null) {
++          child.kill("SIGKILL");
++        }
++      }, 2_000).unref();
++    }
++  }
++
++  async function startRuntime(
++    runtime: ManagedBackendRuntime,
++  ): Promise<DesktopManagedEnvironmentRegistration> {
++    clearRestartTimer(runtime);
++
++    if (!runtime.environment.target.ensureReady()) {
++      throw new Error(
++        `Managed backend target '${runtime.environment.displayLabel}' is not available.`,
++      );
++    }
++
++    const preferredPort =
++      runtime.port ??
++      Math.max(DEFAULT_DESKTOP_BACKEND_PORT + 1, options.getPrimaryBackendPort() + 1);
++    const port = await resolveDesktopBackendPort({
++      host: options.loopbackHost,
++      startPort: preferredPort,
++    });
++
++    runtime.port = port;
++    if (runtime.expectedExit) {
++      throw new Error("Managed backend start canceled.");
++    }
++    runtime.bootstrapToken = Crypto.randomBytes(24).toString("hex");
++    runtime.httpBaseUrl = `http://${options.loopbackHost}:${port}`;
++    runtime.wsBaseUrl = `ws://${options.loopbackHost}:${port}`;
++
++    const listeningDetector = new ServerListeningDetector();
++    runtime.listeningDetector = listeningDetector;
++    let child: ChildProcess.ChildProcess | null = null;
++
++    try {
++      const observabilitySettings = options.getObservabilitySettings();
++      const spawnResult = runtime.environment.target.spawn(
++        {
++          mode: "desktop",
++          noBrowser: true,
++          port,
++          t3Home: runtime.environment.baseDir,
++          host: options.loopbackHost,
++          desktopBootstrapToken: runtime.bootstrapToken,
++          ...(observabilitySettings.otlpTracesUrl
++            ? { otlpTracesUrl: observabilitySettings.otlpTracesUrl }
++            : {}),
++          ...(observabilitySettings.otlpMetricsUrl
++            ? { otlpMetricsUrl: observabilitySettings.otlpMetricsUrl }
++            : {}),
++        },
++        {
++          env: options.getBackendChildEnv(),
++          captureOutput: options.getCaptureOutput(),
++        },
++      );
++
++      const startedChild = spawnResult.child;
++      child = startedChild;
++      if (!spawnResult.bootstrapDelivered) {
++        startedChild.kill("SIGTERM");
++        throw new Error("Failed to deliver managed backend bootstrap config.");
++      }
++
++      runtime.child = startedChild;
++      options.captureBackendOutput(startedChild, listeningDetector);
++      options.log(
++        `managed backend start requested key=${runtime.environment.key} port=${port} target=${runtime.environment.displayLabel}`,
++      );
++
++      startedChild.once("spawn", () => {
++        runtime.restartAttempt = 0;
++      });
++
++      startedChild.on("error", (error) => {
++        if (runtime.listeningDetector === listeningDetector) {
++          listeningDetector.fail(error);
++          runtime.listeningDetector = null;
++        }
++        const wasExpected =
++          runtime.expectedExit ||
++          options.isQuitting() ||
++          expectedRuntimeExitChildren.has(startedChild);
++        if (runtime.child === startedChild) {
++          runtime.child = null;
++        }
++        if (wasExpected) {
++          return;
++        }
++        scheduleRestart(runtime, error.message);
++      });
++
++      startedChild.on("exit", (code, signal) => {
++        if (runtime.listeningDetector === listeningDetector) {
++          listeningDetector.fail(
++            new Error(
++              `managed backend exited before readiness (code=${code ?? "null"} signal=${signal ?? "null"})`,
++            ),
++          );
++          runtime.listeningDetector = null;
++        }
++        const wasExpected =
++          runtime.expectedExit ||
++          options.isQuitting() ||
++          expectedRuntimeExitChildren.has(startedChild);
++        if (runtime.child === startedChild) {
++          runtime.child = null;
++        }
++        if (wasExpected) {
++          return;
++        }
++        scheduleRestart(runtime, `code=${code ?? "null"} signal=${signal ?? "null"}`);
++      });
++
++      await waitForBackendStartupReady({
++        listeningPromise: listeningDetector.promise,
++        waitForHttpReady: () =>
++          waitForHttpReady(runtime.httpBaseUrl ?? `http://${options.loopbackHost}:${port}`, {
++            timeoutMs: 60_000,
++          }),
++        cancelHttpWait: () => undefined,
++      });
++
++      runtime.listeningDetector = null;
++      if (runtime.expectedExit) {
++        throw new Error("Managed backend start canceled.");
++      }
++      options.log(
++        `managed backend ready key=${runtime.environment.key} baseUrl=${runtime.httpBaseUrl}`,
++      );
++      return toManagedBackendRegistration(runtime);
++    } catch (error) {
++      runtime.listeningDetector = null;
++      if (runtime.child === child) {
++        runtime.child = null;
++      }
++      if (child && child.exitCode === null && child.signalCode === null) {
++        const childToKill = child;
++        markChildExpectedExit(childToKill);
++        childToKill.kill("SIGTERM");
++        setTimeout(() => {
++          if (childToKill.exitCode === null && childToKill.signalCode === null) {
++            childToKill.kill("SIGKILL");
++          }
++        }, 2_000).unref();
++      }
++      runtime.bootstrapToken = null;
++      runtime.httpBaseUrl = null;
++      runtime.wsBaseUrl = null;
++      throw error;
++    }
++  }
++
++  async function ensureRegistration(
++    environmentKey: string,
++  ): Promise<DesktopManagedEnvironmentRegistration> {
++    const environment = requireEnvironment(environmentKey);
++    const runtime = getOrCreateRuntime(environment);
++
++    if (runtime.startPromise) {
++      return runtime.startPromise;
++    }
++
++    if (runtime.child && runtime.httpBaseUrl && runtime.wsBaseUrl && runtime.bootstrapToken) {
++      return toManagedBackendRegistration(runtime);
++    }
++
++    const startPromise = startRuntime(runtime).finally(() => {
++      if (runtime.startPromise === startPromise) {
++        runtime.startPromise = null;
++      }
++    });
++    runtime.startPromise = startPromise;
++    return startPromise;
++  }
++
++  return {
++    listCandidates(): readonly DesktopManagedEnvironmentCandidate[] {
++      return listEnvironments().map((environment) =>
++        toDesktopManagedEnvironmentCandidate(environment),
++      );
++    },
++    prepareRegistration: ensureRegistration,
++    async readHydratedSavedEnvironmentRegistry(records) {
++      const hydratedRecords: PersistedSavedEnvironmentRecord[] = [];
++
++      for (const record of records) {
++        if (record.management?.kind !== "desktop-managed") {
++          hydratedRecords.push(record);
++          continue;
++        }
++
++        try {
++          const registration = await ensureRegistration(record.management.environmentKey);
++          hydratedRecords.push({
++            ...record,
++            httpBaseUrl: registration.httpBaseUrl,
++            wsBaseUrl: registration.wsBaseUrl,
++          });
++        } catch (error) {
++          if (!isBackendReadinessAborted(error)) {
++            options.log(
++              `managed backend hydration warning key=${record.management.environmentKey} message=${sanitizeLogValue(formatErrorMessage(error))}`,
++            );
++          }
++          hydratedRecords.push(record);
++        }
++      }
++
++      return hydratedRecords;
++    },
++    syncAfterRegistryWrite(previousRecords, nextRecords) {
++      const nextManagedKeys = new Set(
++        nextRecords.flatMap((record) =>
++          record.management?.kind === "desktop-managed" ? [record.management.environmentKey] : [],
++        ),
++      );
++
++      for (const record of previousRecords) {
++        if (
++          record.management?.kind === "desktop-managed" &&
++          !nextManagedKeys.has(record.management.environmentKey)
++        ) {
++          stopEnvironment(record.management.environmentKey);
++        }
++      }
++    },
++    stopAll() {
++      for (const environmentKey of runtimes.keys()) {
++        stopEnvironment(environmentKey);
++      }
++    },
++  };
++}
+diff --git a/apps/desktop/src/managedBackendEnvironmentIpc.ts b/apps/desktop/src/managedBackendEnvironmentIpc.ts
+new file mode 100644
+index 00000000..b178f579
+--- /dev/null
++++ b/apps/desktop/src/managedBackendEnvironmentIpc.ts
+@@ -0,0 +1,29 @@
++import type { IpcMain } from "electron";
++
++import type { DesktopManagedEnvironmentController } from "./managedBackendEnvironment.ts";
++
++export const LIST_MANAGED_ENVIRONMENTS_CHANNEL = "desktop:list-managed-environments";
++export const PREPARE_MANAGED_ENVIRONMENT_REGISTRATION_CHANNEL =
++  "desktop:prepare-managed-environment-registration";
++
++export function registerDesktopManagedEnvironmentIpc(input: {
++  readonly ipcMain: IpcMain;
++  readonly controller: DesktopManagedEnvironmentController;
++}): void {
++  input.ipcMain.removeHandler(LIST_MANAGED_ENVIRONMENTS_CHANNEL);
++  input.ipcMain.handle(LIST_MANAGED_ENVIRONMENTS_CHANNEL, async () =>
++    input.controller.listCandidates(),
++  );
++
++  input.ipcMain.removeHandler(PREPARE_MANAGED_ENVIRONMENT_REGISTRATION_CHANNEL);
++  input.ipcMain.handle(
++    PREPARE_MANAGED_ENVIRONMENT_REGISTRATION_CHANNEL,
++    async (_event, rawEnvironmentKey: unknown) => {
++      if (typeof rawEnvironmentKey !== "string" || rawEnvironmentKey.trim().length === 0) {
++        throw new Error("Invalid managed environment key.");
++      }
++
++      return input.controller.prepareRegistration(rawEnvironmentKey);
++    },
++  );
++}
+diff --git a/apps/desktop/src/preload.ts b/apps/desktop/src/preload.ts
+index a6756048..36c4e00b 100644
+--- a/apps/desktop/src/preload.ts
++++ b/apps/desktop/src/preload.ts
+@@ -17,6 +17,9 @@ const GET_APP_BRANDING_CHANNEL = "desktop:get-app-branding";
+ const GET_LOCAL_ENVIRONMENT_BOOTSTRAP_CHANNEL = "desktop:get-local-environment-bootstrap";
+ const GET_CLIENT_SETTINGS_CHANNEL = "desktop:get-client-settings";
+ const SET_CLIENT_SETTINGS_CHANNEL = "desktop:set-client-settings";
++const LIST_MANAGED_ENVIRONMENTS_CHANNEL = "desktop:list-managed-environments";
++const PREPARE_MANAGED_ENVIRONMENT_REGISTRATION_CHANNEL =
++  "desktop:prepare-managed-environment-registration";
+ const GET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL = "desktop:get-saved-environment-registry";
+ const SET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL = "desktop:set-saved-environment-registry";
+ const GET_SAVED_ENVIRONMENT_SECRET_CHANNEL = "desktop:get-saved-environment-secret";
+@@ -42,6 +45,9 @@ contextBridge.exposeInMainWorld("desktopBridge", {
+   },
+   getClientSettings: () => ipcRenderer.invoke(GET_CLIENT_SETTINGS_CHANNEL),
+   setClientSettings: (settings) => ipcRenderer.invoke(SET_CLIENT_SETTINGS_CHANNEL, settings),
++  listManagedEnvironments: () => ipcRenderer.invoke(LIST_MANAGED_ENVIRONMENTS_CHANNEL),
++  prepareManagedEnvironmentRegistration: (environmentKey) =>
++    ipcRenderer.invoke(PREPARE_MANAGED_ENVIRONMENT_REGISTRATION_CHANNEL, environmentKey),
+   getSavedEnvironmentRegistry: () => ipcRenderer.invoke(GET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL),
+   setSavedEnvironmentRegistry: (records) =>
+     ipcRenderer.invoke(SET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL, records),
+diff --git a/apps/web/src/clientPersistenceStorage.test.ts b/apps/web/src/clientPersistenceStorage.test.ts
+index a74ce18a..0bd49945 100644
+--- a/apps/web/src/clientPersistenceStorage.test.ts
++++ b/apps/web/src/clientPersistenceStorage.test.ts
+@@ -12,6 +12,18 @@ const savedRegistryRecord: PersistedSavedEnvironmentRecord = {
+   lastConnectedAt: null,
+ };
+ 
++const managedSavedRegistryRecord: PersistedSavedEnvironmentRecord = {
++  ...savedRegistryRecord,
++  environmentId: EnvironmentId.make("environment-managed"),
++  label: "Ubuntu",
++  httpBaseUrl: "http://127.0.0.1:3881/",
++  wsBaseUrl: "ws://127.0.0.1:3881/",
++  management: {
++    kind: "desktop-managed",
++    environmentKey: "wsl:Ubuntu",
++  },
++};
++
+ function createLocalStorageStub(): Storage {
+   const store = new Map<string, string>();
+   return {
+@@ -61,9 +73,12 @@ describe("clientPersistenceStorage", () => {
+ 
+     writeBrowserSavedEnvironmentRegistry([savedRegistryRecord]);
+     expect(writeBrowserSavedEnvironmentSecret(testEnvironmentId, "bearer-token")).toBe(true);
+-    writeBrowserSavedEnvironmentRegistry([savedRegistryRecord]);
++    writeBrowserSavedEnvironmentRegistry([savedRegistryRecord, managedSavedRegistryRecord]);
+ 
+-    expect(readBrowserSavedEnvironmentRegistry()).toEqual([savedRegistryRecord]);
++    expect(readBrowserSavedEnvironmentRegistry()).toEqual([
++      savedRegistryRecord,
++      managedSavedRegistryRecord,
++    ]);
+     expect(readBrowserSavedEnvironmentSecret(testEnvironmentId)).toBe("bearer-token");
+     expect(
+       JSON.parse(testWindow.localStorage.getItem(SAVED_ENVIRONMENT_REGISTRY_STORAGE_KEY)!),
+@@ -74,6 +89,7 @@ describe("clientPersistenceStorage", () => {
+           ...savedRegistryRecord,
+           bearerToken: "bearer-token",
+         },
++        managedSavedRegistryRecord,
+       ],
+     });
+   });
+diff --git a/apps/web/src/clientPersistenceStorage.ts b/apps/web/src/clientPersistenceStorage.ts
+index 70f51d5c..2e47c918 100644
+--- a/apps/web/src/clientPersistenceStorage.ts
++++ b/apps/web/src/clientPersistenceStorage.ts
+@@ -19,6 +19,12 @@ const BrowserSavedEnvironmentRecordSchema = Schema.Struct({
+   wsBaseUrl: Schema.String,
+   createdAt: Schema.String,
+   lastConnectedAt: Schema.NullOr(Schema.String),
++  management: Schema.optionalKey(
++    Schema.Struct({
++      kind: Schema.Literal("desktop-managed"),
++      environmentKey: Schema.String,
++    }),
++  ),
+   bearerToken: Schema.optionalKey(Schema.String),
+ });
+ type BrowserSavedEnvironmentRecord = typeof BrowserSavedEnvironmentRecordSchema.Type;
+@@ -44,6 +50,7 @@ function toPersistedSavedEnvironmentRecord(
+     wsBaseUrl: record.wsBaseUrl,
+     createdAt: record.createdAt,
+     lastConnectedAt: record.lastConnectedAt,
++    ...(record.management ? { management: record.management } : {}),
+   };
+ }
+ 
+@@ -135,6 +142,7 @@ export function writeBrowserSavedEnvironmentRegistry(
+             wsBaseUrl: record.wsBaseUrl,
+             createdAt: record.createdAt,
+             lastConnectedAt: record.lastConnectedAt,
++            ...(record.management ? { management: record.management } : {}),
+             bearerToken,
+           }
+         : toPersistedSavedEnvironmentRecord(record);
+@@ -166,15 +174,18 @@ export function writeBrowserSavedEnvironmentSecret(
+         return record;
+       }
+       found = true;
+-      return {
+-        environmentId: record.environmentId,
+-        label: record.label,
+-        httpBaseUrl: record.httpBaseUrl,
+-        wsBaseUrl: record.wsBaseUrl,
+-        createdAt: record.createdAt,
+-        lastConnectedAt: record.lastConnectedAt,
+-        bearerToken: secret,
+-      } satisfies BrowserSavedEnvironmentRecord;
++      return Object.assign(
++        {
++          environmentId: record.environmentId,
++          label: record.label,
++          httpBaseUrl: record.httpBaseUrl,
++          wsBaseUrl: record.wsBaseUrl,
++          createdAt: record.createdAt,
++          lastConnectedAt: record.lastConnectedAt,
++          bearerToken: secret,
++        },
++        record.management ? { management: record.management } : {},
++      ) satisfies BrowserSavedEnvironmentRecord;
+     }),
+   });
+   return found;
+diff --git a/apps/web/src/components/settings/ConnectionsSettings.tsx b/apps/web/src/components/settings/ConnectionsSettings.tsx
+index 880c4376..13cf1302 100644
+--- a/apps/web/src/components/settings/ConnectionsSettings.tsx
++++ b/apps/web/src/components/settings/ConnectionsSettings.tsx
+@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from "react";
+ import {
+   type AuthClientSession,
+   type AuthPairingLink,
++  type DesktopManagedEnvironmentCandidate,
+   type DesktopServerExposureState,
+   type EnvironmentId,
+ } from "@t3tools/contracts";
+@@ -62,6 +63,7 @@ import {
+   type SavedEnvironmentRuntimeState,
+   useSavedEnvironmentRegistryStore,
+   useSavedEnvironmentRuntimeStore,
++  addDesktopManagedEnvironment,
+   addSavedEnvironment,
+   getPrimaryEnvironmentConnection,
+   reconnectSavedEnvironment,
+@@ -160,6 +162,18 @@ function getSavedBackendStatusTooltip(
+     : "Not connected yet.";
+ }
+ 
++function getManagedEnvironmentKindLabel(kind: DesktopManagedEnvironmentCandidate["kind"]): string {
++  return kind === "wsl" ? "WSL" : "Local";
++}
++
++function getSavedEnvironmentScopeLabel(record: SavedEnvironmentRecord): string {
++  if (record.management?.kind === "desktop-managed") {
++    return record.management.environmentKey.startsWith("wsl:") ? "WSL managed" : "Local managed";
++  }
++
++  return "Paired remote";
++}
++
+ /** Direct row in the card – same pattern as the Provider / ACP-agent list rows. */
+ const ITEM_ROW_CLASSNAME = "border-t border-border/60 px-4 py-4 first:border-t-0 sm:px-5";
+ 
+@@ -705,6 +719,7 @@ function SavedBackendListRow({
+   const descriptorLabel = runtime?.descriptor?.label ?? null;
+   const statusTooltip = getSavedBackendStatusTooltip(runtime, record, nowMs);
+   const metadataBits = [
++    getSavedEnvironmentScopeLabel(record),
+     roleLabel,
+     record.lastConnectedAt
+       ? `Last connected ${formatAccessTimestamp(record.lastConnectedAt)}`
+@@ -771,6 +786,15 @@ export function ConnectionsSettings() {
+         .map((record) => record.environmentId),
+     [savedEnvironmentsById],
+   );
++  const managedEnvironmentKeys = useMemo(
++    () =>
++      new Set(
++        Object.values(savedEnvironmentsById).flatMap((record) =>
++          record.management?.kind === "desktop-managed" ? [record.management.environmentKey] : [],
++        ),
++      ),
++    [savedEnvironmentsById],
++  );
+ 
+   const [desktopServerExposureState, setDesktopServerExposureState] =
+     useState<DesktopServerExposureState | null>(null);
+@@ -793,13 +817,17 @@ export function ConnectionsSettings() {
+   >(null);
+   const [isRevokingOtherDesktopClients, setIsRevokingOtherDesktopClients] = useState(false);
+   const [addBackendDialogOpen, setAddBackendDialogOpen] = useState(false);
+-  const [savedBackendMode, setSavedBackendMode] = useState<"pairing-url" | "host-code">(
+-    "pairing-url",
+-  );
++  const [savedBackendMode, setSavedBackendMode] = useState<
++    "pairing-url" | "host-code" | "managed-environments"
++  >("pairing-url");
+   const [savedBackendLabel, setSavedBackendLabel] = useState("");
+   const [savedBackendPairingUrl, setSavedBackendPairingUrl] = useState("");
+   const [savedBackendHost, setSavedBackendHost] = useState("");
+   const [savedBackendPairingCode, setSavedBackendPairingCode] = useState("");
++  const [managedEnvironmentCandidates, setManagedEnvironmentCandidates] = useState<
++    ReadonlyArray<DesktopManagedEnvironmentCandidate>
++  >([]);
++  const [isLoadingManagedEnvironments, setIsLoadingManagedEnvironments] = useState(false);
+   const [savedBackendError, setSavedBackendError] = useState<string | null>(null);
+   const [isAddingSavedBackend, setIsAddingSavedBackend] = useState(false);
+   const [reconnectingSavedEnvironmentId, setReconnectingSavedEnvironmentId] =
+@@ -963,6 +991,42 @@ export function ConnectionsSettings() {
+     savedBackendPairingUrl,
+   ]);
+ 
++  const handleAddManagedEnvironment = useCallback(
++    async (candidate: DesktopManagedEnvironmentCandidate) => {
++      setIsAddingSavedBackend(true);
++      setSavedBackendError(null);
++      try {
++        const record = await addDesktopManagedEnvironment({
++          environmentKey: candidate.key,
++          label: savedBackendLabel.trim() || candidate.label,
++        });
++        setSavedBackendLabel("");
++        setSavedBackendPairingUrl("");
++        setSavedBackendHost("");
++        setSavedBackendPairingCode("");
++        setAddBackendDialogOpen(false);
++        toastManager.add({
++          type: "success",
++          title: "Environment added",
++          description: `${record.label} is now managed by this desktop and will reconnect on app startup.`,
++        });
++      } catch (error) {
++        const message = error instanceof Error ? error.message : "Failed to add environment.";
++        setSavedBackendError(message);
++        toastManager.add(
++          stackedThreadToast({
++            type: "error",
++            title: "Could not add environment",
++            description: message,
++          }),
++        );
++      } finally {
++        setIsAddingSavedBackend(false);
++      }
++    },
++    [savedBackendLabel],
++  );
++
+   const handleReconnectSavedBackend = useCallback(async (environmentId: EnvironmentId) => {
+     setReconnectingSavedEnvironmentId(environmentId);
+     setSavedBackendError(null);
+@@ -1125,6 +1189,51 @@ export function ConnectionsSettings() {
+     setDesktopServerExposureState(null);
+     setDesktopServerExposureError(null);
+   }, [canManageLocalBackend]);
++
++  useEffect(() => {
++    if (!desktopBridge) {
++      setManagedEnvironmentCandidates([]);
++      setIsLoadingManagedEnvironments(false);
++      if (savedBackendMode === "managed-environments") {
++        setSavedBackendMode("pairing-url");
++      }
++      return;
++    }
++
++    if (!addBackendDialogOpen || savedBackendMode !== "managed-environments") {
++      setIsLoadingManagedEnvironments(false);
++      return;
++    }
++
++    let cancelled = false;
++    setIsLoadingManagedEnvironments(true);
++    void desktopBridge
++      .listManagedEnvironments()
++      .then((candidates) => {
++        if (cancelled) {
++          return;
++        }
++        setManagedEnvironmentCandidates(candidates);
++      })
++      .catch((error: unknown) => {
++        if (cancelled) {
++          return;
++        }
++        const message =
++          error instanceof Error ? error.message : "Failed to load managed environments.";
++        setSavedBackendError(message);
++      })
++      .finally(() => {
++        if (!cancelled) {
++          setIsLoadingManagedEnvironments(false);
++        }
++      });
++
++    return () => {
++      cancelled = true;
++    };
++  }, [addBackendDialogOpen, desktopBridge, savedBackendMode]);
++
+   const visibleDesktopPairingLinks = useMemo(
+     () => desktopPairingLinks.filter((pairingLink) => pairingLink.role === "client"),
+     [desktopPairingLinks],
+@@ -1308,7 +1417,11 @@ export function ConnectionsSettings() {
+             <DialogPopup>
+               <DialogHeader>
+                 <DialogTitle>Add Environment</DialogTitle>
+-                <DialogDescription>Pair another environment to this client.</DialogDescription>
++                <DialogDescription>
++                  {desktopBridge
++                    ? "Add a desktop-managed or paired environment to this client."
++                    : "Pair another environment to this client."}
++                </DialogDescription>
+                 <div className="flex gap-1 rounded-lg border border-border/60 bg-muted/50 p-1">
+                   <button
+                     type="button"
+@@ -1336,6 +1449,21 @@ export function ConnectionsSettings() {
+                   >
+                     Host + code
+                   </button>
++                  {desktopBridge ? (
++                    <button
++                      type="button"
++                      className={cn(
++                        "flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
++                        savedBackendMode === "managed-environments"
++                          ? "bg-background text-foreground shadow-xs"
++                          : "text-muted-foreground hover:text-foreground",
++                      )}
++                      disabled={isAddingSavedBackend}
++                      onClick={() => setSavedBackendMode("managed-environments")}
++                    >
++                      Managed environments
++                    </button>
++                  ) : null}
+                 </div>
+               </DialogHeader>
+               <DialogPanel>
+@@ -1344,10 +1472,14 @@ export function ConnectionsSettings() {
+                     <p className="text-xs text-muted-foreground">
+                       Enter the full pairing URL from the environment you want to connect to.
+                     </p>
+-                  ) : (
++                  ) : savedBackendMode === "host-code" ? (
+                     <p className="text-xs text-muted-foreground">
+                       Enter the backend host and pairing code separately.
+                     </p>
++                  ) : (
++                    <p className="text-xs text-muted-foreground">
++                      Add a local desktop-managed environment detected on this machine.
++                    </p>
+                   )}
+                   <div className="space-y-3">
+                     <label className="block">
+@@ -1378,7 +1510,7 @@ export function ConnectionsSettings() {
+                           The full URL including the pairing token.
+                         </span>
+                       </label>
+-                    ) : (
++                    ) : savedBackendMode === "host-code" ? (
+                       <>
+                         <label className="block">
+                           <span className="mb-1.5 block text-xs font-medium text-foreground">
+@@ -1405,20 +1537,64 @@ export function ConnectionsSettings() {
+                           />
+                         </label>
+                       </>
++                    ) : (
++                      <div className="space-y-3">
++                        {isLoadingManagedEnvironments ? (
++                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
++                            <Spinner className="size-3.5" />
++                            Loading managed environments…
++                          </div>
++                        ) : managedEnvironmentCandidates.length > 0 ? (
++                          <div className="space-y-2">
++                            {managedEnvironmentCandidates.map((candidate) => {
++                              const alreadyAdded = managedEnvironmentKeys.has(candidate.key);
++                              return (
++                                <div
++                                  key={candidate.key}
++                                  className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-background/70 px-3 py-2"
++                                >
++                                  <div className="min-w-0 flex-1 space-y-1">
++                                    <p className="truncate text-sm font-medium text-foreground">
++                                      {candidate.label}
++                                    </p>
++                                    <p className="text-xs text-muted-foreground">
++                                      {getManagedEnvironmentKindLabel(candidate.kind)} environment
++                                    </p>
++                                  </div>
++                                  <Button
++                                    size="xs"
++                                    variant="outline"
++                                    disabled={isAddingSavedBackend || alreadyAdded}
++                                    onClick={() => void handleAddManagedEnvironment(candidate)}
++                                  >
++                                    {alreadyAdded ? "Added" : "Add"}
++                                  </Button>
++                                </div>
++                              );
++                            })}
++                          </div>
++                        ) : (
++                          <p className="text-xs text-muted-foreground">
++                            No managed environments are available right now.
++                          </p>
++                        )}
++                      </div>
+                     )}
+                   </div>
+                   {savedBackendError ? (
+                     <p className="text-xs text-destructive">{savedBackendError}</p>
+                   ) : null}
+-                  <Button
+-                    variant="outline"
+-                    className="w-full"
+-                    disabled={isAddingSavedBackend}
+-                    onClick={() => void handleAddSavedBackend()}
+-                  >
+-                    <PlusIcon className="size-3.5" />
+-                    {isAddingSavedBackend ? "Adding…" : "Add Backend"}
+-                  </Button>
++                  {savedBackendMode !== "managed-environments" ? (
++                    <Button
++                      variant="outline"
++                      className="w-full"
++                      disabled={isAddingSavedBackend}
++                      onClick={() => void handleAddSavedBackend()}
++                    >
++                      <PlusIcon className="size-3.5" />
++                      {isAddingSavedBackend ? "Adding…" : "Add Backend"}
++                    </Button>
++                  ) : null}
+                 </div>
+               </DialogPanel>
+             </DialogPopup>
+diff --git a/apps/web/src/components/settings/SettingsPanels.browser.tsx b/apps/web/src/components/settings/SettingsPanels.browser.tsx
+index 51cfe653..815124d7 100644
+--- a/apps/web/src/components/settings/SettingsPanels.browser.tsx
++++ b/apps/web/src/components/settings/SettingsPanels.browser.tsx
+@@ -151,6 +151,7 @@ vi.mock("../../environments/runtime", () => {
+     resolveEnvironmentHttpUrl: (_environmentId: unknown, path: string) =>
+       new URL(path, "http://localhost:3000").toString(),
+     waitForSavedEnvironmentRegistryHydration: async () => undefined,
++    addDesktopManagedEnvironment: vi.fn(),
+     addSavedEnvironment: vi.fn(),
+     disconnectSavedEnvironment: vi.fn(),
+     ensureEnvironmentConnectionBootstrapped: async () => undefined,
+@@ -295,6 +296,21 @@ const createDesktopBridgeStub = (overrides?: {
+     getSavedEnvironmentSecret: vi.fn().mockResolvedValue(null),
+     setSavedEnvironmentSecret: vi.fn().mockResolvedValue(true),
+     removeSavedEnvironmentSecret: vi.fn().mockResolvedValue(undefined),
++    listManagedEnvironments: vi.fn().mockResolvedValue([
++      {
++        key: "wsl:Ubuntu",
++        label: "Ubuntu",
++        kind: "wsl",
++      },
++    ]),
++    prepareManagedEnvironmentRegistration: vi.fn().mockResolvedValue({
++      key: "wsl:Ubuntu",
++      label: "Ubuntu",
++      kind: "wsl",
++      httpBaseUrl: "http://127.0.0.1:3881/",
++      wsBaseUrl: "ws://127.0.0.1:3881/",
++      bootstrapToken: "desktop-bootstrap-token",
++    }),
+     getServerExposureState: vi.fn().mockResolvedValue(
+       overrides?.serverExposureState ?? {
+         mode: "local-only",
+@@ -654,6 +670,26 @@ describe("GeneralSettingsPanel observability", () => {
+     expect(fetchMock).toHaveBeenCalled();
+   });
+ 
++  it("shows desktop-managed environment candidates in the add dialog", async () => {
++    const desktopBridge = createDesktopBridgeStub();
++    window.desktopBridge = desktopBridge;
++
++    setServerConfigSnapshot(createBaseServerConfig());
++
++    mounted = await render(
++      <AppAtomRegistryProvider>
++        <ConnectionsSettings />
++      </AppAtomRegistryProvider>,
++    );
++
++    await page.getByRole("button", { name: "Add environment", exact: true }).click();
++    await page.getByRole("button", { name: "Managed environments", exact: true }).click();
++
++    await expect.element(page.getByText("Ubuntu", { exact: true })).toBeInTheDocument();
++    await expect.element(page.getByText("WSL environment", { exact: true })).toBeInTheDocument();
++    expect(desktopBridge.listManagedEnvironments).toHaveBeenCalled();
++  });
++
+   it("shows a disabled network access toggle with guidance in desktop builds", async () => {
+     const desktopBridge = createDesktopBridgeStub();
+     window.desktopBridge = desktopBridge;
+diff --git a/apps/web/src/environments/runtime/catalog.ts b/apps/web/src/environments/runtime/catalog.ts
+index 6aecf80f..aec5906b 100644
+--- a/apps/web/src/environments/runtime/catalog.ts
++++ b/apps/web/src/environments/runtime/catalog.ts
+@@ -3,6 +3,7 @@ import type {
+   AuthSessionRole,
+   EnvironmentId,
+   ExecutionEnvironmentDescriptor,
++  PersistedSavedEnvironmentManagement,
+   PersistedSavedEnvironmentRecord,
+   ServerConfig,
+ } from "@t3tools/contracts";
+@@ -18,6 +19,7 @@ export interface SavedEnvironmentRecord {
+   readonly httpBaseUrl: string;
+   readonly createdAt: string;
+   readonly lastConnectedAt: string | null;
++  readonly management?: PersistedSavedEnvironmentManagement;
+ }
+ 
+ interface SavedEnvironmentRegistryState {
+@@ -44,6 +46,7 @@ function toPersistedSavedEnvironmentRecord(
+     wsBaseUrl: record.wsBaseUrl,
+     createdAt: record.createdAt,
+     lastConnectedAt: record.lastConnectedAt,
++    ...(record.management ? { management: record.management } : {}),
+   };
+ }
+ 
+diff --git a/apps/web/src/environments/runtime/index.ts b/apps/web/src/environments/runtime/index.ts
+index 8c813f10..5b5a14c9 100644
+--- a/apps/web/src/environments/runtime/index.ts
++++ b/apps/web/src/environments/runtime/index.ts
+@@ -15,6 +15,7 @@ export {
+ } from "./catalog";
+ 
+ export {
++  addDesktopManagedEnvironment,
+   addSavedEnvironment,
+   disconnectSavedEnvironment,
+   ensureEnvironmentConnectionBootstrapped,
+diff --git a/apps/web/src/environments/runtime/service.addSavedEnvironment.test.ts b/apps/web/src/environments/runtime/service.addSavedEnvironment.test.ts
+index 9bcbc4f7..a4d53cae 100644
+--- a/apps/web/src/environments/runtime/service.addSavedEnvironment.test.ts
++++ b/apps/web/src/environments/runtime/service.addSavedEnvironment.test.ts
+@@ -3,12 +3,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
+ 
+ const mockResolveRemotePairingTarget = vi.fn();
+ const mockFetchRemoteEnvironmentDescriptor = vi.fn();
++const mockFetchRemoteSessionState = vi.fn();
+ const mockBootstrapRemoteBearerSession = vi.fn();
+ const mockPersistSavedEnvironmentRecord = vi.fn();
+ const mockWriteSavedEnvironmentBearerToken = vi.fn();
+ const mockSetSavedEnvironmentRegistry = vi.fn();
+ const mockUpsert = vi.fn();
+ const mockListSavedEnvironmentRecords = vi.fn();
++const mockGetSavedEnvironmentRecord = vi.fn();
++const mockCreateWsRpcClient = vi.fn();
++const mockWsTransport = vi.fn(function WsTransport(..._args: unknown[]) {
++  return {};
++});
+ 
+ vi.mock("../remote/target", () => ({
+   resolveRemotePairingTarget: mockResolveRemotePairingTarget,
+@@ -17,10 +23,18 @@ vi.mock("../remote/target", () => ({
+ vi.mock("../remote/api", () => ({
+   bootstrapRemoteBearerSession: mockBootstrapRemoteBearerSession,
+   fetchRemoteEnvironmentDescriptor: mockFetchRemoteEnvironmentDescriptor,
+-  fetchRemoteSessionState: vi.fn(),
++  fetchRemoteSessionState: mockFetchRemoteSessionState,
+   resolveRemoteWebSocketConnectionUrl: vi.fn(),
+ }));
+ 
++vi.mock("../../rpc/wsRpcClient", () => ({
++  createWsRpcClient: mockCreateWsRpcClient,
++}));
++
++vi.mock("../../rpc/wsTransport", () => ({
++  WsTransport: mockWsTransport,
++}));
++
+ vi.mock("~/localApi", () => ({
+   ensureLocalApi: () => ({
+     persistence: {
+@@ -30,7 +44,7 @@ vi.mock("~/localApi", () => ({
+ }));
+ 
+ vi.mock("./catalog", () => ({
+-  getSavedEnvironmentRecord: vi.fn(),
++  getSavedEnvironmentRecord: mockGetSavedEnvironmentRecord,
+   hasSavedEnvironmentRegistryHydrated: vi.fn(),
+   listSavedEnvironmentRecords: mockListSavedEnvironmentRecords,
+   persistSavedEnvironmentRecord: mockPersistSavedEnvironmentRecord,
+@@ -55,7 +69,12 @@ vi.mock("./catalog", () => ({
+ }));
+ 
+ vi.mock("./connection", () => ({
+-  createEnvironmentConnection: vi.fn(),
++  createEnvironmentConnection: vi.fn(
++    (input: { knownEnvironment: { environmentId: EnvironmentId } }) => ({
++      environmentId: input.knownEnvironment.environmentId,
++      dispose: vi.fn().mockResolvedValue(undefined),
++    }),
++  ),
+ }));
+ 
+ describe("addSavedEnvironment", () => {
+@@ -71,6 +90,10 @@ describe("addSavedEnvironment", () => {
+       environmentId: EnvironmentId.make("environment-1"),
+       label: "Remote environment",
+     });
++    mockFetchRemoteSessionState.mockResolvedValue({
++      authenticated: true,
++      role: "owner",
++    });
+     mockBootstrapRemoteBearerSession.mockResolvedValue({
+       sessionToken: "bearer-token",
+       role: "owner",
+@@ -79,6 +102,18 @@ describe("addSavedEnvironment", () => {
+     mockWriteSavedEnvironmentBearerToken.mockResolvedValue(false);
+     mockSetSavedEnvironmentRegistry.mockResolvedValue(undefined);
+     mockListSavedEnvironmentRecords.mockReturnValue([]);
++    mockGetSavedEnvironmentRecord.mockReturnValue(null);
++    mockCreateWsRpcClient.mockReturnValue({
++      server: {
++        getConfig: vi.fn().mockResolvedValue({
++          environment: {
++            environmentId: EnvironmentId.make("environment-1"),
++            label: "Remote environment",
++          },
++        }),
++      },
++    });
++    vi.unstubAllGlobals();
+   });
+ 
+   it("rolls back persisted metadata when bearer token persistence fails", async () => {
+@@ -102,4 +137,58 @@ describe("addSavedEnvironment", () => {
+ 
+     await resetEnvironmentServiceForTests();
+   });
++
++  it("persists desktop-managed environment metadata", async () => {
++    const prepareManagedEnvironmentRegistration = vi.fn().mockResolvedValue({
++      key: "wsl:Ubuntu",
++      label: "Ubuntu",
++      kind: "wsl",
++      httpBaseUrl: "http://127.0.0.1:3881/",
++      wsBaseUrl: "ws://127.0.0.1:3881/",
++      bootstrapToken: "desktop-bootstrap-token",
++    });
++    vi.stubGlobal("window", {
++      desktopBridge: {
++        prepareManagedEnvironmentRegistration,
++      },
++    });
++    mockWriteSavedEnvironmentBearerToken.mockResolvedValue(true);
++
++    const { addDesktopManagedEnvironment, resetEnvironmentServiceForTests } =
++      await import("./service");
++
++    const record = await addDesktopManagedEnvironment({ environmentKey: "wsl:Ubuntu" });
++
++    expect(prepareManagedEnvironmentRegistration).toHaveBeenCalledWith("wsl:Ubuntu");
++    expect(mockFetchRemoteEnvironmentDescriptor).toHaveBeenCalledWith({
++      httpBaseUrl: "http://127.0.0.1:3881/",
++    });
++    expect(mockBootstrapRemoteBearerSession).toHaveBeenCalledWith({
++      httpBaseUrl: "http://127.0.0.1:3881/",
++      credential: "desktop-bootstrap-token",
++    });
++    expect(mockPersistSavedEnvironmentRecord).toHaveBeenCalledWith({
++      environmentId: EnvironmentId.make("environment-1"),
++      label: "Ubuntu",
++      httpBaseUrl: "http://127.0.0.1:3881/",
++      wsBaseUrl: "ws://127.0.0.1:3881/",
++      createdAt: expect.any(String),
++      lastConnectedAt: expect.any(String),
++      management: {
++        kind: "desktop-managed",
++        environmentKey: "wsl:Ubuntu",
++      },
++    });
++    expect(mockWriteSavedEnvironmentBearerToken).toHaveBeenCalledWith(
++      EnvironmentId.make("environment-1"),
++      "bearer-token",
++    );
++    expect(mockUpsert).toHaveBeenCalledWith(record);
++    expect(record.management).toEqual({
++      kind: "desktop-managed",
++      environmentKey: "wsl:Ubuntu",
++    });
++
++    await resetEnvironmentServiceForTests();
++  });
+ });
+diff --git a/apps/web/src/environments/runtime/service.ts b/apps/web/src/environments/runtime/service.ts
+index d724eeff..a80aa634 100644
+--- a/apps/web/src/environments/runtime/service.ts
++++ b/apps/web/src/environments/runtime/service.ts
+@@ -936,7 +936,7 @@ async function ensureSavedEnvironmentConnection(
+   const knownEnvironment = createKnownEnvironment({
+     id: record.environmentId,
+     label: record.label,
+-    source: "manual",
++    source: record.management?.kind === "desktop-managed" ? "desktop-managed" : "manual",
+     target: {
+       httpBaseUrl: record.httpBaseUrl,
+       wsBaseUrl: record.wsBaseUrl,
+@@ -1072,38 +1072,47 @@ export async function removeSavedEnvironment(environmentId: EnvironmentId): Prom
+   await disconnectSavedEnvironment(environmentId);
+ }
+ 
+-export async function addSavedEnvironment(input: {
++function toPersistedSavedEnvironmentRecords(records: ReadonlyArray<SavedEnvironmentRecord>) {
++  return records.map((entry) => ({
++    environmentId: entry.environmentId,
++    label: entry.label,
++    httpBaseUrl: entry.httpBaseUrl,
++    wsBaseUrl: entry.wsBaseUrl,
++    createdAt: entry.createdAt,
++    lastConnectedAt: entry.lastConnectedAt,
++    ...(entry.management ? { management: entry.management } : {}),
++  }));
++}
++
++async function registerSavedEnvironment(input: {
+   readonly label: string;
+-  readonly pairingUrl?: string;
+-  readonly host?: string;
+-  readonly pairingCode?: string;
++  readonly httpBaseUrl: string;
++  readonly wsBaseUrl: string;
++  readonly credential: string;
++  readonly management?: SavedEnvironmentRecord["management"];
+ }): Promise<SavedEnvironmentRecord> {
+-  const resolvedTarget = resolveRemotePairingTarget({
+-    ...(input.pairingUrl !== undefined ? { pairingUrl: input.pairingUrl } : {}),
+-    ...(input.host !== undefined ? { host: input.host } : {}),
+-    ...(input.pairingCode !== undefined ? { pairingCode: input.pairingCode } : {}),
+-  });
+   const descriptor = await fetchRemoteEnvironmentDescriptor({
+-    httpBaseUrl: resolvedTarget.httpBaseUrl,
++    httpBaseUrl: input.httpBaseUrl,
+   });
+   const environmentId = descriptor.environmentId;
+ 
+-  if (environmentConnections.has(environmentId)) {
+-    throw new Error("This environment is already connected.");
++  if (environmentConnections.has(environmentId) || getSavedEnvironmentRecord(environmentId)) {
++    throw new Error("This environment is already saved.");
+   }
+ 
+   const bearerSession = await bootstrapRemoteBearerSession({
+-    httpBaseUrl: resolvedTarget.httpBaseUrl,
+-    credential: resolvedTarget.credential,
++    httpBaseUrl: input.httpBaseUrl,
++    credential: input.credential,
+   });
+ 
+   const record: SavedEnvironmentRecord = {
+     environmentId,
+     label: input.label.trim() || descriptor.label,
+-    wsBaseUrl: resolvedTarget.wsBaseUrl,
+-    httpBaseUrl: resolvedTarget.httpBaseUrl,
++    wsBaseUrl: input.wsBaseUrl,
++    httpBaseUrl: input.httpBaseUrl,
+     createdAt: isoNow(),
+     lastConnectedAt: isoNow(),
++    ...(input.management ? { management: input.management } : {}),
+   };
+ 
+   await persistSavedEnvironmentRecord(record);
+@@ -1113,14 +1122,7 @@ export async function addSavedEnvironment(input: {
+   );
+   if (!didPersistBearerToken) {
+     await ensureLocalApi().persistence.setSavedEnvironmentRegistry(
+-      listSavedEnvironmentRecords().map((entry) => ({
+-        environmentId: entry.environmentId,
+-        label: entry.label,
+-        httpBaseUrl: entry.httpBaseUrl,
+-        wsBaseUrl: entry.wsBaseUrl,
+-        createdAt: entry.createdAt,
+-        lastConnectedAt: entry.lastConnectedAt,
+-      })),
++      toPersistedSavedEnvironmentRecords(listSavedEnvironmentRecords()),
+     );
+     throw new Error("Unable to persist saved environment credentials.");
+   }
+@@ -1132,6 +1134,51 @@ export async function addSavedEnvironment(input: {
+   return record;
+ }
+ 
++export async function addSavedEnvironment(input: {
++  readonly label: string;
++  readonly pairingUrl?: string;
++  readonly host?: string;
++  readonly pairingCode?: string;
++}): Promise<SavedEnvironmentRecord> {
++  const resolvedTarget = resolveRemotePairingTarget({
++    ...(input.pairingUrl !== undefined ? { pairingUrl: input.pairingUrl } : {}),
++    ...(input.host !== undefined ? { host: input.host } : {}),
++    ...(input.pairingCode !== undefined ? { pairingCode: input.pairingCode } : {}),
++  });
++
++  return registerSavedEnvironment({
++    label: input.label,
++    httpBaseUrl: resolvedTarget.httpBaseUrl,
++    wsBaseUrl: resolvedTarget.wsBaseUrl,
++    credential: resolvedTarget.credential,
++  });
++}
++
++export async function addDesktopManagedEnvironment(input: {
++  readonly environmentKey: string;
++  readonly label?: string;
++}): Promise<SavedEnvironmentRecord> {
++  const desktopBridge = window.desktopBridge;
++  if (!desktopBridge) {
++    throw new Error("Desktop-managed environments are only available in the desktop app.");
++  }
++
++  const registration = await desktopBridge.prepareManagedEnvironmentRegistration(
++    input.environmentKey,
++  );
++
++  return registerSavedEnvironment({
++    label: input.label?.trim() || registration.label,
++    httpBaseUrl: registration.httpBaseUrl,
++    wsBaseUrl: registration.wsBaseUrl,
++    credential: registration.bootstrapToken,
++    management: {
++      kind: "desktop-managed",
++      environmentKey: registration.key,
++    },
++  });
++}
++
+ export async function ensureEnvironmentConnectionBootstrapped(
+   environmentId: EnvironmentId,
+ ): Promise<void> {
+diff --git a/apps/web/src/localApi.test.ts b/apps/web/src/localApi.test.ts
+index b6272861..756b2253 100644
+--- a/apps/web/src/localApi.test.ts
++++ b/apps/web/src/localApi.test.ts
+@@ -173,6 +173,10 @@ function makeDesktopBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
+     getSavedEnvironmentSecret: async () => null,
+     setSavedEnvironmentSecret: async () => true,
+     removeSavedEnvironmentSecret: async () => undefined,
++    listManagedEnvironments: async () => [],
++    prepareManagedEnvironmentRegistration: async () => {
++      throw new Error("prepareManagedEnvironmentRegistration not implemented in test");
++    },
+     getServerExposureState: async () => ({
+       mode: "local-only",
+       endpointUrl: null,
+diff --git a/packages/contracts/src/ipc.ts b/packages/contracts/src/ipc.ts
+index 35539a86..a789b2b7 100644
+--- a/packages/contracts/src/ipc.ts
++++ b/packages/contracts/src/ipc.ts
+@@ -127,6 +127,13 @@ export interface DesktopEnvironmentBootstrap {
+   bootstrapToken?: string;
+ }
+ 
++export interface PersistedDesktopManagedEnvironmentMetadata {
++  kind: "desktop-managed";
++  environmentKey: string;
++}
++
++export type PersistedSavedEnvironmentManagement = PersistedDesktopManagedEnvironmentMetadata;
++
+ export interface PersistedSavedEnvironmentRecord {
+   environmentId: EnvironmentId;
+   label: string;
+@@ -134,6 +141,19 @@ export interface PersistedSavedEnvironmentRecord {
+   httpBaseUrl: string;
+   createdAt: string;
+   lastConnectedAt: string | null;
++  management?: PersistedSavedEnvironmentManagement;
++}
++
++export interface DesktopManagedEnvironmentCandidate {
++  key: string;
++  label: string;
++  kind: "local" | "wsl";
++}
++
++export interface DesktopManagedEnvironmentRegistration extends DesktopManagedEnvironmentCandidate {
++  httpBaseUrl: string;
++  wsBaseUrl: string;
++  bootstrapToken: string;
+ }
+ 
+ export type DesktopServerExposureMode = "local-only" | "network-accessible";
+@@ -153,6 +173,10 @@ export interface DesktopBridge {
+   getLocalEnvironmentBootstrap: () => DesktopEnvironmentBootstrap | null;
+   getClientSettings: () => Promise<ClientSettings | null>;
+   setClientSettings: (settings: ClientSettings) => Promise<void>;
++  listManagedEnvironments: () => Promise<readonly DesktopManagedEnvironmentCandidate[]>;
++  prepareManagedEnvironmentRegistration: (
++    environmentKey: string,
++  ) => Promise<DesktopManagedEnvironmentRegistration>;
+   getSavedEnvironmentRegistry: () => Promise<readonly PersistedSavedEnvironmentRecord[]>;
+   setSavedEnvironmentRegistry: (
+     records: readonly PersistedSavedEnvironmentRecord[],

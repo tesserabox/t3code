@@ -1,0 +1,17 @@
+# Tessera Patch configuration
+provider:
+  type: openai-compatible
+  base_url: "http://localhost:4141"
+  model: claude-opus-4.5
+  auth_env: GITHUB_TOKEN
+
+# Merge strategy for applying patches: "3way" (default) or "rebase"
+merge_strategy: 3way
+
+# Max LLM validation retries when output fails to parse (0 disables retry)
+max_retries: 2
+
+# Shell command run by `tpatch test <slug>`.
+# This is intentionally feature-scoped for the windows-wsl-support desktop dev
+# path fix because the old test:windows-wsl-support script is no longer present.
+test_command: "bun run --filter t3 build"

@@ -1,0 +1,8 @@
+{
+  "slug": "windows-wsl-support",
+  "completed_at": "2026-05-05T03:25:03Z",
+  "base_commit": "fc8a225a788a0590f38d2c2e9494cfb68a342fe0",
+  "has_patch": true,
+  "validation_status": "passed",
+  "validation_notes": "tpatch test — command: bun run --filter t3 build"
+}

@@ -1,0 +1,17 @@
+{
+  "slug": "effort-theming",
+  "title": "Add visual theming for high-effort modes across providers. GPT xhigh gets a distinct animated border style similar to Claude ultrathink rainbow, but with a different color palette. Driven by effort selection in the composer, not prompt injection.",
+  "outcome": "blocked",
+  "phase": "phase-4-blocked",
+  "upstream_ref": "upstream/main",
+  "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+  "notes": [
+    "Operation-level: 0 present, 1 applicable, 2 conflicts",
+    "Provider semantic check error: generation request failed: Post \"http://localhost:4141/v1/messages\": context deadline exceeded",
+    "Patch cannot be applied cleanly — manual intervention needed",
+    "git: error: .git/logs/HEAD: Not a directory\nerror: .git/logs/refs/heads/main: Not a directory\nerror: .git/logs/refs/remotes/origin/HEAD: Not a directory"
+  ],
+  "conflicts": [
+    "Forward-apply failed — check for merge conflicts"
+  ]
+}

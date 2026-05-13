@@ -1,0 +1,12 @@
+{
+  "id": "custom-agents",
+  "slug": "custom-agents",
+  "title": "Add custom agent support across providers. Copilot and Claude have SDK-level support for custom agent definitions (system prompts, tool allow/blocklists, MCP servers per agent). Codex/Cursor/OpenCode need graceful degradation. Requires new contracts schema, per-adapter wiring, event handling for agent lifecycle, and UI agent selector.",
+  "state": "requested",
+  "compatibility": "unknown",
+  "requested_at": "2026-04-20T10:15:40Z",
+  "updated_at": "2026-04-20T10:15:40Z",
+  "last_command": "add",
+  "apply": {},
+  "reconcile": {}
+}

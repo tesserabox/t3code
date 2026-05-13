@@ -1,0 +1,7 @@
+ .claude/skills/tessera-patch/SKILL.md              | 44 ++++++++++++++++++++++
+ .tpatch/FEATURES.md                                |  1 +
+ .tpatch/workflows/tessera-patch-generic.md         | 36 ++++++++++++++++++
+ .../web/src/components/chat/ModelPickerSidebar.tsx | 26 -------------
+ apps/web/src/components/chat/providerIconUtils.ts  |  4 +-
+ scripts/build-desktop-artifact.ts                  | 37 +++++++++++++++++-
+ 6 files changed, 119 insertions(+), 29 deletions(-)

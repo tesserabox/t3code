@@ -1,0 +1,213 @@
+diff --git a/apps/server/src/keybindings.ts b/apps/server/src/keybindings.ts
+index 165b2ede..d799d2d2 100644
+--- a/apps/server/src/keybindings.ts
++++ b/apps/server/src/keybindings.ts
+@@ -63,6 +63,7 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
+   { key: "mod+n", command: "terminal.new", when: "terminalFocus" },
+   { key: "mod+w", command: "terminal.close", when: "terminalFocus" },
+   { key: "mod+d", command: "diff.toggle", when: "!terminalFocus" },
++  { key: "mod+f", command: "chat.search", when: "!terminalFocus" },
+   { key: "mod+k", command: "commandPalette.toggle", when: "!terminalFocus" },
+   { key: "mod+n", command: "chat.new", when: "!terminalFocus" },
+   { key: "mod+shift+o", command: "chat.new", when: "!terminalFocus" },
+diff --git a/apps/web/src/components/ChatView.tsx b/apps/web/src/components/ChatView.tsx
+index 40cd1b42..a9327d2d 100644
+--- a/apps/web/src/components/ChatView.tsx
++++ b/apps/web/src/components/ChatView.tsx
+@@ -148,6 +148,7 @@ import { NoActiveThreadState } from "./NoActiveThreadState";
+ import { resolveEffectiveEnvMode, resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
+ import { ProviderStatusBanner } from "./chat/ProviderStatusBanner";
+ import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
++import { SessionSearchBar } from "./chat/SessionSearchBar";
+ import {
+   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
+   buildExpiredTerminalContextToastCopy,
+@@ -676,6 +677,9 @@ export default function ChatView(props: ChatViewProps) {
+   >({});
+   const [isConnecting, _setIsConnecting] = useState(false);
+   const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
++  const [isSearchOpen, setIsSearchOpen] = useState(false);
++  const [searchQuery, setSearchQuery] = useState("");
++  const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
+   const [respondingRequestIds, setRespondingRequestIds] = useState<ApprovalRequestId[]>([]);
+   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
+     ApprovalRequestId[]
+@@ -1157,6 +1161,19 @@ export default function ChatView(props: ChatViewProps) {
+     threadError: activeThread?.error,
+   });
+   const isWorking = phase === "running" || isSendBusy || isConnecting || isRevertingCheckpoint;
++
++  // Session search: count matches across all messages
++  const searchMatches = useMemo(() => {
++    if (!searchQuery.trim() || !activeThread) return [];
++    const query = searchQuery.toLowerCase();
++    const matches: Array<{ messageId: string; index: number }> = [];
++    for (const msg of activeThread.messages) {
++      if (msg.text.toLowerCase().includes(query)) {
++        matches.push({ messageId: msg.id, index: matches.length });
++      }
++    }
++    return matches;
++  }, [searchQuery, activeThread]);
+   const activeWorkStartedAt = deriveActiveWorkStartedAt(
+     activeLatestTurn,
+     activeThread?.session ?? null,
+@@ -2316,6 +2333,17 @@ export default function ChatView(props: ChatViewProps) {
+         return;
+       }
+ 
++      if (command === "chat.search") {
++        event.preventDefault();
++        event.stopPropagation();
++        setIsSearchOpen((prev) => !prev);
++        if (isSearchOpen) {
++          setSearchQuery("");
++          setCurrentMatchIndex(0);
++        }
++        return;
++      }
++
+       if (command === "modelPicker.toggle") {
+         event.preventDefault();
+         event.stopPropagation();
+@@ -3332,6 +3360,34 @@ export default function ChatView(props: ChatViewProps) {
+         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+           {/* Messages Wrapper */}
+           <div className="relative flex min-h-0 flex-1 flex-col">
++            {isSearchOpen ? (
++              <SessionSearchBar
++                query={searchQuery}
++                onQueryChange={(q) => {
++                  setSearchQuery(q);
++                  setCurrentMatchIndex(0);
++                }}
++                matchCount={searchMatches.length}
++                currentMatchIndex={currentMatchIndex}
++                onNext={() =>
++                  setCurrentMatchIndex((i) =>
++                    searchMatches.length > 0 ? (i + 1) % searchMatches.length : 0,
++                  )
++                }
++                onPrevious={() =>
++                  setCurrentMatchIndex((i) =>
++                    searchMatches.length > 0
++                      ? (i - 1 + searchMatches.length) % searchMatches.length
++                      : 0,
++                  )
++                }
++                onClose={() => {
++                  setIsSearchOpen(false);
++                  setSearchQuery("");
++                  setCurrentMatchIndex(0);
++                }}
++              />
++            ) : null}
+             {/* Messages — LegendList handles virtualization and scrolling internally */}
+             <MessagesTimeline
+               key={activeThread.id}
+diff --git a/apps/web/src/components/chat/SessionSearchBar.tsx b/apps/web/src/components/chat/SessionSearchBar.tsx
+new file mode 100644
+index 00000000..4bbf1699
+--- /dev/null
++++ b/apps/web/src/components/chat/SessionSearchBar.tsx
+@@ -0,0 +1,88 @@
++import { ChevronDownIcon, ChevronUpIcon, XIcon } from "lucide-react";
++import { memo, useCallback, useEffect, useRef } from "react";
++import { cn } from "~/lib/utils";
++
++export interface SessionSearchBarProps {
++  query: string;
++  onQueryChange: (query: string) => void;
++  matchCount: number;
++  currentMatchIndex: number;
++  onNext: () => void;
++  onPrevious: () => void;
++  onClose: () => void;
++}
++
++export const SessionSearchBar = memo(function SessionSearchBar(props: SessionSearchBarProps) {
++  const inputRef = useRef<HTMLInputElement>(null);
++
++  useEffect(() => {
++    inputRef.current?.focus({ preventScroll: true });
++  }, []);
++
++  const handleKeyDown = useCallback(
++    (e: React.KeyboardEvent) => {
++      if (e.key === "Escape") {
++        e.preventDefault();
++        props.onClose();
++      } else if (e.key === "Enter" && e.shiftKey) {
++        e.preventDefault();
++        props.onPrevious();
++      } else if (e.key === "Enter") {
++        e.preventDefault();
++        props.onNext();
++      }
++    },
++    [props.onClose, props.onNext, props.onPrevious],
++  );
++
++  const matchLabel =
++    props.query.trim().length > 0 && props.matchCount > 0
++      ? `${props.currentMatchIndex + 1} of ${props.matchCount}`
++      : props.query.trim().length > 0
++        ? "No matches"
++        : "";
++
++  return (
++    <div className="absolute top-2 right-4 z-50 flex items-center gap-1 rounded-lg border bg-popover px-2 py-1.5 shadow-lg">
++      <input
++        ref={inputRef}
++        type="text"
++        className="h-6 w-48 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground/50"
++        placeholder="Search in thread..."
++        value={props.query}
++        onChange={(e) => props.onQueryChange(e.target.value)}
++        onKeyDown={handleKeyDown}
++        aria-label="Search in thread"
++      />
++      {matchLabel ? (
++        <span className="shrink-0 text-xs text-muted-foreground/70 tabular-nums">{matchLabel}</span>
++      ) : null}
++      <button
++        type="button"
++        className="flex size-6 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:text-foreground disabled:opacity-30"
++        onClick={props.onPrevious}
++        disabled={props.matchCount === 0}
++        aria-label="Previous match"
++      >
++        <ChevronUpIcon className="size-3.5" />
++      </button>
++      <button
++        type="button"
++        className="flex size-6 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:text-foreground disabled:opacity-30"
++        onClick={props.onNext}
++        disabled={props.matchCount === 0}
++        aria-label="Next match"
++      >
++        <ChevronDownIcon className="size-3.5" />
++      </button>
++      <button
++        type="button"
++        className="flex size-6 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:text-foreground"
++        onClick={props.onClose}
++        aria-label="Close search"
++      >
++        <XIcon className="size-3.5" />
++      </button>
++    </div>
++  );
++});
+diff --git a/packages/contracts/src/keybindings.ts b/packages/contracts/src/keybindings.ts
+index d3b85d1c..a5b9844b 100644
+--- a/packages/contracts/src/keybindings.ts
++++ b/packages/contracts/src/keybindings.ts
+@@ -56,6 +56,7 @@ const STATIC_KEYBINDING_COMMANDS = [
+   "commandPalette.toggle",
+   "chat.new",
+   "chat.newLocal",
++  "chat.search",
+   "editor.openFavorite",
+   ...MODEL_PICKER_KEYBINDING_COMMANDS,
+   ...THREAD_KEYBINDING_COMMANDS,

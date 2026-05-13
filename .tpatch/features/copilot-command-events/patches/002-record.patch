@@ -1,0 +1,91 @@
+diff --git a/apps/server/src/provider/Layers/CopilotAdapter.ts b/apps/server/src/provider/Layers/CopilotAdapter.ts
+index c3f275e9..4aa89745 100644
+--- a/apps/server/src/provider/Layers/CopilotAdapter.ts
++++ b/apps/server/src/provider/Layers/CopilotAdapter.ts
+@@ -1165,6 +1165,86 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+           ];
+         case "exit_plan_mode.completed":
+           return [];
++        case "system.notification": {
++          const kind = event.data.kind;
++          if (kind.type === "agent_completed") {
++            return [
++              {
++                ...base(),
++                type: "task.completed",
++                payload: {
++                  taskId: toRuntimeTaskId(kind.agentId) ?? RuntimeTaskId.make(kind.agentId),
++                  status: kind.status === "failed" ? "failed" : "completed",
++                  ...(trimToUndefined(kind.description)
++                    ? { summary: kind.description }
++                    : {}),
++                },
++              },
++            ];
++          }
++          if (kind.type === "shell_completed" || kind.type === "shell_detached_completed") {
++            return [
++              {
++                ...base(),
++                type: "task.completed",
++                payload: {
++                  taskId:
++                    toRuntimeTaskId(kind.shellId) ?? RuntimeTaskId.make(kind.shellId),
++                  status: "completed",
++                  ...(trimToUndefined(kind.description)
++                    ? { summary: kind.description }
++                    : {}),
++                },
++              },
++            ];
++          }
++          // agent_idle and unknown kinds — surface as info
++          return [
++            {
++              ...base(),
++              type: "runtime.warning",
++              payload: {
++                message: event.data.content.replace(/<\/?system_notification>/g, "").trim(),
++                detail: event.data,
++              },
++            },
++          ];
++        }
++        case "system.message":
++          return [
++            {
++              ...base(),
++              type: "runtime.warning",
++              payload: {
++                message: trimToUndefined(event.data.content) ?? "System message",
++                detail: { role: event.data.role, name: event.data.name },
++              },
++            },
++          ];
++        case "command.execute":
++          return [
++            {
++              ...base({ requestId: event.data.requestId }),
++              type: "runtime.warning",
++              payload: {
++                message: `Command: ${event.data.command}`,
++                detail: event.data,
++              },
++            },
++          ];
++        case "command.completed":
++          return [];
++        case "command.queued":
++          return [
++            {
++              ...base({ requestId: event.data.requestId }),
++              type: "runtime.warning",
++              payload: {
++                message: `Queued command: ${event.data.command}`,
++                detail: event.data,
++              },
++            },
++          ];
+         default:
+           return [];
+       }

@@ -1,0 +1,4757 @@
+diff --git a/README.md b/README.md
+index e4523250..de1b1514 100644
+--- a/README.md
++++ b/README.md
+@@ -1,15 +1,20 @@
+ # T3 Code
+ 
+-T3 Code is a minimal web GUI for coding agents (currently Codex and Claude, more coming soon).
++T3 Code is a minimal web GUI for coding agents (currently Codex, Claude, Copilot, and more coming soon).
++
++> [!CAUTION]
++> **Copilot support is experimental.** The integration depends on `@github/copilot-sdk` which is
++> pre-1.0 and may introduce backward-incompatible changes at any time.
+ 
+ ## Installation
+ 
+ > [!WARNING]
+-> T3 Code currently supports Codex, Claude, and OpenCode.
++> T3 Code currently supports Codex, Claude, Copilot, and OpenCode.
+ > Install and authenticate at least one provider before use:
+ >
+ > - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
+ > - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
++> - Copilot: run `gh auth login` (requires [GitHub CLI](https://cli.github.com/))
+ > - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
+ 
+ ### Run without installing
+diff --git a/apps/desktop/src/backendTarget.ts b/apps/desktop/src/backendTarget.ts
+new file mode 100644
+index 00000000..78582fef
+--- /dev/null
++++ b/apps/desktop/src/backendTarget.ts
+@@ -0,0 +1,161 @@
++/**
++ * BackendTarget — Abstraction for where the T3 Code server runs.
++ *
++ * The desktop app spawns a backend server process. By default this runs
++ * locally (LocalBackendTarget). For WSL support, a WslBackendTarget
++ * spawns the server inside a WSL distro via wsl.exe.
++ *
++ * @module backendTarget
++ */
++import * as ChildProcess from "node:child_process";
++import * as FS from "node:fs";
++import * as OS from "node:os";
++import * as Path from "node:path";
++import { app } from "electron";
++
++/**
++ * Bootstrap configuration passed to the backend server on startup.
++ */
++export interface BackendBootstrapConfig {
++  readonly mode: "desktop";
++  readonly noBrowser: boolean;
++  readonly port: number;
++  readonly t3Home: string;
++  readonly host: string;
++  readonly desktopBootstrapToken: string;
++  readonly otlpTracesUrl?: string;
++  readonly otlpMetricsUrl?: string;
++}
++
++/**
++ * Result of spawning a backend server.
++ */
++export interface BackendSpawnResult {
++  readonly child: ChildProcess.ChildProcess;
++  /** True if the bootstrap config was successfully delivered */
++  readonly bootstrapDelivered: boolean;
++}
++
++/**
++ * BackendTarget — Defines how to spawn and communicate with a backend server.
++ */
++export interface BackendTarget {
++  /** Target type identifier */
++  readonly type: "local" | "wsl";
++  /** Human-readable label for UI display */
++  readonly displayLabel: string;
++  /**
++   * Prepare the target for startup, performing any one-time setup required
++   * before the backend process can be spawned.
++   */
++  ensureReady(): boolean;
++  /**
++   * Spawn the backend server process.
++   * The caller is responsible for event handling (error, exit, readiness detection).
++   */
++  spawn(
++    config: BackendBootstrapConfig,
++    options: {
++      readonly env: NodeJS.ProcessEnv;
++      readonly captureOutput: boolean;
++    },
++  ): BackendSpawnResult;
++  /**
++   * Translate a path from the host OS to the target's filesystem.
++   * For local targets, this is a no-op.
++   * For WSL targets, this converts Windows paths to Linux paths.
++   */
++  translatePath(hostPath: string): string;
++  /**
++   * Check if the target is available (e.g., WSL is installed and a distro exists).
++   */
++  isAvailable(): boolean;
++}
++
++// ── Helpers ────────────────────────────────────────────────────────────
++
++function resolveAppRoot(): string {
++  if (!app.isPackaged) {
++    // Development: resolve from the compiled desktop bundle back to the repo root.
++    return Path.resolve(__dirname, "../../..");
++  }
++  // Production: app.asar root
++  return app.getAppPath();
++}
++
++function resolveBackendEntry(): string {
++  return Path.join(resolveAppRoot(), "apps/server/dist/bin.mjs");
++}
++
++function resolveBackendCwd(): string {
++  if (!app.isPackaged) {
++    return resolveAppRoot();
++  }
++  return OS.homedir();
++}
++
++// ── LocalBackendTarget ─────────────────────────────────────────────────
++
++/**
++ * LocalBackendTarget — Spawns the server as a local child process.
++ * This wraps the existing behavior from main.ts startBackend().
++ */
++export class LocalBackendTarget implements BackendTarget {
++  readonly type = "local" as const;
++  readonly displayLabel = "Local";
++
++  ensureReady(): boolean {
++    return this.isAvailable();
++  }
++
++  spawn(
++    config: BackendBootstrapConfig,
++    options: {
++      readonly env: NodeJS.ProcessEnv;
++      readonly captureOutput: boolean;
++    },
++  ): BackendSpawnResult {
++    const backendEntry = resolveBackendEntry();
++
++    const child = ChildProcess.spawn(process.execPath, [backendEntry, "--bootstrap-fd", "3"], {
++      cwd: resolveBackendCwd(),
++      env: {
++        ...options.env,
++        ELECTRON_RUN_AS_NODE: "1",
++      },
++      stdio: options.captureOutput
++        ? ["ignore", "pipe", "pipe", "pipe"]
++        : ["ignore", "inherit", "inherit", "pipe"],
++    });
++
++    // Deliver bootstrap config via fd 3 pipe
++    const bootstrapStream = child.stdio[3];
++    let bootstrapDelivered = false;
++    if (bootstrapStream && "write" in bootstrapStream) {
++      bootstrapStream.write(`${JSON.stringify(config)}\n`);
++      bootstrapStream.end();
++      bootstrapDelivered = true;
++    }
++
++    return { child, bootstrapDelivered };
++  }
++
++  translatePath(hostPath: string): string {
++    return hostPath; // No-op for local target
++  }
++
++  isAvailable(): boolean {
++    const entry = resolveBackendEntry();
++    return FS.existsSync(entry);
++  }
++}
++
++/**
++ * Create the default backend target.
++ *
++ * Desktop bootstraps locally by default. Extra WSL runtimes are exposed as
++ * opt-in managed environments via Connections.
++ */
++export function createDefaultBackendTarget(): BackendTarget {
++  return new LocalBackendTarget();
++}
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index c5507c6f..017d8f7f 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -4,6 +4,11 @@ import * as FS from "node:fs";
+ import * as OS from "node:os";
+ import * as Path from "node:path";
+ 
++import {
++  createDefaultBackendTarget,
++  type BackendTarget,
++} from "./backendTarget.ts";
++
+ import {
+   app,
+   BrowserWindow,
+@@ -218,6 +223,7 @@ let restartTimer: ReturnType<typeof setTimeout> | null = null;
+ let isQuitting = false;
+ let desktopProtocolRegistered = false;
+ let aboutCommitHashCache: string | null | undefined;
++const backendTarget: BackendTarget = createDefaultBackendTarget();
+ let desktopLogSink: RotatingFileSink | null = null;
+ let backendLogSink: RotatingFileSink | null = null;
+ let restoreStdIoCapture: (() => void) | null = null;
+@@ -1380,38 +1386,29 @@ function startBackend(): void {
+   }
+ 
+   const captureBackendLogs = !isDevelopment;
+-  const child = ChildProcess.spawn(process.execPath, [backendEntry, "--bootstrap-fd", "3"], {
+-    cwd: resolveBackendCwd(),
+-    // In Electron main, process.execPath points to the Electron binary.
+-    // Run the child in Node mode so this backend process does not become a GUI app instance.
++  const bootstrapConfig = {
++    mode: "desktop" as const,
++    noBrowser: true,
++    port: backendPort,
++    t3Home: BASE_DIR,
++    host: backendBindHost,
++    desktopBootstrapToken: backendBootstrapToken,
++    ...(backendObservabilitySettings.otlpTracesUrl
++      ? { otlpTracesUrl: backendObservabilitySettings.otlpTracesUrl }
++      : {}),
++    ...(backendObservabilitySettings.otlpMetricsUrl
++      ? { otlpMetricsUrl: backendObservabilitySettings.otlpMetricsUrl }
++      : {}),
++  };
++  const spawnResult = backendTarget.spawn(bootstrapConfig, {
+     env: {
+       ...backendChildEnv(),
+       ELECTRON_RUN_AS_NODE: "1",
+     },
+-    stdio: captureBackendLogs
+-      ? ["ignore", "pipe", "pipe", "pipe"]
+-      : ["ignore", "inherit", "inherit", "pipe"],
++    captureOutput: captureBackendLogs,
+   });
+-  const bootstrapStream = child.stdio[3];
+-  if (bootstrapStream && "write" in bootstrapStream) {
+-    bootstrapStream.write(
+-      `${JSON.stringify({
+-        mode: "desktop",
+-        noBrowser: true,
+-        port: backendPort,
+-        t3Home: BASE_DIR,
+-        host: backendBindHost,
+-        desktopBootstrapToken: backendBootstrapToken,
+-        ...(backendObservabilitySettings.otlpTracesUrl
+-          ? { otlpTracesUrl: backendObservabilitySettings.otlpTracesUrl }
+-          : {}),
+-        ...(backendObservabilitySettings.otlpMetricsUrl
+-          ? { otlpMetricsUrl: backendObservabilitySettings.otlpMetricsUrl }
+-          : {}),
+-      })}\n`,
+-    );
+-    bootstrapStream.end();
+-  } else {
++  const child = spawnResult.child;
++  if (!spawnResult.bootstrapDelivered) {
+     child.kill("SIGTERM");
+     scheduleBackendRestart("missing desktop bootstrap pipe");
+     return;
+diff --git a/apps/desktop/src/wslBackendTarget.ts b/apps/desktop/src/wslBackendTarget.ts
+new file mode 100644
+index 00000000..e84a3171
+--- /dev/null
++++ b/apps/desktop/src/wslBackendTarget.ts
+@@ -0,0 +1,499 @@
++/**
++ * WslBackendTarget — Spawns the T3 Code server inside a WSL distro.
++ *
++ * Uses `wsl.exe` to start a Node.js process inside the Linux environment.
++ * Communication happens over localhost TCP (WSL2 shares host network stack).
++ *
++ * Prerequisites:
++ * - Windows 10/11 with WSL2 installed
++ * - At least one WSL distro configured
++ * - Node.js installed inside the WSL distro (system, nvm, fnm, etc.)
++ *
++ * @module wslBackendTarget
++ */
++import * as ChildProcess from "node:child_process";
++
++import type { BackendBootstrapConfig, BackendSpawnResult, BackendTarget } from "./backendTarget.ts";
++
++// ── WSL Helpers ────────────────────────────────────────────────────────
++
++/** Build distro args for wsl.exe */
++function distroArgs(distro?: string): string[] {
++  return distro ? ["-d", distro] : [];
++}
++
++/**
++ * Run a command inside WSL using execFileSync (no shell interpolation).
++ * Uses `--exec` to bypass the default shell (avoids variable expansion
++ * by zsh/bash login shells mangling arguments).
++ * Returns trimmed stdout, or undefined on failure.
++ */
++function wslExec(
++  args: string[],
++  options?: { distro?: string | undefined; timeout?: number | undefined },
++): string | undefined {
++  if (process.platform !== "win32") return undefined;
++  try {
++    const output = ChildProcess.execFileSync(
++      "wsl.exe",
++      [...distroArgs(options?.distro), "--exec", ...args],
++      {
++        encoding: "utf-8",
++        timeout: options?.timeout ?? 10000,
++        stdio: ["ignore", "pipe", "ignore"],
++      },
++    );
++    return output.trim();
++  } catch {
++    return undefined;
++  }
++}
++
++/**
++ * Run a command inside WSL, returning only the exit code (0 = success).
++ */
++function wslTest(
++  args: string[],
++  options?: { distro?: string | undefined; timeout?: number | undefined },
++): boolean {
++  if (process.platform !== "win32") return false;
++  try {
++    ChildProcess.execFileSync("wsl.exe", [...distroArgs(options?.distro), "--exec", ...args], {
++      stdio: "ignore",
++      timeout: options?.timeout ?? 10000,
++    });
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++function formatExecFileSyncError(error: unknown): string | undefined {
++  if (!(error instanceof Error)) {
++    return undefined;
++  }
++
++  const withStreams = error as Error & {
++    readonly stdout?: Buffer | string;
++    readonly stderr?: Buffer | string;
++  };
++  const stderr = withStreams.stderr?.toString().trim();
++  if (stderr && stderr.length > 0) {
++    return stderr;
++  }
++  const stdout = withStreams.stdout?.toString().trim();
++  if (stdout && stdout.length > 0) {
++    return stdout;
++  }
++  return error.message;
++}
++
++// ── Node.js Resolution ─────────────────────────────────────────────────
++
++/**
++ * Shell snippet that resolves node even when managed by nvm/fnm.
++ * Tries bare `node` first, then sources nvm if available.
++ * Used by both detection and spawn for consistency.
++ *
++ * The snippet is a static string — dynamic values (server entry,
++ * bootstrap JSON) are passed via `bash -c '...' bash "$1" "$2"` positional
++ * args to avoid shell-injection issues.
++ */
++const NODE_RESOLVE_PREAMBLE = [
++  "if ! command -v node >/dev/null 2>&1; then",
++  '  export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
++  '  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"',
++  // Try fnm
++  "  if ! command -v node >/dev/null 2>&1 && command -v fnm >/dev/null 2>&1; then",
++  '    eval "$(fnm env)"',
++  "  fi",
++  "fi",
++].join("\n");
++
++// ── WSL Detection ──────────────────────────────────────────────────────
++
++export interface WslDistro {
++  readonly name: string;
++  readonly isDefault: boolean;
++}
++
++/**
++ * Check if WSL is available on this system.
++ * Returns false on non-Windows or if wsl.exe is not found.
++ */
++export function isWslAvailable(): boolean {
++  if (process.platform !== "win32") return false;
++  try {
++    ChildProcess.execFileSync("wsl.exe", ["--status"], {
++      stdio: "ignore",
++      timeout: 5000,
++    });
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++/**
++ * List installed WSL distros.
++ */
++export function listWslDistros(): WslDistro[] {
++  if (process.platform !== "win32") return [];
++  try {
++    // wsl.exe --list --quiet outputs UTF-16LE with null bytes
++    const raw = ChildProcess.execFileSync("wsl.exe", ["--list", "--quiet"], {
++      timeout: 10000,
++      stdio: ["ignore", "pipe", "ignore"],
++    });
++    // Decode as UTF-16LE and strip null bytes / BOM
++    const output = raw
++      .toString("utf16le")
++      .replace(/^\uFEFF/, "")
++      .split("\0")
++      .join("");
++    const lines = output
++      .split(/\r?\n/)
++      .map((line) => line.trim())
++      .filter((line) => line.length > 0);
++
++    if (lines.length === 0) return [];
++
++    // First line from --list --quiet is the default distro
++    return lines.map((name, index) => ({
++      name,
++      isDefault: index === 0,
++    }));
++  } catch {
++    return [];
++  }
++}
++
++/**
++ * Get the default WSL distro name, or undefined if none available.
++ */
++export function getDefaultWslDistro(): string | undefined {
++  const distros = listWslDistros();
++  return distros.find((d) => d.isDefault)?.name ?? distros[0]?.name;
++}
++
++// ── Path Translation ───────────────────────────────────────────────────
++
++/**
++ * Convert a Windows path to a WSL/Linux path.
++ * Uses `wslpath` utility inside WSL for accurate translation.
++ * Falls back to manual conversion if wslpath fails.
++ */
++export function windowsToWslPath(windowsPath: string, distro?: string): string {
++  if (process.platform !== "win32") return windowsPath;
++  const result = wslExec(["wslpath", "-u", windowsPath], { distro, timeout: 5000 });
++  return result ?? manualWindowsToWslPath(windowsPath);
++}
++
++/**
++ * Convert a WSL/Linux path to a Windows UNC path.
++ */
++export function wslToWindowsPath(wslPath: string, distro?: string): string {
++  if (process.platform !== "win32") return wslPath;
++  const result = wslExec(["wslpath", "-w", wslPath], { distro, timeout: 5000 });
++  if (result) return result;
++  // Fallback: manual conversion (/home/user/... → \\wsl.localhost\distro\home\user\...)
++  const distroName = distro ?? "Ubuntu";
++  return `\\\\wsl.localhost\\${distroName}${wslPath.replace(/\//g, "\\")}`;
++}
++
++function manualWindowsToWslPath(windowsPath: string): string {
++  // C:\Users\foo\bar → /mnt/c/Users/foo/bar
++  const normalized = windowsPath.replace(/\\/g, "/");
++  const match = normalized.match(/^([A-Za-z]):(\/.*)/);
++  if (match && match[1] && match[2]) {
++    return `/mnt/${match[1].toLowerCase()}${match[2]}`;
++  }
++  // UNC path: \\wsl.localhost\Ubuntu\home\... → /home/...
++  const uncMatch = normalized.match(/^\/\/wsl\.localhost\/[^/]+(.+)/);
++  if (uncMatch && uncMatch[1]) {
++    return uncMatch[1];
++  }
++  return windowsPath;
++}
++
++// ── Server Installation ────────────────────────────────────────────────
++
++const WSL_SERVER_DIR = ".t3/server";
++const WSL_SERVER_FINGERPRINT_FILE = ".wsl-bundle-fingerprint";
++
++/**
++ * Check if the server is installed inside a WSL distro.
++ */
++export function isServerInstalledInWsl(distro?: string): boolean {
++  return wslTest(["bash", "-c", `test -f "$HOME/${WSL_SERVER_DIR}/apps/server/dist/bin.mjs"`], {
++    distro,
++    timeout: 5000,
++  });
++}
++
++function readInstalledWslServerFingerprint(distro?: string): string | undefined {
++  return wslExec(["bash", "-c", `cat "$HOME/${WSL_SERVER_DIR}/${WSL_SERVER_FINGERPRINT_FILE}"`], {
++    distro,
++    timeout: 5000,
++  });
++}
++
++/**
++ * Check if Node.js is available inside a WSL distro.
++ * Handles nvm / fnm managed installs by sourcing their init scripts.
++ */
++export function isNodeAvailableInWsl(distro?: string): boolean {
++  if (process.platform !== "win32") return false;
++  try {
++    ChildProcess.execFileSync(
++      "wsl.exe",
++      [...distroArgs(distro), "--exec", "bash", "-c", `${NODE_RESOLVE_PREAMBLE}\nnode --version`],
++      { stdio: "ignore", timeout: 10000 },
++    );
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++export function canReachNpmRegistryInWsl(distro?: string): boolean {
++  if (process.platform !== "win32") return false;
++  try {
++    ChildProcess.execFileSync(
++      "wsl.exe",
++      [
++        ...distroArgs(distro),
++        "--exec",
++        "bash",
++        "-c",
++        `${NODE_RESOLVE_PREAMBLE}\nexport npm_config_fetch_retries=0 npm_config_fetch_timeout=15000\nnpm ping --loglevel error >/dev/null`,
++      ],
++      {
++        stdio: ["ignore", "pipe", "pipe"],
++        timeout: 20000,
++      },
++    );
++    return true;
++  } catch (error) {
++    const detail = formatExecFileSyncError(error);
++    if (detail) {
++      console.error(
++        `[desktop] WSL npm registry check failed${distro ? ` for ${distro}` : ""}: ${detail}`,
++      );
++    }
++    return false;
++  }
++}
++
++/**
++ * Install the server bundle into a WSL distro's ~/.t3/server/ directory.
++ * Copies the built server dist from the Windows host into WSL.
++ * Returns true on success.
++ */
++export function installServerInWsl(hostServerDir: string, distro?: string): boolean {
++  if (process.platform !== "win32") return false;
++
++  if (!canReachNpmRegistryInWsl(distro)) {
++    return false;
++  }
++
++  const wslServerDir = `$HOME/${WSL_SERVER_DIR}`;
++  const wslHostPath = windowsToWslPath(hostServerDir, distro);
++
++  const script = [
++    "set -euo pipefail",
++    NODE_RESOLVE_PREAMBLE,
++    'src="$1"',
++    `target="${wslServerDir}"`,
++    `fingerprint_file="${wslServerDir}/${WSL_SERVER_FINGERPRINT_FILE}"`,
++    'fingerprint="$(cat "$src/.wsl-bundle-fingerprint")"',
++    'installed_fingerprint=""',
++    'if [ -f "$fingerprint_file" ]; then',
++    '  installed_fingerprint="$(cat "$fingerprint_file")"',
++    "fi",
++    'if [ "$installed_fingerprint" = "$fingerprint" ] && [ -f "$target/apps/server/dist/bin.mjs" ]; then',
++    "  exit 0",
++    "fi",
++    'tmp="${target}.tmp.$$"',
++    'prev="${target}.prev"',
++    'rm -rf "$tmp" "$prev"',
++    'mkdir -p "$tmp/apps/server"',
++    'cp -R "$src/apps/server/dist" "$tmp/apps/server/"',
++    'cp "$src/apps/server/package.json" "$tmp/apps/server/package.json"',
++    'cd "$tmp/apps/server"',
++    "export npm_config_fetch_retries=1 npm_config_fetch_timeout=30000",
++    "npm install --omit=dev --no-package-lock --no-audit --no-fund",
++    `printf '%s\n' "$fingerprint" > "$tmp/${WSL_SERVER_FINGERPRINT_FILE}"`,
++    'if [ -d "$target" ]; then',
++    '  mv "$target" "$prev"',
++    "fi",
++    'mv "$tmp" "$target"',
++    'rm -rf "$prev"',
++  ].join("\n");
++
++  try {
++    ChildProcess.execFileSync(
++      "wsl.exe",
++      [...distroArgs(distro), "--exec", "bash", "-c", script, "bash", wslHostPath],
++      {
++        stdio: ["ignore", "pipe", "pipe"],
++        timeout: 180000,
++      },
++    );
++    return isServerInstalledInWsl(distro);
++  } catch (error) {
++    const detail = formatExecFileSyncError(error);
++    if (detail) {
++      console.error(
++        `[desktop] Failed to install WSL server bundle${distro ? ` for ${distro}` : ""}: ${detail}`,
++      );
++    }
++    return false;
++  }
++}
++
++// ── WslBackendTarget ───────────────────────────────────────────────────
++
++export interface WslBackendTargetOptions {
++  /** WSL distro name (defaults to the default distro) */
++  readonly distro?: string;
++  /** Staged Windows-side server bundle that can be copied into WSL */
++  readonly installSourceRoot?: string;
++  /** Fingerprint for the staged server bundle */
++  readonly installFingerprint?: string;
++}
++
++/**
++ * WslBackendTarget — Spawns the server inside a WSL distro.
++ *
++ * Architecture:
++ * - Server runs as a Node.js process inside WSL
++ * - Communication via localhost TCP (WSL2 shares host network stack)
++ * - Bootstrap config passed via --bootstrap-json CLI arg (fd 3 pipe
++ *   doesn't work across wsl.exe boundary)
++ * - Node.js resolved via nvm/fnm if not on system PATH
++ * - Dynamic values passed as positional args to bash -c (no shell injection)
++ * - Path translation at the boundary via wslpath
++ */
++export class WslBackendTarget implements BackendTarget {
++  readonly type = "wsl" as const;
++  readonly distro: string | undefined;
++  readonly installSourceRoot: string | undefined;
++  readonly installFingerprint: string | undefined;
++
++  constructor(options?: WslBackendTargetOptions) {
++    this.distro = options?.distro;
++    this.installSourceRoot = options?.installSourceRoot;
++    this.installFingerprint = options?.installFingerprint;
++  }
++
++  get displayLabel(): string {
++    return this.distro ? `WSL (${this.distro})` : "WSL";
++  }
++
++  ensureReady(): boolean {
++    if (!isWslAvailable()) return false;
++
++    const distro = this.distro ?? getDefaultWslDistro();
++    if (!distro) return false;
++    if (!isNodeAvailableInWsl(distro)) return false;
++
++    const serverInstalled = isServerInstalledInWsl(distro);
++    if (serverInstalled) {
++      if (!this.installFingerprint) {
++        return true;
++      }
++      const installedFingerprint = readInstalledWslServerFingerprint(distro);
++      if (installedFingerprint === this.installFingerprint) {
++        return true;
++      }
++    }
++
++    if (!this.installSourceRoot) {
++      return false;
++    }
++
++    return installServerInWsl(this.installSourceRoot, distro);
++  }
++
++  spawn(
++    config: BackendBootstrapConfig,
++    options: {
++      readonly env: NodeJS.ProcessEnv;
++      readonly captureOutput: boolean;
++    },
++  ): BackendSpawnResult {
++    const serverEntryRelative = `${WSL_SERVER_DIR}/apps/server/dist/bin.mjs`;
++
++    // Translate t3Home to WSL path
++    const wslT3Home = windowsToWslPath(config.t3Home, this.distro);
++    const wslConfig: BackendBootstrapConfig = {
++      ...config,
++      t3Home: wslT3Home,
++    };
++
++    // fd 3 pipe doesn't work across wsl.exe — use --bootstrap-json instead.
++    // Keep the server entry path inside the bash script so `$HOME` expands in
++    // the WSL shell rather than being passed to Node as a literal string.
++    const bootstrapJson = JSON.stringify(wslConfig);
++
++    const child = ChildProcess.spawn(
++      "wsl.exe",
++      [
++        ...distroArgs(this.distro),
++        "--exec",
++        "bash",
++        "-c",
++        // $1 = bootstrapJson (passed as a positional arg below)
++        `${NODE_RESOLVE_PREAMBLE}\nexec node "$HOME/${serverEntryRelative}" --bootstrap-json "$1"`,
++        "bash", // $0
++        bootstrapJson,
++      ],
++      {
++        env: options.env,
++        windowsHide: true,
++        stdio: options.captureOutput
++          ? ["ignore", "pipe", "pipe"]
++          : ["ignore", "inherit", "inherit"],
++      },
++    );
++
++    return { child, bootstrapDelivered: true };
++  }
++
++  translatePath(hostPath: string): string {
++    return windowsToWslPath(hostPath, this.distro);
++  }
++
++  isAvailable(): boolean {
++    if (!isWslAvailable()) return false;
++    const distro = this.distro ?? getDefaultWslDistro();
++    if (!distro) return false;
++    if (!isNodeAvailableInWsl(distro)) return false;
++    if (!isServerInstalledInWsl(distro)) {
++      return false;
++    }
++    return this.installFingerprint
++      ? readInstalledWslServerFingerprint(distro) === this.installFingerprint
++      : true;
++  }
++}
++
++/**
++ * Detect if a folder path is inside WSL.
++ * WSL paths on Windows are UNC paths: \\wsl.localhost\DistroName\...
++ * or \\wsl$\DistroName\...
++ */
++export function isWslPath(folderPath: string): boolean {
++  const normalized = folderPath.toLowerCase().replace(/\\/g, "/");
++  return normalized.startsWith("//wsl.localhost/") || normalized.startsWith("//wsl$/");
++}
++
++/**
++ * Extract the distro name from a WSL UNC path.
++ */
++export function extractWslDistroFromPath(folderPath: string): string | undefined {
++  const normalized = folderPath.replace(/\\/g, "/");
++  const match = normalized.match(/^\/\/wsl(?:\.localhost|\$)\/([^/]+)/i);
++  return match?.[1];
++}
+diff --git a/apps/server/package.json b/apps/server/package.json
+index 13a8124c..adf2ab1e 100644
+--- a/apps/server/package.json
++++ b/apps/server/package.json
+@@ -29,6 +29,7 @@
+     "@effect/platform-bun": "catalog:",
+     "@effect/platform-node": "catalog:",
+     "@effect/sql-sqlite-bun": "catalog:",
++    "@github/copilot-sdk": "^0.3.0",
+     "@opencode-ai/sdk": "^1.3.15",
+     "@pierre/diffs": "^1.1.0-beta.16",
+     "effect": "catalog:",
+diff --git a/apps/server/src/cli-config.test.ts b/apps/server/src/cli-config.test.ts
+index 5adece73..41ffd45a 100644
+--- a/apps/server/src/cli-config.test.ts
++++ b/apps/server/src/cli-config.test.ts
+@@ -44,6 +44,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
+           devUrl: Option.none(),
+           noBrowser: Option.none(),
+           bootstrapFd: Option.none(),
++          bootstrapJson: Option.none(),
+           autoBootstrapProjectFromCwd: Option.none(),
+           logWebSocketEvents: Option.none(),
+         },
+@@ -106,6 +107,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
+           devUrl: Option.some(new URL("http://127.0.0.1:4173")),
+           noBrowser: Option.some(true),
+           bootstrapFd: Option.none(),
++          bootstrapJson: Option.none(),
+           autoBootstrapProjectFromCwd: Option.some(true),
+           logWebSocketEvents: Option.some(true),
+         },
+@@ -174,6 +176,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
+           devUrl: Option.some(new URL("http://127.0.0.1:4173")),
+           noBrowser: Option.some(false),
+           bootstrapFd: Option.none(),
++          bootstrapJson: Option.none(),
+           autoBootstrapProjectFromCwd: Option.some(false),
+           logWebSocketEvents: Option.some(false),
+         },
+@@ -244,6 +247,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
+           devUrl: Option.none(),
+           noBrowser: Option.none(),
+           bootstrapFd: Option.none(),
++          bootstrapJson: Option.none(),
+           autoBootstrapProjectFromCwd: Option.none(),
+           logWebSocketEvents: Option.none(),
+         },
+@@ -303,6 +307,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
+           devUrl: Option.some(new URL("http://127.0.0.1:5173")),
+           noBrowser: Option.none(),
+           bootstrapFd: Option.none(),
++          bootstrapJson: Option.none(),
+           autoBootstrapProjectFromCwd: Option.none(),
+           logWebSocketEvents: Option.none(),
+         },
+@@ -359,6 +364,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
+           devUrl: Option.some(new URL("http://127.0.0.1:4173")),
+           noBrowser: Option.none(),
+           bootstrapFd: Option.none(),
++          bootstrapJson: Option.none(),
+           autoBootstrapProjectFromCwd: Option.none(),
+           logWebSocketEvents: Option.none(),
+         },
+@@ -430,6 +436,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
+           devUrl: Option.none(),
+           noBrowser: Option.none(),
+           bootstrapFd: Option.none(),
++          bootstrapJson: Option.none(),
+           autoBootstrapProjectFromCwd: Option.none(),
+           logWebSocketEvents: Option.none(),
+         },
+@@ -483,6 +490,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
+           devUrl: Option.none(),
+           noBrowser: Option.none(),
+           bootstrapFd: Option.none(),
++          bootstrapJson: Option.none(),
+           autoBootstrapProjectFromCwd: Option.none(),
+           logWebSocketEvents: Option.none(),
+         },
+diff --git a/apps/server/src/cli.ts b/apps/server/src/cli.ts
+index 4fc23a1d..4e679bd7 100644
+--- a/apps/server/src/cli.ts
++++ b/apps/server/src/cli.ts
+@@ -113,6 +113,10 @@ const bootstrapFdFlag = Flag.integer("bootstrap-fd").pipe(
+   Flag.withDescription("Read one-time bootstrap secrets from the given file descriptor."),
+   Flag.optional,
+ );
++const bootstrapJsonFlag = Flag.string("bootstrap-json").pipe(
++  Flag.withDescription("Pass one-time bootstrap secrets as a JSON string."),
++  Flag.optional,
++);
+ const autoBootstrapProjectFromCwdFlag = Flag.boolean("auto-bootstrap-project-from-cwd").pipe(
+   Flag.withDescription(
+     "Create a project for the current working directory on startup when missing.",
+@@ -185,6 +189,7 @@ interface CliServerFlags {
+   readonly devUrl: Option.Option<URL>;
+   readonly noBrowser: Option.Option<boolean>;
+   readonly bootstrapFd: Option.Option<number>;
++  readonly bootstrapJson: Option.Option<string>;
+   readonly autoBootstrapProjectFromCwd: Option.Option<boolean>;
+   readonly logWebSocketEvents: Option.Option<boolean>;
+ }
+@@ -231,14 +236,18 @@ export const resolveServerConfig = (
+       devUrl: flags.devUrl ?? Option.none(),
+       noBrowser: flags.noBrowser ?? Option.none(),
+       bootstrapFd: flags.bootstrapFd ?? Option.none(),
++      bootstrapJson: flags.bootstrapJson ?? Option.none(),
+       autoBootstrapProjectFromCwd: flags.autoBootstrapProjectFromCwd ?? Option.none(),
+       logWebSocketEvents: flags.logWebSocketEvents ?? Option.none(),
+     } satisfies CliServerFlags;
+     const bootstrapFd = Option.getOrUndefined(normalizedFlags.bootstrapFd) ?? env.bootstrapFd;
++    const bootstrapJsonRaw = Option.getOrUndefined(normalizedFlags.bootstrapJson);
+     const bootstrapEnvelope =
+       bootstrapFd !== undefined
+         ? yield* readBootstrapEnvelope(BootstrapEnvelopeSchema, bootstrapFd)
+-        : Option.none();
++        : bootstrapJsonRaw !== undefined
++          ? Option.some(Schema.decodeUnknownSync(BootstrapEnvelopeSchema)(JSON.parse(bootstrapJsonRaw)))
++          : Option.none();
+     const bootstrap = Option.getOrUndefined(bootstrapEnvelope);
+ 
+     const mode: RuntimeMode = Option.getOrElse(
+@@ -384,6 +393,7 @@ const resolveCliAuthConfig = (
+       devUrl: flags.devUrl ?? Option.none(),
+       noBrowser: Option.none(),
+       bootstrapFd: Option.none(),
++      bootstrapJson: Option.none(),
+       autoBootstrapProjectFromCwd: Option.none(),
+       logWebSocketEvents: Option.none(),
+     },
+@@ -764,6 +774,7 @@ const sharedServerCommandFlags = {
+   devUrl: devUrlFlag,
+   noBrowser: noBrowserFlag,
+   bootstrapFd: bootstrapFdFlag,
++  bootstrapJson: bootstrapJsonFlag,
+   autoBootstrapProjectFromCwd: autoBootstrapProjectFromCwdFlag,
+   logWebSocketEvents: logWebSocketEventsFlag,
+ } as const;
+diff --git a/apps/server/src/provider/Drivers/CopilotDriver.ts b/apps/server/src/provider/Drivers/CopilotDriver.ts
+new file mode 100644
+index 00000000..fc771b45
+--- /dev/null
++++ b/apps/server/src/provider/Drivers/CopilotDriver.ts
+@@ -0,0 +1,142 @@
++/**
++ * CopilotDriver — `ProviderDriver` for the GitHub Copilot SDK runtime.
++ *
++ * Follows the same pattern as ClaudeDriver: a plain value whose `create()`
++ * returns one `ProviderInstance` bundling `snapshot` / `adapter` /
++ * `textGeneration` closures captured over the per-instance `CopilotSettings`.
++ *
++ * @module CopilotDriver
++ */
++import { Effect, Schema, Stream } from "effect";
++import {
++  CopilotSettings,
++  ProviderDriverKind,
++  type ProviderInstanceId,
++  type ServerProvider,
++} from "@t3tools/contracts";
++
++import { ServerConfig } from "../../config.ts";
++import { ServerSettingsService } from "../../serverSettings.ts";
++import { makeCopilotTextGeneration } from "../../textGeneration/CopilotTextGeneration.ts";
++import { makeCopilotAdapter, type CopilotAdapterLiveOptions } from "../Layers/CopilotAdapter.ts";
++import { checkCopilotProviderStatus } from "../Layers/CopilotProvider.ts";
++import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
++import { ProviderDriverError } from "../Errors.ts";
++import {
++  type ProviderDriver,
++  type ProviderInstance,
++  defaultProviderContinuationIdentity,
++} from "../ProviderDriver.ts";
++import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
++import { buildServerProvider } from "../providerSnapshot.ts";
++import type { ServerProviderDraft } from "../providerSnapshot.ts";
++
++const DRIVER_KIND = ProviderDriverKind.make("copilot");
++const SNAPSHOT_REFRESH_INTERVAL = "120 seconds";
++
++const COPILOT_PRESENTATION = {
++  displayName: "GitHub Copilot",
++} as const;
++
++const makePendingCopilotProvider = (): ServerProviderDraft =>
++  buildServerProvider({
++    presentation: COPILOT_PRESENTATION,
++    enabled: false,
++    checkedAt: new Date().toISOString(),
++    models: [],
++    probe: {
++      installed: false,
++      version: null,
++      status: "error",
++      auth: { status: "unknown" },
++      message: "Checking GitHub Copilot availability...",
++    },
++  });
++
++const withInstanceIdentity =
++  (input: {
++    readonly instanceId: ProviderInstance["instanceId"];
++    readonly displayName: string | undefined;
++    readonly accentColor: string | undefined;
++    readonly continuationGroupKey: string;
++  }) =>
++  (snapshot: ServerProviderDraft): ServerProvider => ({
++    ...snapshot,
++    instanceId: input.instanceId,
++    driver: DRIVER_KIND,
++    ...(input.displayName ? { displayName: input.displayName } : {}),
++    ...(input.accentColor ? { accentColor: input.accentColor } : {}),
++    continuation: { groupKey: input.continuationGroupKey },
++  });
++
++export type CopilotDriverEnv = ServerConfig | ServerSettingsService | ProviderEventLoggers;
++
++export const CopilotDriver: ProviderDriver<CopilotSettings, CopilotDriverEnv> = {
++  driverKind: DRIVER_KIND,
++  metadata: {
++    displayName: "GitHub Copilot",
++    supportsMultipleInstances: false,
++  },
++  configSchema: CopilotSettings,
++  defaultConfig: (): CopilotSettings => Schema.decodeSync(CopilotSettings)({}),
++  create: ({ instanceId, displayName, accentColor, enabled, config }) =>
++    Effect.gen(function* () {
++      const eventLoggers = yield* ProviderEventLoggers;
++      const fallbackContinuationIdentity = defaultProviderContinuationIdentity({
++        driverKind: DRIVER_KIND,
++        instanceId,
++      });
++      const effectiveConfig = { ...config, enabled } satisfies CopilotSettings;
++      const continuationGroupKey = `copilot:${instanceId}`;
++      const stampIdentity = withInstanceIdentity({
++        instanceId,
++        displayName,
++        accentColor,
++        continuationGroupKey,
++      });
++
++      const adapterOptions: CopilotAdapterLiveOptions = {
++        ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
++      };
++      const adapter = yield* makeCopilotAdapter(adapterOptions);
++      const textGeneration = yield* makeCopilotTextGeneration;
++
++      const checkProvider = checkCopilotProviderStatus(effectiveConfig).pipe(
++        Effect.map(stampIdentity),
++      );
++
++      const snapshot = yield* makeManagedServerProvider<CopilotSettings>({
++        getSettings: Effect.succeed(effectiveConfig),
++        streamSettings: Stream.never,
++        haveSettingsChanged: () => false,
++        initialSnapshot: () => stampIdentity(makePendingCopilotProvider()),
++        checkProvider,
++        refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
++      }).pipe(
++        Effect.mapError(
++          (cause) =>
++            new ProviderDriverError({
++              driver: DRIVER_KIND,
++              instanceId,
++              detail: `Failed to build Copilot snapshot: ${cause.message ?? String(cause)}`,
++              cause,
++            }),
++        ),
++      );
++
++      return {
++        instanceId,
++        driverKind: DRIVER_KIND,
++        continuationIdentity: {
++          ...fallbackContinuationIdentity,
++          continuationKey: continuationGroupKey,
++        },
++        displayName,
++        accentColor,
++        enabled,
++        snapshot,
++        adapter,
++        textGeneration,
++      } satisfies ProviderInstance;
++    }),
++};
+diff --git a/apps/server/src/provider/Layers/CopilotAdapter.ts b/apps/server/src/provider/Layers/CopilotAdapter.ts
+new file mode 100644
+index 00000000..6b61ceba
+--- /dev/null
++++ b/apps/server/src/provider/Layers/CopilotAdapter.ts
+@@ -0,0 +1,2269 @@
++import { randomUUID } from "node:crypto";
++
++import {
++  type ModelSelection,
++  type ServerProviderSkill,
++  EventId,
++  type ProviderApprovalDecision,
++  ProviderDriverKind,
++  ProviderItemId,
++  type ProviderRuntimeEvent,
++  type ProviderSession,
++  type ProviderTurnStartResult,
++  type ProviderUserInputAnswers,
++  RuntimeItemId,
++  RuntimeRequestId,
++  RuntimeTaskId,
++  ThreadId,
++  TurnId,
++} from "@t3tools/contracts";
++import {
++  CopilotClient,
++  type CopilotClientOptions,
++  type ModelInfo,
++  type PermissionRequest,
++  type PermissionRequestResult,
++  type SessionEvent,
++} from "@github/copilot-sdk";
++
++type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
++import { Effect, Layer, Queue, Stream } from "effect";
++
++import { resolveAttachmentPath } from "../../attachmentStore.ts";
++import { ServerConfig } from "../../config.ts";
++import { ServerSettingsService } from "../../serverSettings.ts";
++import {
++  ProviderAdapterProcessError,
++  ProviderAdapterRequestError,
++  ProviderAdapterSessionNotFoundError,
++  ProviderAdapterValidationError,
++} from "../Errors.ts";
++import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
++import {
++  assistantUsageFields,
++  beginCopilotTurn,
++  clearTurnTracking,
++  completionTurnRefs,
++  isCopilotTurnTerminalEvent,
++  markTurnAwaitingCompletion,
++  recordTurnUsage,
++  type CopilotTurnTrackingState,
++} from "./copilotTurnTracking.ts";
++import { loadCopilotMcpServers } from "./copilotMcpServers.ts";
++import { normalizeCopilotCliPathOverride, resolveBundledCopilotCliPath } from "./copilotCliPath.ts";
++import { CopilotAdapter, type CopilotAdapterShape } from "../Services/CopilotAdapter.ts";
++import type {
++  ProviderThreadSnapshot,
++  ProviderThreadTurnSnapshot,
++} from "../Services/ProviderAdapter.ts";
++
++const PROVIDER = ProviderDriverKind.make("copilot");
++const USER_INPUT_QUESTION_ID = "answer";
++const USER_INPUT_QUESTION_HEADER = "Question";
++
++export interface CopilotAdapterLiveOptions {
++  readonly nativeEventLogger?: EventNdjsonLogger;
++  readonly clientFactory?: (options: CopilotClientOptions) => CopilotClientHandle;
++}
++
++interface PendingApprovalRequest {
++  readonly request: CopilotPermissionRequest;
++  readonly requestType:
++    | "command_execution_approval"
++    | "file_change_approval"
++    | "file_read_approval"
++    | "dynamic_tool_call"
++    | "unknown";
++  readonly turnId: TurnId | undefined;
++  readonly resolve: (result: CopilotPermissionRequestResult) => void;
++}
++
++interface CopilotUserInputRequest {
++  readonly question: string;
++  readonly choices?: ReadonlyArray<string>;
++  readonly allowFreeform?: boolean;
++}
++
++interface CopilotUserInputResponse {
++  readonly answer: string;
++  readonly wasFreeform: boolean;
++}
++
++interface PendingUserInputRequest {
++  readonly request: CopilotUserInputRequest;
++  readonly turnId: TurnId | undefined;
++  readonly resolve: (result: CopilotUserInputResponse) => void;
++}
++
++interface CopilotSessionConfiguration {
++  readonly model: string | undefined;
++  readonly reasoningEffort: ReasoningEffort | undefined;
++}
++
++// @github/copilot-sdk@0.3.0 uses the newer permission decision protocol at runtime,
++// but the package root still exports legacy PermissionRequest/PermissionRequestResult types.
++// Keep a local structural view until the SDK's public typings catch up.
++type CopilotPermissionRequest =
++  | {
++      readonly kind: "shell";
++      readonly toolCallId?: string;
++      readonly canOfferSessionApproval: boolean;
++      readonly commands: ReadonlyArray<{
++        readonly identifier: string;
++        readonly readOnly: boolean;
++      }>;
++      readonly fullCommandText: string;
++      readonly hasWriteFileRedirection: boolean;
++      readonly intention: string;
++      readonly possiblePaths: ReadonlyArray<string>;
++      readonly possibleUrls: ReadonlyArray<{
++        readonly url: string;
++      }>;
++      readonly warning?: string;
++    }
++  | {
++      readonly kind: "write";
++      readonly toolCallId?: string;
++      readonly canOfferSessionApproval: boolean;
++      readonly diff: string;
++      readonly fileName: string;
++      readonly intention: string;
++      readonly newFileContents?: string;
++    }
++  | {
++      readonly kind: "read";
++      readonly toolCallId?: string;
++      readonly intention: string;
++      readonly path: string;
++    }
++  | {
++      readonly kind: "mcp";
++      readonly toolCallId?: string;
++      readonly args?: Record<string, unknown>;
++      readonly readOnly: boolean;
++      readonly serverName: string;
++      readonly toolName: string;
++      readonly toolTitle: string;
++    }
++  | {
++      readonly kind: "url";
++      readonly toolCallId?: string;
++      readonly intention: string;
++      readonly url: string;
++    }
++  | {
++      readonly kind: "memory";
++      readonly toolCallId?: string;
++      readonly action?: "store" | "vote";
++      readonly citations?: string;
++      readonly direction?: "upvote" | "downvote";
++      readonly fact: string;
++      readonly reason?: string;
++      readonly subject?: string;
++    }
++  | {
++      readonly kind: "custom-tool";
++      readonly toolCallId?: string;
++      readonly args?: Record<string, unknown>;
++      readonly toolDescription: string;
++      readonly toolName: string;
++    }
++  | {
++      readonly kind: "hook";
++      readonly toolCallId?: string;
++      readonly hookMessage?: string;
++      readonly toolArgs?: Record<string, unknown>;
++      readonly toolName: string;
++    };
++
++type CopilotPermissionSessionApproval =
++  | {
++      readonly kind: "commands";
++      readonly commandIdentifiers: ReadonlyArray<string>;
++    }
++  | {
++      readonly kind: "read";
++    }
++  | {
++      readonly kind: "write";
++    }
++  | {
++      readonly kind: "mcp";
++      readonly serverName: string;
++      readonly toolName: string | null;
++    }
++  | {
++      readonly kind: "memory";
++    }
++  | {
++      readonly kind: "custom-tool";
++      readonly toolName: string;
++    };
++
++type CopilotPermissionRequestResult =
++  | {
++      readonly kind: "approve-once";
++    }
++  | {
++      readonly kind: "approve-for-session";
++      readonly approval: CopilotPermissionSessionApproval;
++    }
++  | {
++      readonly kind: "reject";
++      readonly feedback?: string;
++    }
++  | {
++      readonly kind: "user-not-available";
++    }
++  | {
++      readonly kind: "no-result";
++    };
++
++function toSdkPermissionRequestResult(
++  result: CopilotPermissionRequestResult,
++): PermissionRequestResult {
++  return result as PermissionRequestResult;
++}
++
++interface ActiveCopilotSession extends CopilotTurnTrackingState {
++  readonly client: CopilotClientHandle;
++  session: CopilotSessionHandle;
++  readonly threadId: ThreadId;
++  readonly createdAt: string;
++  readonly runtimeMode: ProviderSession["runtimeMode"];
++  cwd: string | undefined;
++  configDir: string | undefined;
++  model: string | undefined;
++  reasoningEffort: ReasoningEffort | undefined;
++  interactionMode: "default" | "plan" | undefined;
++  updatedAt: string;
++  turnSentAt: string | undefined;
++  lastError: string | undefined;
++  toolTitlesByCallId: Map<string, string>;
++  pendingApprovalResolvers: Map<string, PendingApprovalRequest>;
++  pendingUserInputResolvers: Map<string, PendingUserInputRequest>;
++  unsubscribe: () => void;
++}
++
++// ── Copilot Skill Discovery ─────────────────────────────────────────────
++
++/**
++ * Module-level store for discovered Copilot skills.
++ * Populated from `session.skills_loaded` events and `rpc.skills.list()`.
++ * Read by `CopilotProvider.ts` during snapshot enrichment.
++ * Merged by name to support multi-session and event/RPC race tolerance.
++ */
++let discoveredCopilotSkills: ReadonlyArray<ServerProviderSkill> = [];
++
++/** Get the most recently discovered skills (read by CopilotProvider). */
++export function getCopilotDiscoveredSkills(): ReadonlyArray<ServerProviderSkill> {
++  return discoveredCopilotSkills;
++}
++
++/** Expected response shape from rpc.skills.list() */
++interface CopilotSkillsListResponse {
++  skills: ReadonlyArray<{
++    name: string;
++    description?: string;
++    source?: string;
++    userInvocable?: boolean;
++    enabled?: boolean;
++    path?: string;
++  }>;
++}
++
++/** Typed RPC interface for skills operations */
++interface CopilotSkillsRpc {
++  skills?: {
++    list?: () => Promise<CopilotSkillsListResponse>;
++    enable?: (params: { name: string }) => Promise<unknown>;
++    disable?: (params: { name: string }) => Promise<unknown>;
++    reload?: () => Promise<unknown>;
++  };
++}
++
++/**
++ * Merge incoming skills with existing discovered skills by name.
++ * Incoming skills replace existing ones with the same name; skills
++ * from other sessions/sources are preserved.
++ */
++function mergeDiscoveredSkills(incoming: ReadonlyArray<ServerProviderSkill>): void {
++  const byName = new Map(discoveredCopilotSkills.map((s) => [s.name, s]));
++  for (const skill of incoming) {
++    byName.set(skill.name, skill);
++  }
++  discoveredCopilotSkills = Array.from(byName.values());
++}
++
++function mapSdkSkillToServerProviderSkill(skill: {
++  name: string;
++  description?: string;
++  source?: string;
++  userInvocable?: boolean;
++  enabled?: boolean;
++  path?: string;
++}): ServerProviderSkill | null {
++  // Filter out non-user-invocable skills — they shouldn't appear in $ autocomplete
++  if (skill.userInvocable === false) {
++    return null;
++  }
++  const name = skill.name.trim();
++  const displayName = name.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
++  return {
++    name,
++    path: skill.path?.trim() || name,
++    enabled: skill.enabled !== false,
++    ...(skill.description
++      ? { description: skill.description, shortDescription: skill.description }
++      : {}),
++    ...(skill.source ? { scope: skill.source } : {}),
++    ...(displayName !== name ? { displayName } : {}),
++  };
++}
++
++type CopilotSessionHandle = Awaited<ReturnType<CopilotClient["createSession"]>>;
++
++type CopilotClientHandle = Pick<
++  CopilotClient,
++  "start" | "listModels" | "createSession" | "resumeSession" | "stop"
++>;
++
++function toMessage(cause: unknown, fallback: string): string {
++  if (cause instanceof Error && cause.message.length > 0) {
++    return cause.message;
++  }
++  return fallback;
++}
++
++function makeEventId(prefix: string) {
++  return EventId.make(`${prefix}-${randomUUID()}`);
++}
++
++function toTurnId(value: string | undefined): TurnId | undefined {
++  if (!value || value.trim().length === 0) return undefined;
++  return TurnId.make(value);
++}
++
++function toRuntimeItemId(value: string | undefined) {
++  if (!value || value.trim().length === 0) return undefined;
++  return RuntimeItemId.make(value);
++}
++
++function toProviderItemId(value: string | undefined) {
++  if (!value || value.trim().length === 0) return undefined;
++  return ProviderItemId.make(value);
++}
++
++function toRuntimeRequestId(value: string | undefined) {
++  if (!value || value.trim().length === 0) return undefined;
++  return RuntimeRequestId.make(value);
++}
++
++function toRuntimeTaskId(value: string | undefined) {
++  if (!value || value.trim().length === 0) return undefined;
++  return RuntimeTaskId.make(value);
++}
++
++function asRecord(value: unknown): Record<string, unknown> | undefined {
++  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
++  return value as Record<string, unknown>;
++}
++
++function normalizeString(value: unknown): string | undefined {
++  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
++}
++
++function trimToUndefined(value: string | undefined): string | undefined {
++  if (!value) return undefined;
++  const trimmed = value.trim();
++  return trimmed.length > 0 ? trimmed : undefined;
++}
++
++function toNonNegativeInt(value: number | undefined) {
++  return value === undefined || !Number.isFinite(value)
++    ? undefined
++    : Math.max(0, Math.floor(value));
++}
++
++function toPositiveInt(value: number | undefined) {
++  const normalized = toNonNegativeInt(value);
++  return normalized && normalized > 0 ? normalized : undefined;
++}
++
++function mapSessionUsageInfo(usage: Extract<SessionEvent, { type: "session.usage_info" }>["data"]) {
++  return {
++    usedTokens: toNonNegativeInt(usage.currentTokens) ?? 0,
++    ...(toNonNegativeInt(usage.currentTokens) !== undefined
++      ? { totalProcessedTokens: toNonNegativeInt(usage.currentTokens) }
++      : {}),
++    ...(toPositiveInt(usage.tokenLimit) ? { maxTokens: toPositiveInt(usage.tokenLimit) } : {}),
++  };
++}
++
++function mapAssistantUsage(usage: Extract<SessionEvent, { type: "assistant.usage" }>["data"]) {
++  const inputTokens = toNonNegativeInt(usage.inputTokens);
++  const outputTokens = toNonNegativeInt(usage.outputTokens);
++  const cachedInputTokens = toNonNegativeInt(usage.cacheReadTokens);
++  const durationMs = toNonNegativeInt(usage.duration);
++  const usedTokens = (inputTokens ?? 0) + (outputTokens ?? 0) + (cachedInputTokens ?? 0);
++  return {
++    usedTokens,
++    totalProcessedTokens: usedTokens,
++    ...(inputTokens !== undefined ? { inputTokens } : {}),
++    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
++    ...(outputTokens !== undefined ? { outputTokens } : {}),
++    ...(usedTokens > 0 ? { lastUsedTokens: usedTokens } : {}),
++    ...(inputTokens !== undefined ? { lastInputTokens: inputTokens } : {}),
++    ...(cachedInputTokens !== undefined ? { lastCachedInputTokens: cachedInputTokens } : {}),
++    ...(outputTokens !== undefined ? { lastOutputTokens: outputTokens } : {}),
++    ...(durationMs !== undefined ? { durationMs } : {}),
++  };
++}
++
++function mapSupportedModelsById(models: ReadonlyArray<ModelInfo>) {
++  return new Map(models.map((model) => [model.id, model]));
++}
++
++function getCopilotReasoningEffortFromSelection(
++  modelSelection: ModelSelection | undefined,
++): ReasoningEffort | undefined {
++  if (!modelSelection) {
++    return undefined;
++  }
++  const effortEntry = modelSelection.options?.find(
++    (o: { id: string; value: string | boolean }) => o.id === "effort" || o.id === "reasoningEffort",
++  );
++  const reasoningEffort = typeof effortEntry?.value === "string" ? normalizeString(effortEntry.value) : undefined;
++  return reasoningEffort === "low" ||
++    reasoningEffort === "medium" ||
++    reasoningEffort === "high" ||
++    reasoningEffort === "xhigh"
++    ? reasoningEffort
++    : undefined;
++}
++
++function extractResumeSessionId(resumeCursor: unknown): string | undefined {
++  if (typeof resumeCursor === "string" && resumeCursor.trim().length > 0) {
++    return resumeCursor.trim();
++  }
++  const record = asRecord(resumeCursor);
++  const sessionId = normalizeString(record?.sessionId);
++  return sessionId;
++}
++
++function toCopilotSessionMode(interactionMode: "default" | "plan"): "interactive" | "plan" {
++  return interactionMode === "plan" ? "plan" : "interactive";
++}
++
++function toInteractionMode(mode: string): "default" | "plan" {
++  return mode === "plan" ? "plan" : "default";
++}
++
++function approvalDecisionToPermissionResult(
++  decision: ProviderApprovalDecision,
++  request?: CopilotPermissionRequest,
++): CopilotPermissionRequestResult {
++  const sessionApprovalFromPermissionRequest = () => {
++    if (!request) {
++      return undefined;
++    }
++
++    switch (request.kind) {
++      case "shell": {
++        if (!request.canOfferSessionApproval) {
++          return undefined;
++        }
++        const commandIdentifiers = request.commands
++          .map((command) => trimToUndefined(command.identifier))
++          .filter((identifier): identifier is string => identifier !== undefined);
++        return commandIdentifiers.length > 0
++          ? {
++              kind: "approve-for-session" as const,
++              approval: {
++                kind: "commands" as const,
++                commandIdentifiers,
++              },
++            }
++          : undefined;
++      }
++      case "write":
++        return request.canOfferSessionApproval
++          ? {
++              kind: "approve-for-session" as const,
++              approval: { kind: "write" as const },
++            }
++          : undefined;
++      case "read":
++        return {
++          kind: "approve-for-session" as const,
++          approval: { kind: "read" as const },
++        };
++      case "mcp":
++        return {
++          kind: "approve-for-session" as const,
++          approval: {
++            kind: "mcp" as const,
++            serverName: request.serverName,
++            toolName: request.toolName,
++          },
++        };
++      case "memory":
++        return {
++          kind: "approve-for-session" as const,
++          approval: { kind: "memory" as const },
++        };
++      case "custom-tool":
++        return {
++          kind: "approve-for-session" as const,
++          approval: {
++            kind: "custom-tool" as const,
++            toolName: request.toolName,
++          },
++        };
++      default:
++        return undefined;
++    }
++  };
++
++  switch (decision) {
++    case "accept":
++      return { kind: "approve-once" };
++    case "acceptForSession":
++      return sessionApprovalFromPermissionRequest() ?? { kind: "approve-once" };
++    case "decline":
++    case "cancel":
++    default:
++      return { kind: "reject" };
++  }
++}
++
++function requestTypeFromPermissionRequest(request: CopilotPermissionRequest) {
++  switch (request.kind) {
++    case "shell":
++      return "command_execution_approval" as const;
++    case "write":
++      return "file_change_approval" as const;
++    case "read":
++      return "file_read_approval" as const;
++    case "mcp":
++    case "custom-tool":
++      return "dynamic_tool_call" as const;
++    default:
++      return "unknown" as const;
++  }
++}
++
++function requestDetailFromPermissionRequest(request: CopilotPermissionRequest): string | undefined {
++  switch (request.kind) {
++    case "shell":
++      return trimToUndefined(String(request.fullCommandText ?? ""));
++    case "write":
++      return trimToUndefined(String(request.fileName ?? request.intention ?? ""));
++    case "read":
++      return trimToUndefined(String(request.path ?? request.intention ?? ""));
++    case "mcp":
++      return trimToUndefined(String(request.toolTitle ?? request.toolName ?? ""));
++    case "url":
++      return trimToUndefined(String(request.url ?? request.intention ?? ""));
++    case "custom-tool":
++      return trimToUndefined(String(request.toolName ?? request.toolDescription ?? ""));
++    default:
++      return undefined;
++  }
++}
++
++function itemTypeFromToolEvent(event: Extract<SessionEvent, { type: "tool.execution_start" }>) {
++  return event.data.mcpToolName ? "mcp_tool_call" : "dynamic_tool_call";
++}
++
++function toolDetailFromEvent(data: {
++  readonly toolName?: string;
++  readonly mcpToolName?: string;
++  readonly mcpServerName?: string;
++}) {
++  return trimToUndefined(
++    [data.mcpServerName, data.mcpToolName ?? data.toolName].filter(Boolean).join(" / "),
++  );
++}
++
++function withRefs(input: {
++  readonly threadId: ThreadId;
++  readonly eventId: EventId;
++  readonly createdAt: string;
++  readonly turnId: TurnId | undefined;
++  readonly providerTurnId?: TurnId | undefined;
++  readonly itemId: string | undefined;
++  readonly requestId: string | undefined;
++  readonly rawMethod: string | undefined;
++  readonly rawPayload: unknown;
++}): Omit<ProviderRuntimeEvent, "type" | "payload"> {
++  const providerTurnId = input.providerTurnId ?? input.turnId;
++  const providerItemId = toProviderItemId(input.itemId);
++  const providerRequestId = trimToUndefined(input.requestId);
++  return {
++    eventId: input.eventId,
++    provider: PROVIDER,
++    threadId: input.threadId,
++    createdAt: input.createdAt,
++    ...(input.turnId ? { turnId: input.turnId } : {}),
++    ...(input.itemId ? { itemId: toRuntimeItemId(input.itemId) } : {}),
++    ...(input.requestId ? { requestId: toRuntimeRequestId(input.requestId) } : {}),
++    ...(providerTurnId || providerItemId || providerRequestId
++      ? {
++          providerRefs: {
++            ...(providerTurnId ? { providerTurnId } : {}),
++            ...(providerItemId ? { providerItemId } : {}),
++            ...(providerRequestId ? { providerRequestId } : {}),
++          },
++        }
++      : {}),
++    raw: {
++      source: input.rawMethod ? "copilot.sdk.session-event" : "copilot.sdk.synthetic",
++      ...(input.rawMethod ? { method: input.rawMethod } : {}),
++      payload: input.rawPayload,
++    },
++  };
++}
++
++function mapHistoryToTurns(
++  threadId: ThreadId,
++  events: ReadonlyArray<SessionEvent>,
++): ProviderThreadSnapshot {
++  const turns: Array<ProviderThreadTurnSnapshot> = [];
++  let current: { id: TurnId; items: Array<unknown> } | undefined;
++
++  for (const event of events) {
++    if (event.type === "assistant.turn_start") {
++      current = {
++        id: TurnId.make(event.data.turnId),
++        items: [event],
++      };
++      turns.push(current);
++      continue;
++    }
++
++    if (!current) {
++      continue;
++    }
++
++    current.items.push(event);
++    if (isCopilotTurnTerminalEvent(event)) {
++      current = undefined;
++    }
++  }
++
++  return {
++    threadId,
++    turns: turns.map((turn) => ({
++      id: turn.id,
++      items: turn.items,
++    })),
++  };
++}
++
++function makeSyntheticEvent(
++  threadId: ThreadId,
++  type: ProviderRuntimeEvent["type"],
++  payload: ProviderRuntimeEvent["payload"],
++  extra?: {
++    readonly turnId?: TurnId | undefined;
++    readonly itemId?: string | undefined;
++    readonly requestId?: string | undefined;
++  },
++): ProviderRuntimeEvent {
++  return {
++    ...withRefs({
++      threadId,
++      eventId: makeEventId("copilot-synthetic"),
++      createdAt: new Date().toISOString(),
++      turnId: extra?.turnId,
++      itemId: extra?.itemId,
++      requestId: extra?.requestId,
++      rawMethod: undefined,
++      rawPayload: payload,
++    }),
++    type,
++    payload,
++  } as ProviderRuntimeEvent;
++}
++
++function resolveUserInputAnswer(
++  pending: PendingUserInputRequest,
++  answers: ProviderUserInputAnswers,
++): CopilotUserInputResponse {
++  const direct = answers[USER_INPUT_QUESTION_ID];
++  const candidate =
++    typeof direct === "string"
++      ? direct
++      : Object.values(answers).find((value): value is string => typeof value === "string");
++  const answer = trimToUndefined(candidate) ?? "";
++  return {
++    answer,
++    wasFreeform: !pending.request.choices?.includes(answer),
++  };
++}
++
++function createSessionRecord(input: {
++  readonly threadId: ThreadId;
++  readonly client: CopilotClientHandle;
++  readonly session: CopilotSessionHandle;
++  readonly runtimeMode: ProviderSession["runtimeMode"];
++  readonly pendingApprovalResolvers: Map<string, PendingApprovalRequest>;
++  readonly pendingUserInputResolvers: Map<string, PendingUserInputRequest>;
++  readonly cwd: string | undefined;
++  readonly configDir: string | undefined;
++  readonly model: string | undefined;
++  readonly reasoningEffort: ReasoningEffort | undefined;
++}): ActiveCopilotSession {
++  return {
++    client: input.client,
++    session: input.session,
++    threadId: input.threadId,
++    createdAt: new Date().toISOString(),
++    runtimeMode: input.runtimeMode,
++    cwd: input.cwd,
++    configDir: input.configDir,
++    model: input.model,
++    reasoningEffort: input.reasoningEffort,
++    interactionMode: undefined,
++    updatedAt: new Date().toISOString(),
++    turnSentAt: undefined,
++    lastError: undefined,
++    currentTurnId: undefined,
++    currentProviderTurnId: undefined,
++    pendingCompletionTurnId: undefined,
++    pendingCompletionProviderTurnId: undefined,
++    pendingTurnIds: [],
++    pendingTurnUsage: undefined,
++    toolTitlesByCallId: new Map(),
++    pendingApprovalResolvers: input.pendingApprovalResolvers,
++    pendingUserInputResolvers: input.pendingUserInputResolvers,
++    unsubscribe: () => undefined,
++  };
++}
++
++export const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
++  Effect.gen(function* () {
++    const serverConfig = yield* ServerConfig;
++    const serverSettings = yield* ServerSettingsService;
++    const nativeEventLogger = options?.nativeEventLogger;
++    const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
++    const sessions = new Map<ThreadId, ActiveCopilotSession>();
++    const services = yield* Effect.context<never>();
++    const runPromise = Effect.runPromiseWith(services);
++
++    const emitRuntimeEvents = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
++      runPromise(Queue.offerAll(runtimeEventQueue, events).pipe(Effect.asVoid)).catch(
++        () => undefined,
++      );
++
++    const writeNativeEvent = (threadId: ThreadId, event: SessionEvent) => {
++      if (!nativeEventLogger) return Promise.resolve();
++      return runPromise(nativeEventLogger.write(event, threadId)).catch(() => undefined);
++    };
++
++    const currentSyntheticTurnId = (record: ActiveCopilotSession) =>
++      completionTurnRefs(record).turnId ?? record.currentTurnId;
++
++    const syncInteractionMode = (
++      record: ActiveCopilotSession,
++      interactionMode: "default" | "plan",
++    ) => {
++      if (record.interactionMode === interactionMode) {
++        return Effect.void;
++      }
++      return Effect.tryPromise({
++        try: async () => {
++          await record.session.rpc.mode.set({
++            mode: toCopilotSessionMode(interactionMode),
++          });
++          record.interactionMode = interactionMode;
++        },
++        catch: (cause) =>
++          new ProviderAdapterRequestError({
++            provider: PROVIDER,
++            method: "session.mode.set",
++            detail: toMessage(cause, "Failed to switch GitHub Copilot interaction mode."),
++            cause,
++          }),
++      });
++    };
++
++    const emitLatestProposedPlan = (record: ActiveCopilotSession) =>
++      Effect.tryPromise({
++        try: () => record.session.rpc.plan.read(),
++        catch: (cause) =>
++          new ProviderAdapterRequestError({
++            provider: PROVIDER,
++            method: "session.plan.read",
++            detail: toMessage(cause, "Failed to read the GitHub Copilot plan."),
++            cause,
++          }),
++      }).pipe(
++        Effect.flatMap((plan) => {
++          const planMarkdown = trimToUndefined(plan.content ?? undefined);
++          if (!plan.exists || !planMarkdown) {
++            return Effect.void;
++          }
++          return Queue.offer(
++            runtimeEventQueue,
++            makeSyntheticEvent(
++              record.threadId,
++              "turn.proposed.completed",
++              {
++                planMarkdown,
++              },
++              { turnId: currentSyntheticTurnId(record) },
++            ),
++          ).pipe(Effect.asVoid);
++        }),
++      );
++
++    const mapSessionEvent = (
++      record: ActiveCopilotSession,
++      event: SessionEvent,
++    ): ReadonlyArray<ProviderRuntimeEvent> => {
++      const currentTurnId = record.currentTurnId;
++      const currentProviderTurnId = record.currentProviderTurnId;
++      const resolveOrchestrationTurnId = (
++        providerTurnId: TurnId | undefined,
++      ): TurnId | undefined => {
++        if (providerTurnId && currentProviderTurnId && providerTurnId === currentProviderTurnId) {
++          return currentTurnId ?? providerTurnId;
++        }
++        return currentTurnId ?? providerTurnId;
++      };
++      const base = (input?: {
++        readonly turnId?: TurnId | undefined;
++        readonly providerTurnId?: TurnId | undefined;
++        readonly itemId?: string | undefined;
++        readonly requestId?: string | undefined;
++      }) =>
++        withRefs({
++          threadId: record.threadId,
++          eventId: EventId.make(event.id),
++          createdAt: event.timestamp,
++          turnId: resolveOrchestrationTurnId(input?.providerTurnId ?? input?.turnId),
++          providerTurnId: input?.providerTurnId ?? input?.turnId,
++          itemId: input?.itemId,
++          requestId: input?.requestId,
++          rawMethod: event.type,
++          rawPayload: event,
++        });
++
++      switch (event.type) {
++        case "session.start":
++        case "session.resume":
++          return [
++            {
++              ...base(),
++              type: "session.started",
++              payload: {
++                message:
++                  event.type === "session.resume"
++                    ? "Resumed GitHub Copilot session"
++                    : "Started GitHub Copilot session",
++                resume: event.data,
++              },
++            },
++            {
++              ...base(),
++              type: "thread.started",
++              payload: {
++                providerThreadId:
++                  event.type === "session.start" ? event.data.sessionId : record.session.sessionId,
++              },
++            },
++          ];
++        case "session.info":
++          return [
++            {
++              ...base(),
++              type: "runtime.warning",
++              payload: {
++                message: event.data.message,
++                detail: event.data,
++              },
++            },
++          ];
++        case "session.warning":
++          return [
++            {
++              ...base(),
++              type: "runtime.warning",
++              payload: {
++                message: event.data.message,
++                detail: event.data,
++              },
++            },
++          ];
++        case "session.error":
++          return [
++            {
++              ...base(),
++              type: "runtime.error",
++              payload: {
++                message: event.data.message,
++                class: "provider_error",
++                detail: event.data,
++              },
++            },
++            {
++              ...base(),
++              type: "session.state.changed",
++              payload: {
++                state: "error",
++                reason: "session.error",
++                detail: event.data,
++              },
++            },
++          ];
++        case "session.idle": {
++          const idleCompletionRefs = completionTurnRefs(record);
++          const idleCompletionEvents: ProviderRuntimeEvent[] =
++            idleCompletionRefs.turnId || idleCompletionRefs.providerTurnId
++              ? [
++                  {
++                    ...base(idleCompletionRefs),
++                    type: "turn.completed",
++                    payload: {
++                      state: "completed",
++                      ...assistantUsageFields(record.pendingTurnUsage),
++                    },
++                  } satisfies ProviderRuntimeEvent,
++                ]
++              : [];
++          return [
++            ...idleCompletionEvents,
++            {
++              ...base(),
++              type: "session.state.changed",
++              payload: {
++                state: "ready",
++                reason: "session.idle",
++              },
++            },
++            {
++              ...base(),
++              type: "thread.state.changed",
++              payload: {
++                state: "idle",
++                detail: event.data,
++              },
++            },
++          ];
++        }
++        case "session.title_changed": {
++          const titleMetadata = asRecord(event.data);
++          return [
++            {
++              ...base(),
++              type: "thread.metadata.updated",
++              payload: {
++                name: event.data.title,
++                ...(titleMetadata ? { metadata: titleMetadata } : {}),
++              },
++            },
++          ];
++        }
++        case "session.model_change":
++          return [
++            {
++              ...base(),
++              type: "model.rerouted",
++              payload: {
++                fromModel: event.data.previousModel ?? "unknown",
++                toModel: event.data.newModel,
++                reason: "session.model_change",
++              },
++            },
++          ];
++        case "session.plan_changed":
++          return [
++            {
++              ...base(),
++              type: "turn.plan.updated",
++              payload: {
++                explanation: `Plan ${event.data.operation}d`,
++                plan: [],
++              },
++            },
++          ];
++        case "session.workspace_file_changed":
++          return [
++            {
++              ...base(),
++              type: "files.persisted",
++              payload: {
++                files: [
++                  {
++                    filename: event.data.path,
++                    fileId: event.data.path,
++                  },
++                ],
++              },
++            },
++          ];
++        case "session.context_changed": {
++          const sessionContextMetadata = asRecord(event.data);
++          return [
++            {
++              ...base(),
++              type: "thread.metadata.updated",
++              payload: sessionContextMetadata ? { metadata: sessionContextMetadata } : {},
++            },
++          ];
++        }
++        case "session.usage_info":
++          return [
++            {
++              ...base(),
++              type: "thread.token-usage.updated",
++              payload: {
++                usage: mapSessionUsageInfo(event.data),
++              },
++            },
++          ];
++        case "session.task_complete":
++          return [
++            {
++              ...base(),
++              type: "task.completed",
++              payload: {
++                taskId: toRuntimeTaskId(record.threadId) ?? RuntimeTaskId.make(record.threadId),
++                status: "completed",
++                ...(trimToUndefined(event.data.summary) ? { summary: event.data.summary } : {}),
++              },
++            },
++          ];
++        case "assistant.turn_start": {
++          // Use the timestamp from when sendTurn() was called (turnSentAt),
++          // not the SDK's event.timestamp, to ensure the "Worked for X" timer
++          // in the UI reflects actual elapsed time since the user sent their message.
++          const turnStartBase = (input?: {
++            readonly turnId?: TurnId | undefined;
++            readonly providerTurnId?: TurnId | undefined;
++          }) =>
++            withRefs({
++              threadId: record.threadId,
++              eventId: EventId.make(event.id),
++              createdAt: record.turnSentAt ?? event.timestamp,
++              turnId: resolveOrchestrationTurnId(input?.providerTurnId ?? input?.turnId),
++              providerTurnId: input?.providerTurnId ?? input?.turnId,
++              itemId: undefined,
++              requestId: undefined,
++              rawMethod: event.type,
++              rawPayload: event,
++            });
++          return [
++            {
++              ...turnStartBase({ providerTurnId: toTurnId(event.data.turnId) }),
++              type: "turn.started",
++              payload: record.model ? { model: record.model } : {},
++            },
++            {
++              ...turnStartBase({ providerTurnId: toTurnId(event.data.turnId) }),
++              type: "session.state.changed",
++              payload: {
++                state: "running",
++                reason: "assistant.turn_start",
++              },
++            },
++          ];
++        }
++        case "assistant.reasoning":
++          return [
++            {
++              ...base({ itemId: event.data.reasoningId }),
++              type: "item.completed",
++              payload: {
++                itemType: "reasoning",
++                status: "completed",
++                title: "Reasoning",
++                detail: trimToUndefined(event.data.content),
++                data: event.data,
++              },
++            },
++          ];
++        case "assistant.reasoning_delta":
++          return [
++            {
++              ...base({ itemId: event.data.reasoningId }),
++              type: "content.delta",
++              payload: {
++                streamKind: "reasoning_text",
++                delta: event.data.deltaContent,
++              },
++            },
++          ];
++        case "assistant.message":
++          return [
++            {
++              ...base({ itemId: event.data.messageId }),
++              type: "item.completed",
++              payload: {
++                itemType: "assistant_message",
++                status: "completed",
++                title: "Assistant message",
++                detail: trimToUndefined(event.data.content),
++                data: event.data,
++              },
++            },
++          ];
++        case "assistant.message_delta":
++          return [
++            {
++              ...base({ itemId: event.data.messageId }),
++              type: "content.delta",
++              payload: {
++                streamKind: "assistant_text",
++                delta: event.data.deltaContent,
++              },
++            },
++          ];
++        case "assistant.turn_end":
++          return [];
++        case "assistant.usage": {
++          const completionRefs = completionTurnRefs(record);
++          const completionBase =
++            completionRefs.turnId || completionRefs.providerTurnId ? base(completionRefs) : base();
++          return [
++            {
++              ...completionBase,
++              type: "thread.token-usage.updated",
++              payload: {
++                usage: mapAssistantUsage(event.data),
++              },
++            },
++          ];
++        }
++        case "abort": {
++          const abortedTurnRefs = completionTurnRefs(record);
++          const abortedBase =
++            abortedTurnRefs.turnId || abortedTurnRefs.providerTurnId
++              ? base(abortedTurnRefs)
++              : base();
++          return [
++            {
++              ...abortedBase,
++              type: "turn.aborted",
++              payload: {
++                reason: event.data.reason,
++              },
++            },
++          ];
++        }
++        case "tool.execution_start":
++          return [
++            {
++              ...base({ itemId: event.data.toolCallId }),
++              type: "item.started",
++              payload: {
++                itemType: itemTypeFromToolEvent(event),
++                status: "inProgress",
++                title: event.data.toolName ?? "Tool call",
++                ...(toolDetailFromEvent(event.data)
++                  ? { detail: toolDetailFromEvent(event.data) }
++                  : {}),
++                data: event.data,
++              },
++            },
++          ];
++        case "tool.execution_progress":
++          return [
++            {
++              ...base({ itemId: event.data.toolCallId }),
++              type: "tool.progress",
++              payload: {
++                toolUseId: event.data.toolCallId,
++                summary: event.data.progressMessage,
++              },
++            },
++          ];
++        case "tool.execution_partial_result":
++          return [
++            {
++              ...base({ itemId: event.data.toolCallId }),
++              type: "tool.progress",
++              payload: {
++                toolUseId: event.data.toolCallId,
++                summary: event.data.partialOutput,
++              },
++            },
++          ];
++        case "tool.execution_complete": {
++          const contents = event.data.result?.contents ?? [];
++          const hasTerminal = contents.some(
++            (content: { type: string }) => content.type === "terminal",
++          );
++          // Extract image content blocks as separate image_view events
++          const imageEvents: ProviderRuntimeEvent[] = contents
++            .filter((content: { type: string }) => content.type === "image")
++            .map(
++              (content: {
++                type: string;
++                data?: string;
++                mimeType?: string;
++                description?: string;
++              }) => ({
++                ...base({ itemId: event.data.toolCallId }),
++                type: "item.completed" as const,
++                payload: {
++                  itemType: "image_view" as const,
++                  status: "completed" as const,
++                  title: trimToUndefined(content.description) ?? "Image",
++                  data: {
++                    base64: content.data,
++                    mimeType: content.mimeType,
++                    description: content.description,
++                  },
++                },
++              }),
++            );
++          // Extract audio content blocks
++          const audioEvents: ProviderRuntimeEvent[] = contents
++            .filter((content: { type: string }) => content.type === "audio")
++            .map((content: { type: string; data?: string; mimeType?: string }) => ({
++              ...base({ itemId: event.data.toolCallId }),
++              type: "item.completed" as const,
++              payload: {
++                itemType: "dynamic_tool_call" as const,
++                status: "completed" as const,
++                title: "Audio",
++                data: {
++                  contentType: "audio",
++                  base64: content.data,
++                  mimeType: content.mimeType,
++                },
++              },
++            }));
++          // Extract file/resource_link content blocks
++          const fileEvents: ProviderRuntimeEvent[] = contents
++            .filter(
++              (content: { type: string }) =>
++                content.type === "resource_link" || content.type === "resource",
++            )
++            .map(
++              (content: {
++                type: string;
++                name?: string;
++                uri?: string;
++                title?: string;
++                description?: string;
++              }) => ({
++                ...base({ itemId: event.data.toolCallId }),
++                type: "item.completed" as const,
++                payload: {
++                  itemType: "dynamic_tool_call" as const,
++                  status: "completed" as const,
++                  title: content.name ?? content.title ?? content.uri ?? "Resource",
++                  detail: trimToUndefined(content.description),
++                  data: content,
++                },
++              }),
++            );
++          return [
++            {
++              ...base({ itemId: event.data.toolCallId }),
++              type: "item.completed",
++              payload: {
++                itemType: hasTerminal ? "command_execution" : "dynamic_tool_call",
++                status: event.data.success ? "completed" : "failed",
++                title: record.toolTitlesByCallId.get(event.data.toolCallId) ?? "Tool call",
++                ...(trimToUndefined(event.data.result?.content)
++                  ? { detail: event.data.result?.content }
++                  : {}),
++                data: event.data,
++              },
++            },
++            ...imageEvents,
++            ...audioEvents,
++            ...fileEvents,
++            ...(trimToUndefined(event.data.result?.content)
++              ? [
++                  {
++                    ...base({ itemId: event.data.toolCallId }),
++                    type: "tool.summary" as const,
++                    payload: {
++                      summary: event.data.result?.content ?? "",
++                      precedingToolUseIds: [event.data.toolCallId],
++                    },
++                  },
++                ]
++              : []),
++          ];
++        }
++        case "skill.invoked":
++          return [
++            {
++              ...base(),
++              type: "task.progress",
++              payload: {
++                taskId: toRuntimeTaskId(event.data.name) ?? RuntimeTaskId.make(event.data.name),
++                description: `Invoked skill ${event.data.name}`,
++              },
++            },
++          ];
++        case "subagent.started":
++          return [
++            {
++              ...base(),
++              type: "task.started",
++              payload: {
++                taskId:
++                  toRuntimeTaskId(event.data.toolCallId) ??
++                  RuntimeTaskId.make(event.data.toolCallId),
++                description: trimToUndefined(event.data.agentDescription),
++                taskType: "subagent",
++              },
++            },
++          ];
++        case "subagent.completed":
++          return [
++            {
++              ...base(),
++              type: "task.completed",
++              payload: {
++                taskId:
++                  toRuntimeTaskId(event.data.toolCallId) ??
++                  RuntimeTaskId.make(event.data.toolCallId),
++                status: "completed",
++                ...(trimToUndefined(event.data.agentDisplayName)
++                  ? { summary: event.data.agentDisplayName }
++                  : {}),
++              },
++            },
++          ];
++        case "subagent.failed":
++          return [
++            {
++              ...base(),
++              type: "task.completed",
++              payload: {
++                taskId:
++                  toRuntimeTaskId(event.data.toolCallId) ??
++                  RuntimeTaskId.make(event.data.toolCallId),
++                status: "failed",
++                ...(trimToUndefined(event.data.error) ? { summary: event.data.error } : {}),
++              },
++            },
++          ];
++        case "session.compaction_start":
++          return [
++            {
++              ...base(),
++              type: "session.state.changed",
++              payload: {
++                state: "waiting",
++                reason: "session.compaction_start",
++                detail: event.data,
++              },
++            },
++          ];
++        case "session.compaction_complete": {
++          const compactionEvents: ProviderRuntimeEvent[] = [
++            {
++              ...base(),
++              type: "thread.state.changed",
++              payload: {
++                state: "compacted",
++                detail: event.data,
++              },
++            },
++          ];
++          if (event.data.success === false && trimToUndefined(event.data.error)) {
++            compactionEvents.push({
++              ...base(),
++              type: "runtime.warning",
++              payload: {
++                message: `Context compaction failed: ${event.data.error}`,
++                detail: event.data,
++              },
++            });
++          }
++          return compactionEvents;
++        }
++        case "session.truncation":
++          return [
++            {
++              ...base(),
++              type: "runtime.warning",
++              payload: {
++                message: `Context truncated: ${event.data.tokensRemovedDuringTruncation} tokens removed (${event.data.messagesRemovedDuringTruncation} messages), ${event.data.postTruncationTokensInMessages}/${event.data.tokenLimit} tokens remaining.`,
++                detail: event.data,
++              },
++            },
++          ];
++        case "session.skills_loaded": {
++          const skills = (event.data.skills ?? [])
++            .map(mapSdkSkillToServerProviderSkill)
++            .filter((s): s is ServerProviderSkill => s !== null);
++          mergeDiscoveredSkills(skills);
++          return [];
++        }
++        case "exit_plan_mode.requested":
++          return [
++            {
++              ...base({ turnId: currentSyntheticTurnId(record) }),
++              type: "turn.proposed.completed",
++              payload: {
++                planMarkdown: event.data.planContent ?? event.data.summary ?? "",
++              },
++            },
++          ];
++        case "exit_plan_mode.completed":
++          return [];
++        case "system.notification": {
++          const kind = event.data.kind;
++          if (kind.type === "agent_completed") {
++            return [
++              {
++                ...base(),
++                type: "task.completed",
++                payload: {
++                  taskId: toRuntimeTaskId(kind.agentId) ?? RuntimeTaskId.make(kind.agentId),
++                  status: kind.status === "failed" ? "failed" : "completed",
++                  ...(trimToUndefined(kind.description) ? { summary: kind.description } : {}),
++                },
++              },
++            ];
++          }
++          if (kind.type === "shell_completed" || kind.type === "shell_detached_completed") {
++            return [
++              {
++                ...base(),
++                type: "task.completed",
++                payload: {
++                  taskId: toRuntimeTaskId(kind.shellId) ?? RuntimeTaskId.make(kind.shellId),
++                  status: "completed",
++                  ...(trimToUndefined(kind.description) ? { summary: kind.description } : {}),
++                },
++              },
++            ];
++          }
++          // agent_idle and unknown kinds — surface as info
++          return [
++            {
++              ...base(),
++              type: "runtime.warning",
++              payload: {
++                message: event.data.content.replace(/<\/?system_notification>/g, "").trim(),
++                detail: event.data,
++              },
++            },
++          ];
++        }
++        case "system.message":
++          return [];
++        case "command.execute":
++          return [
++            {
++              ...base({ requestId: event.data.requestId }),
++              type: "runtime.warning",
++              payload: {
++                message: `Command: ${event.data.command}`,
++                detail: event.data,
++              },
++            },
++          ];
++        case "command.completed":
++          return [];
++        case "command.queued":
++          return [
++            {
++              ...base({ requestId: event.data.requestId }),
++              type: "runtime.warning",
++              payload: {
++                message: `Queued command: ${event.data.command}`,
++                detail: event.data,
++              },
++            },
++          ];
++        default:
++          return [];
++      }
++    };
++
++    const createInteractionHandlers = (
++      threadId: ThreadId,
++      getCurrentTurnId: () => TurnId | undefined,
++      getRuntimeMode: () => ProviderSession["runtimeMode"],
++      getInteractionMode: () => "default" | "plan" | undefined,
++      pendingApprovalResolvers: Map<string, PendingApprovalRequest>,
++      pendingUserInputResolvers: Map<string, PendingUserInputRequest>,
++    ) => {
++      const onPermissionRequest = (request: PermissionRequest) => {
++        const permissionRequest = request as CopilotPermissionRequest;
++        // Plan mode: trust the SDK's mode.set("plan") to guide the agent via
++        // system prompt. Do NOT hard-block tools — the SDK and VS Code don't
++        // enforce plan mode at the permission level either. If the agent tries
++        // tools in plan mode, let the normal permission flow handle it:
++        // - full-access: auto-approve (agent self-corrects via system prompt)
++        // - supervised: show dialog to user (user decides)
++        //
++        // Previous approach silently rejected shell/write in plan mode,
++        // causing the agent to stop without feedback. See case study
++        // 2026-04-26-fresh-branch-reconciliation.md.
++
++        return getRuntimeMode() === "full-access"
++          ? Promise.resolve(toSdkPermissionRequestResult({ kind: "approve-once" }))
++          : new Promise<PermissionRequestResult>((resolve) => {
++              const requestId = `copilot-approval-${randomUUID()}`;
++              const turnId = getCurrentTurnId();
++              pendingApprovalResolvers.set(requestId, {
++                request: permissionRequest,
++                requestType: requestTypeFromPermissionRequest(permissionRequest),
++                turnId,
++                resolve: (result) => resolve(toSdkPermissionRequestResult(result)),
++              });
++              void emitRuntimeEvents([
++                makeSyntheticEvent(
++                  threadId,
++                  "request.opened",
++                  {
++                    requestType: requestTypeFromPermissionRequest(permissionRequest),
++                    ...(requestDetailFromPermissionRequest(permissionRequest)
++                      ? { detail: requestDetailFromPermissionRequest(permissionRequest) }
++                      : {}),
++                    args: permissionRequest,
++                  },
++                  { requestId, turnId },
++                ),
++              ]);
++            });
++      };
++
++      const onUserInputRequest = (request: CopilotUserInputRequest) =>
++        new Promise<CopilotUserInputResponse>((resolve) => {
++          const requestId = `copilot-user-input-${randomUUID()}`;
++          const turnId = getCurrentTurnId();
++          pendingUserInputResolvers.set(requestId, {
++            request,
++            turnId,
++            resolve,
++          });
++          void emitRuntimeEvents([
++            makeSyntheticEvent(
++              threadId,
++              "user-input.requested",
++              {
++                questions: [
++                  {
++                    id: USER_INPUT_QUESTION_ID,
++                    header: USER_INPUT_QUESTION_HEADER,
++                    question: request.question,
++                    options: (request.choices ?? []).map((choice: string) => ({
++                      label: choice,
++                      description: choice,
++                    })),
++                  },
++                ],
++              },
++              { requestId, turnId },
++            ),
++          ]);
++        });
++
++      return {
++        onPermissionRequest,
++        onUserInputRequest,
++      };
++    };
++
++    const validateSessionConfiguration = (input: {
++      readonly client: CopilotClientHandle;
++      readonly threadId: ThreadId;
++      readonly model: string | undefined;
++      readonly reasoningEffort: ReasoningEffort | undefined;
++    }) =>
++      Effect.gen(function* () {
++        if (!input.model && !input.reasoningEffort) {
++          return;
++        }
++
++        yield* Effect.tryPromise({
++          try: () => input.client.start(),
++          catch: (cause) =>
++            new ProviderAdapterProcessError({
++              provider: PROVIDER,
++              threadId: input.threadId,
++              detail: toMessage(cause, "Failed to start GitHub Copilot client."),
++              cause,
++            }),
++        });
++
++        const supportedModels = mapSupportedModelsById(
++          yield* Effect.tryPromise({
++            try: () => input.client.listModels(),
++            catch: (cause) =>
++              new ProviderAdapterProcessError({
++                provider: PROVIDER,
++                threadId: input.threadId,
++                detail: toMessage(cause, "Failed to load GitHub Copilot model metadata."),
++                cause,
++              }),
++          }),
++        );
++        const selectedModel = input.model ? supportedModels.get(input.model) : undefined;
++
++        if (input.model && !selectedModel) {
++          return yield* new ProviderAdapterValidationError({
++            provider: PROVIDER,
++            operation: "session.model",
++            issue: `GitHub Copilot model '${input.model}' is not available in the current Copilot runtime.`,
++          });
++        }
++
++        if (!input.reasoningEffort) {
++          return;
++        }
++
++        if (!selectedModel) {
++          return yield* new ProviderAdapterValidationError({
++            provider: PROVIDER,
++            operation: "session.reasoningEffort",
++            issue:
++              "GitHub Copilot reasoning effort requires an explicit supported model selection.",
++          });
++        }
++
++        const supportedReasoningEfforts = selectedModel.supportedReasoningEfforts ?? [];
++        if (supportedReasoningEfforts.length === 0) {
++          return yield* new ProviderAdapterValidationError({
++            provider: PROVIDER,
++            operation: "session.reasoningEffort",
++            issue: `GitHub Copilot model '${selectedModel.id}' does not support reasoning effort configuration.`,
++          });
++        }
++
++        if (!supportedReasoningEfforts.includes(input.reasoningEffort)) {
++          return yield* new ProviderAdapterValidationError({
++            provider: PROVIDER,
++            operation: "session.reasoningEffort",
++            issue: `GitHub Copilot model '${selectedModel.id}' does not support reasoning effort '${input.reasoningEffort}'.`,
++          });
++        }
++      });
++
++    const reconfigureSession = (
++      record: ActiveCopilotSession,
++      input: {
++        readonly model: string | undefined;
++        readonly reasoningEffort: ReasoningEffort | undefined;
++      },
++    ) =>
++      Effect.tryPromise({
++        try: async () => {
++          const sessionId = record.session.sessionId;
++          const previousSession = record.session;
++          const previousUnsubscribe = record.unsubscribe;
++          previousUnsubscribe();
++          await previousSession.destroy();
++
++          const handlers = createInteractionHandlers(
++            record.threadId,
++            () => record.currentTurnId,
++            () => record.runtimeMode,
++            () => record.interactionMode,
++            record.pendingApprovalResolvers,
++            record.pendingUserInputResolvers,
++          );
++          const nextSession = await record.client.resumeSession(sessionId, {
++            ...handlers,
++            ...(input.model ? { model: input.model } : {}),
++            ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
++            ...(record.cwd ? { workingDirectory: record.cwd } : {}),
++            ...(record.configDir ? { configDir: record.configDir } : {}),
++            enableConfigDiscovery: true,
++            streaming: true,
++          });
++
++          record.session = nextSession;
++          record.model = input.model;
++          record.reasoningEffort = input.reasoningEffort;
++          record.interactionMode = undefined;
++          record.updatedAt = new Date().toISOString();
++          record.unsubscribe = nextSession.on((event) => {
++            handleSessionEvent(record, event);
++          });
++        },
++        catch: (cause) =>
++          new ProviderAdapterRequestError({
++            provider: PROVIDER,
++            method: "session.reconfigure",
++            detail: toMessage(cause, "Failed to reconfigure GitHub Copilot session."),
++            cause,
++          }),
++      });
++
++    const handleSessionEvent = (record: ActiveCopilotSession, event: SessionEvent) => {
++      record.updatedAt = event.timestamp;
++      if (event.type === "assistant.turn_start") {
++        beginCopilotTurn(record, TurnId.make(event.data.turnId));
++      }
++      if (event.type === "assistant.usage") {
++        recordTurnUsage(record, event.data);
++      }
++      if (event.type === "session.error") {
++        record.lastError = event.data.message;
++      }
++      if (event.type === "session.model_change") {
++        record.model = event.data.newModel;
++      }
++      if (event.type === "session.mode_changed") {
++        record.interactionMode = toInteractionMode(event.data.newMode);
++      }
++      if (event.type === "tool.execution_start" && trimToUndefined(event.data.toolName)) {
++        record.toolTitlesByCallId.set(event.data.toolCallId, trimToUndefined(event.data.toolName)!);
++      }
++
++      void writeNativeEvent(record.threadId, event);
++      const runtimeEvents = mapSessionEvent(record, event);
++      if (runtimeEvents.length > 0) {
++        void emitRuntimeEvents(runtimeEvents);
++      }
++      if (event.type === "session.plan_changed" && event.data.operation !== "delete") {
++        void runPromise(emitLatestProposedPlan(record)).catch((cause) => {
++          void emitRuntimeEvents([
++            makeSyntheticEvent(
++              record.threadId,
++              "runtime.warning",
++              {
++                message: "Failed to read GitHub Copilot plan.",
++                detail: toMessage(cause, "Failed to read GitHub Copilot plan."),
++              },
++              { turnId: currentSyntheticTurnId(record) },
++            ),
++          ]);
++        });
++      }
++      if (event.type === "tool.execution_complete") {
++        record.toolTitlesByCallId.delete(event.data.toolCallId);
++      }
++      if (event.type === "assistant.turn_end") {
++        markTurnAwaitingCompletion(record);
++      }
++      if (event.type === "abort" || event.type === "session.idle") {
++        clearTurnTracking(record);
++        record.turnSentAt = undefined;
++      }
++    };
++
++    const getSessionRecord = (threadId: ThreadId) => {
++      const record = sessions.get(threadId);
++      if (!record) {
++        return Effect.fail(
++          new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId }),
++        );
++      }
++      return Effect.succeed(record);
++    };
++
++    const stopRecord = async (record: ActiveCopilotSession) => {
++      record.unsubscribe();
++      try {
++        await record.session.destroy();
++      } catch {
++        // best effort
++      }
++      try {
++        await record.client.stop();
++      } catch {
++        // best effort
++      }
++      for (const pending of record.pendingApprovalResolvers.values()) {
++        pending.resolve({ kind: "user-not-available" });
++      }
++      for (const pending of record.pendingUserInputResolvers.values()) {
++        pending.resolve({ answer: "", wasFreeform: true });
++      }
++      sessions.delete(record.threadId);
++    };
++
++    const startSession: CopilotAdapterShape["startSession"] = (input) =>
++      Effect.gen(function* () {
++        const copilotSettings = yield* serverSettings.getSettings.pipe(
++          Effect.map((settings) => settings.providers.copilot),
++          Effect.mapError(
++            (cause) =>
++              new ProviderAdapterProcessError({
++                provider: PROVIDER,
++                threadId: input.threadId,
++                detail: toMessage(cause, "Failed to load GitHub Copilot settings."),
++                cause,
++              }),
++          ),
++        );
++        const requestedModelSelection = input.modelSelection ?? undefined;
++        const sessionConfiguration: CopilotSessionConfiguration = {
++          model: requestedModelSelection?.model,
++          reasoningEffort: getCopilotReasoningEffortFromSelection(requestedModelSelection),
++        };
++        if (input.provider !== undefined && input.provider !== PROVIDER) {
++          return yield* new ProviderAdapterValidationError({
++            provider: PROVIDER,
++            operation: "startSession",
++            issue: `Expected provider '${PROVIDER}', received '${input.provider}'.`,
++          });
++        }
++
++        const existing = sessions.get(input.threadId);
++        if (existing) {
++          return {
++            provider: PROVIDER,
++            status: "ready",
++            runtimeMode: existing.runtimeMode,
++            ...(existing.cwd ? { cwd: existing.cwd } : {}),
++            ...(existing.model ? { model: existing.model } : {}),
++            threadId: input.threadId,
++            resumeCursor: existing.session.sessionId,
++            createdAt: existing.createdAt,
++            updatedAt: existing.updatedAt,
++            ...(existing.lastError ? { lastError: existing.lastError } : {}),
++          } satisfies ProviderSession;
++        }
++
++        const cliPath =
++          normalizeCopilotCliPathOverride(copilotSettings.binaryPath) ??
++          resolveBundledCopilotCliPath();
++        const configDir = undefined;
++        const mcpServers = yield* Effect.tryPromise({
++          try: () => loadCopilotMcpServers(configDir),
++          catch: (cause) =>
++            new ProviderAdapterProcessError({
++              provider: PROVIDER,
++              threadId: input.threadId,
++              detail: toMessage(cause, "Failed to load GitHub Copilot MCP configuration."),
++              cause,
++            }),
++        });
++        const resumeSessionId = extractResumeSessionId(input.resumeCursor);
++        const clientOptions: CopilotClientOptions = {
++          ...(cliPath ? { cliPath } : {}),
++          ...(input.cwd ? { cwd: input.cwd } : {}),
++          logLevel: "error",
++        };
++        const client = options?.clientFactory?.(clientOptions) ?? new CopilotClient(clientOptions);
++        const pendingApprovalResolvers = new Map<string, PendingApprovalRequest>();
++        const pendingUserInputResolvers = new Map<string, PendingUserInputRequest>();
++        let sessionRecord: ActiveCopilotSession | undefined;
++        const handlers = createInteractionHandlers(
++          input.threadId,
++          () => sessionRecord?.currentTurnId,
++          () => sessionRecord?.runtimeMode ?? input.runtimeMode,
++          () => sessionRecord?.interactionMode,
++          pendingApprovalResolvers,
++          pendingUserInputResolvers,
++        );
++
++        yield* validateSessionConfiguration({
++          client,
++          threadId: input.threadId,
++          ...sessionConfiguration,
++        });
++
++        const session = yield* Effect.tryPromise({
++          try: async () => {
++            if (resumeSessionId) {
++              return client.resumeSession(resumeSessionId, {
++                ...handlers,
++                ...(sessionConfiguration.model ? { model: sessionConfiguration.model } : {}),
++                ...(sessionConfiguration.reasoningEffort
++                  ? { reasoningEffort: sessionConfiguration.reasoningEffort }
++                  : {}),
++                ...(input.cwd ? { workingDirectory: input.cwd } : {}),
++                ...(configDir ? { configDir } : {}),
++                ...(mcpServers ? { mcpServers } : {}),
++                enableConfigDiscovery: true,
++                streaming: true,
++              });
++            }
++            return client.createSession({
++              ...handlers,
++              ...(sessionConfiguration.model ? { model: sessionConfiguration.model } : {}),
++              ...(sessionConfiguration.reasoningEffort
++                ? { reasoningEffort: sessionConfiguration.reasoningEffort }
++                : {}),
++              ...(input.cwd ? { workingDirectory: input.cwd } : {}),
++              ...(configDir ? { configDir } : {}),
++              ...(mcpServers ? { mcpServers } : {}),
++              enableConfigDiscovery: true,
++              streaming: true,
++            });
++          },
++          catch: (cause) =>
++            new ProviderAdapterProcessError({
++              provider: PROVIDER,
++              threadId: input.threadId,
++              detail: toMessage(cause, "Failed to start GitHub Copilot session."),
++              cause,
++            }),
++        });
++
++        const record = createSessionRecord({
++          threadId: input.threadId,
++          client,
++          session,
++          runtimeMode: input.runtimeMode,
++          pendingApprovalResolvers,
++          pendingUserInputResolvers,
++          cwd: input.cwd,
++          configDir,
++          ...sessionConfiguration,
++        });
++        const unsubscribe = session.on((event) => {
++          handleSessionEvent(record, event);
++        });
++        record.unsubscribe = unsubscribe;
++        sessionRecord = record;
++        sessions.set(input.threadId, record);
++
++        yield* Queue.offerAll(runtimeEventQueue, [
++          makeSyntheticEvent(input.threadId, "session.started", {
++            message: resumeSessionId
++              ? "Resumed GitHub Copilot session"
++              : "Started GitHub Copilot session",
++            resume: { sessionId: session.sessionId },
++          }),
++          makeSyntheticEvent(input.threadId, "session.configured", {
++            config: {
++              ...(input.cwd ? { cwd: input.cwd } : {}),
++              ...(sessionConfiguration.model ? { model: sessionConfiguration.model } : {}),
++              ...(sessionConfiguration.reasoningEffort
++                ? { reasoningEffort: sessionConfiguration.reasoningEffort }
++                : {}),
++              ...(configDir ? { configDir } : {}),
++              streaming: true,
++            },
++          }),
++          makeSyntheticEvent(input.threadId, "thread.started", {
++            providerThreadId: session.sessionId,
++          }),
++          makeSyntheticEvent(input.threadId, "session.state.changed", {
++            state: "ready",
++            reason: "session.started",
++          }),
++        ]);
++
++        // Non-blocking skill discovery + reload after session start.
++        // 1. Reload skills to pick up any new SKILL.md files in the workspace
++        // 2. List skills to populate the discovery cache
++        // Belt-and-suspenders alongside the session.skills_loaded event handler.
++        void (async () => {
++          try {
++            const rpcSkills = (session.rpc as CopilotSkillsRpc).skills;
++            // Reload first to discover new workspace skills
++            await rpcSkills?.reload?.().catch(() => {});
++            // Then list to populate the cache
++            const skillsResult = await rpcSkills?.list?.();
++            if (Array.isArray(skillsResult?.skills) && skillsResult.skills.length > 0) {
++              const mapped = skillsResult.skills
++                .map(mapSdkSkillToServerProviderSkill)
++                .filter((s): s is ServerProviderSkill => s !== null);
++              mergeDiscoveredSkills(mapped);
++            }
++          } catch (err: unknown) {
++            const message = err instanceof Error ? err.message : String(err);
++            console.warn("[CopilotAdapter] rpc.skills discovery failed:", message);
++          }
++        })();
++
++        return {
++          provider: PROVIDER,
++          status: "ready",
++          runtimeMode: input.runtimeMode,
++          ...(input.cwd ? { cwd: input.cwd } : {}),
++          ...(sessionConfiguration.model ? { model: sessionConfiguration.model } : {}),
++          threadId: input.threadId,
++          resumeCursor: session.sessionId,
++          createdAt: record.createdAt,
++          updatedAt: record.updatedAt,
++        } satisfies ProviderSession;
++      });
++
++    const sendTurn: CopilotAdapterShape["sendTurn"] = (input) =>
++      Effect.gen(function* () {
++        const record = yield* getSessionRecord(input.threadId);
++        const requestedModelSelection = input.modelSelection ?? undefined;
++        const explicitReasoningEffort =
++          getCopilotReasoningEffortFromSelection(requestedModelSelection);
++        const nextModel = requestedModelSelection?.model ?? record.model;
++        const nextReasoningEffort =
++          explicitReasoningEffort !== undefined
++            ? explicitReasoningEffort
++            : requestedModelSelection?.model !== undefined &&
++                requestedModelSelection.model !== record.model
++              ? undefined
++              : record.reasoningEffort;
++        const attachments = (input.attachments ?? []).map((attachment) => {
++          const attachmentPath = resolveAttachmentPath({
++            attachmentsDir: serverConfig.attachmentsDir,
++            attachment,
++          });
++          if (!attachmentPath) {
++            throw new ProviderAdapterRequestError({
++              provider: PROVIDER,
++              method: "session.send",
++              detail: `Invalid attachment id '${attachment.id}'.`,
++            });
++          }
++          return {
++            type: "file" as const,
++            path: attachmentPath,
++            displayName: attachment.name,
++          };
++        });
++
++        yield* validateSessionConfiguration({
++          client: record.client,
++          threadId: input.threadId,
++          model: nextModel,
++          reasoningEffort: nextReasoningEffort,
++        });
++
++        if (nextModel !== record.model || nextReasoningEffort !== record.reasoningEffort) {
++          yield* reconfigureSession(record, {
++            model: nextModel,
++            reasoningEffort: nextReasoningEffort,
++          });
++        }
++
++        const interactionMode = input.interactionMode ?? record.interactionMode ?? "default";
++        yield* syncInteractionMode(record, interactionMode);
++
++        const turnId = TurnId.make(`copilot-turn-${randomUUID()}`);
++        const turnSentAt = new Date().toISOString();
++        record.pendingTurnIds.push(turnId);
++        record.currentTurnId = turnId;
++        record.currentProviderTurnId = undefined;
++        record.turnSentAt = turnSentAt;
++
++        yield* Effect.tryPromise({
++          try: () =>
++            record.session.send({
++              prompt: input.input ?? "",
++              ...(attachments.length > 0 ? { attachments } : {}),
++              mode: "immediate",
++            }),
++          catch: (cause) =>
++            new ProviderAdapterRequestError({
++              provider: PROVIDER,
++              method: "session.send",
++              detail: toMessage(cause, "Failed to send GitHub Copilot turn."),
++              cause,
++            }),
++        }).pipe(
++          Effect.tapError(() =>
++            Effect.sync(() => {
++              record.pendingTurnIds = record.pendingTurnIds.filter(
++                (candidate) => candidate !== turnId,
++              );
++              if (record.currentTurnId === turnId) {
++                record.currentTurnId = undefined;
++              }
++            }),
++          ),
++        );
++
++        record.updatedAt = new Date().toISOString();
++
++        return {
++          threadId: input.threadId,
++          turnId,
++          resumeCursor: record.session.sessionId,
++        } satisfies ProviderTurnStartResult;
++      });
++
++    const interruptTurn: CopilotAdapterShape["interruptTurn"] = (threadId) =>
++      Effect.gen(function* () {
++        const record = yield* getSessionRecord(threadId);
++        yield* Effect.tryPromise({
++          try: () => record.session.abort(),
++          catch: (cause) =>
++            new ProviderAdapterRequestError({
++              provider: PROVIDER,
++              method: "session.abort",
++              detail: toMessage(cause, "Failed to interrupt GitHub Copilot turn."),
++              cause,
++            }),
++        });
++      });
++
++    const respondToRequest: CopilotAdapterShape["respondToRequest"] = (
++      threadId,
++      requestId,
++      decision,
++    ) =>
++      Effect.gen(function* () {
++        const record = yield* getSessionRecord(threadId);
++        const pending = record.pendingApprovalResolvers.get(requestId);
++        if (!pending) {
++          return yield* new ProviderAdapterRequestError({
++            provider: PROVIDER,
++            method: "session.permission.respond",
++            detail: `Unknown pending GitHub Copilot approval request '${requestId}'.`,
++          });
++        }
++        record.pendingApprovalResolvers.delete(requestId);
++        const resolution = approvalDecisionToPermissionResult(decision, pending.request);
++        pending.resolve(resolution);
++        yield* Queue.offer(
++          runtimeEventQueue,
++          makeSyntheticEvent(
++            threadId,
++            "request.resolved",
++            {
++              requestType: pending.requestType,
++              decision,
++              resolution,
++            },
++            { requestId, turnId: pending.turnId },
++          ),
++        );
++      });
++
++    const respondToUserInput: CopilotAdapterShape["respondToUserInput"] = (
++      threadId,
++      requestId,
++      answers,
++    ) =>
++      Effect.gen(function* () {
++        const record = yield* getSessionRecord(threadId);
++        const pending = record.pendingUserInputResolvers.get(requestId);
++        if (!pending) {
++          return yield* new ProviderAdapterRequestError({
++            provider: PROVIDER,
++            method: "session.userInput.respond",
++            detail: `Unknown pending GitHub Copilot user-input request '${requestId}'.`,
++          });
++        }
++        record.pendingUserInputResolvers.delete(requestId);
++        pending.resolve(resolveUserInputAnswer(pending, answers));
++        yield* Queue.offer(
++          runtimeEventQueue,
++          makeSyntheticEvent(
++            threadId,
++            "user-input.resolved",
++            {
++              answers,
++            },
++            { requestId, turnId: pending.turnId },
++          ),
++        );
++      });
++
++    const stopSession: CopilotAdapterShape["stopSession"] = (threadId) =>
++      Effect.gen(function* () {
++        const record = yield* getSessionRecord(threadId);
++        yield* Effect.tryPromise({
++          try: async () => {
++            await stopRecord(record);
++          },
++          catch: (cause) =>
++            new ProviderAdapterProcessError({
++              provider: PROVIDER,
++              threadId,
++              detail: toMessage(cause, "Failed to stop GitHub Copilot session."),
++              cause,
++            }),
++        });
++      });
++
++    const listSessions: CopilotAdapterShape["listSessions"] = () =>
++      Effect.sync(() =>
++        Array.from(sessions.values()).map((record) => {
++          const session: ProviderSession = {
++            provider: PROVIDER,
++            status: record.currentTurnId ? "running" : "ready",
++            runtimeMode: record.runtimeMode,
++            threadId: record.threadId,
++            resumeCursor: record.session.sessionId,
++            createdAt: record.createdAt,
++            updatedAt: record.updatedAt,
++          };
++          if (record.cwd) {
++            Object.assign(session, { cwd: record.cwd });
++          }
++          if (record.model) {
++            Object.assign(session, { model: record.model });
++          }
++          if (record.currentTurnId) {
++            Object.assign(session, { activeTurnId: record.currentTurnId });
++          }
++          if (record.lastError) {
++            Object.assign(session, { lastError: record.lastError });
++          }
++          return session;
++        }),
++      );
++
++    const hasSession: CopilotAdapterShape["hasSession"] = (threadId) =>
++      Effect.sync(() => sessions.has(threadId));
++
++    const readThread: CopilotAdapterShape["readThread"] = (threadId) =>
++      Effect.gen(function* () {
++        const record = yield* getSessionRecord(threadId);
++        return yield* Effect.tryPromise({
++          try: async () => {
++            const messages = await record.session.getMessages();
++            return mapHistoryToTurns(threadId, messages);
++          },
++          catch: (cause) =>
++            new ProviderAdapterRequestError({
++              provider: PROVIDER,
++              method: "session.getMessages",
++              detail: toMessage(cause, "Failed to read GitHub Copilot thread history."),
++              cause,
++            }),
++        });
++      });
++
++    const rollbackThread: CopilotAdapterShape["rollbackThread"] = (_threadId) =>
++      Effect.fail(
++        new ProviderAdapterRequestError({
++          provider: PROVIDER,
++          method: "thread.rollback",
++          detail:
++            "GitHub Copilot SDK does not expose a supported conversation rollback API for existing sessions.",
++        }),
++      );
++
++    const stopAll: CopilotAdapterShape["stopAll"] = () =>
++      Effect.tryPromise({
++        try: async () => {
++          await Promise.all(Array.from(sessions.values()).map((record) => stopRecord(record)));
++        },
++        catch: (cause) =>
++          new ProviderAdapterProcessError({
++            provider: PROVIDER,
++            threadId: ThreadId.make("_all"),
++            detail: toMessage(cause, "Failed to stop GitHub Copilot sessions."),
++            cause,
++          }),
++      });
++
++    return {
++      provider: PROVIDER,
++      capabilities: {
++        sessionModelSwitch: "in-session",
++      },
++      startSession,
++      sendTurn,
++      interruptTurn,
++      respondToRequest,
++      respondToUserInput,
++      stopSession,
++      listSessions,
++      hasSession,
++      readThread,
++      rollbackThread,
++      stopAll,
++      streamEvents: Stream.fromQueue(runtimeEventQueue),
++    } satisfies CopilotAdapterShape;
++  });
++
++export const CopilotAdapterLive = Layer.effect(CopilotAdapter, makeCopilotAdapter());
++
++export function makeCopilotAdapterLive(options?: CopilotAdapterLiveOptions) {
++  return Layer.effect(CopilotAdapter, makeCopilotAdapter(options));
++}
+diff --git a/apps/server/src/provider/Layers/CopilotProvider.ts b/apps/server/src/provider/Layers/CopilotProvider.ts
+new file mode 100644
+index 00000000..82cf60d4
+--- /dev/null
++++ b/apps/server/src/provider/Layers/CopilotProvider.ts
+@@ -0,0 +1,374 @@
++/**
++ * CopilotProviderLive - Provider snapshot for GitHub Copilot.
++ *
++ * Uses @github/copilot-sdk to detect installation, authentication, and
++ * available models. Produces a ServerProvider snapshot with runtime models.
++ *
++ * @module CopilotProviderLive
++ */
++import { normalizeCopilotCliPathOverride, resolveBundledCopilotCliPath } from "./copilotCliPath.ts";
++import { getCopilotDiscoveredSkills } from "./CopilotAdapter.ts";
++import type {
++  ModelCapabilities,
++  ServerProviderModel,
++  CopilotSettings,
++} from "@t3tools/contracts";
++import { Effect } from "effect";
++
++import { buildServerProvider, type ServerProviderDraft } from "../providerSnapshot.ts";
++import { CopilotProvider } from "../Services/CopilotProvider.ts";
++
++const PROVIDER = "copilot" as const;
++
++const COPILOT_PRESENTATION = {
++  displayName: "GitHub Copilot",
++} as const;
++
++interface CopilotProviderClientHandle {
++  start(): Promise<void>;
++  listModels(): Promise<ReadonlyArray<unknown>>;
++  stop(): Promise<unknown>;
++  readonly rpc?: {
++    readonly account?: {
++      readonly getQuota?: () => Promise<unknown>;
++    };
++  };
++}
++
++export interface CopilotProviderCheckOptions {
++  readonly clientFactory?: (options: Record<string, unknown>) => CopilotProviderClientHandle;
++}
++
++interface CopilotProviderStatusCheckError {
++  readonly _tag: "CopilotProviderStatusCheckError";
++  readonly message: string;
++  readonly cause: unknown;
++}
++
++const DEFAULT_COPILOT_MODEL_CAPABILITIES: ModelCapabilities = {};
++
++const GPT_MODEL_CAPABILITIES: ModelCapabilities = {
++  optionDescriptors: [
++    {
++      id: "effort",
++      type: "select" as const,
++      label: "Effort",
++      options: [
++        { id: "xhigh", label: "Extra High" },
++        { id: "high", label: "High", isDefault: true },
++        { id: "medium", label: "Medium" },
++        { id: "low", label: "Low" },
++      ],
++    },
++  ],
++};
++
++const EFFORT_LABEL_MAP: Record<string, string> = {
++  xhigh: "Extra High",
++  high: "High",
++  medium: "Medium",
++  low: "Low",
++};
++
++const DEFAULT_EFFORT = "high";
++
++/**
++ * Build ModelCapabilities dynamically from SDK model info.
++ * Uses `supportedReasoningEfforts` from the SDK response to populate
++ * effort levels, instead of hardcoding per model family.
++ */
++function buildCapabilitiesFromSdkModel(info: any): ModelCapabilities {
++  const efforts: string[] = info.supportedReasoningEfforts ?? [];
++  const defaultEffort: string | undefined = info.defaultReasoningEffort;
++
++  if (efforts.length === 0) {
++    return DEFAULT_COPILOT_MODEL_CAPABILITIES;
++  }
++
++  return {
++    optionDescriptors: [
++      {
++        id: "effort",
++        type: "select" as const,
++        label: "Effort",
++        options: efforts.map((value: string) => ({
++          id: value,
++          label: EFFORT_LABEL_MAP[value] ?? value.charAt(0).toUpperCase() + value.slice(1),
++          ...(value === (defaultEffort ?? DEFAULT_EFFORT) ? { isDefault: true } : {}),
++        })),
++      },
++    ],
++  };
++}
++
++const CLAUDE_EFFORT_CAPABILITIES: ModelCapabilities = {
++  optionDescriptors: [
++    {
++      id: "effort",
++      type: "select" as const,
++      label: "Effort",
++      options: [
++        { id: "high", label: "High", isDefault: true },
++        { id: "medium", label: "Medium" },
++        { id: "low", label: "Low" },
++      ],
++    },
++  ],
++};
++
++const CLAUDE_OPUS_47_CAPABILITIES: ModelCapabilities = {
++  optionDescriptors: [
++    {
++      id: "effort",
++      type: "select" as const,
++      label: "Effort",
++      options: [
++        { id: "medium", label: "Medium", isDefault: true },
++      ],
++    },
++  ],
++};
++
++const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
++  {
++    slug: "gpt-5.4",
++    name: "GPT-5.4",
++    isCustom: false,
++    capabilities: GPT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "gpt-5.4-mini",
++    name: "GPT-5.4 Mini",
++    isCustom: false,
++    capabilities: GPT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "gpt-5.3-codex",
++    name: "GPT-5.3 Codex",
++    isCustom: false,
++    capabilities: GPT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "gpt-5.2-codex",
++    name: "GPT-5.2 Codex",
++    isCustom: false,
++    capabilities: GPT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "gpt-5.2",
++    name: "GPT-5.2",
++    isCustom: false,
++    capabilities: GPT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "gpt-5-mini",
++    name: "GPT-5 Mini",
++    isCustom: false,
++    capabilities: GPT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "gpt-4.1",
++    name: "GPT-4.1",
++    isCustom: false,
++    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "claude-sonnet-4.6",
++    name: "Claude Sonnet 4.6",
++    isCustom: false,
++    capabilities: CLAUDE_EFFORT_CAPABILITIES,
++  },
++  {
++    slug: "claude-opus-4.7",
++    name: "Claude Opus 4.7",
++    isCustom: false,
++    capabilities: CLAUDE_OPUS_47_CAPABILITIES,
++  },
++  {
++    slug: "claude-opus-4.6",
++    name: "Claude Opus 4.6",
++    isCustom: false,
++    capabilities: CLAUDE_EFFORT_CAPABILITIES,
++  },
++  {
++    slug: "claude-opus-4.5",
++    name: "Claude Opus 4.5",
++    isCustom: false,
++    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "claude-sonnet-4.5",
++    name: "Claude Sonnet 4.5",
++    isCustom: false,
++    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "claude-haiku-4.5",
++    name: "Claude Haiku 4.5",
++    isCustom: false,
++    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "claude-sonnet-4",
++    name: "Claude Sonnet 4",
++    isCustom: false,
++    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "gemini-3.1-pro",
++    name: "Gemini 3.1 Pro",
++    isCustom: false,
++    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
++  },
++];
++
++const makePendingCopilotProvider = (): ServerProviderDraft =>
++  buildServerProvider({
++    presentation: COPILOT_PRESENTATION,
++    enabled: false,
++    checkedAt: new Date().toISOString(),
++    models: BUILT_IN_MODELS,
++    probe: {
++      installed: false,
++      version: null,
++      status: "error",
++      auth: { status: "unknown" },
++      message: "Checking GitHub Copilot availability...",
++    },
++  });
++
++const makeErrorProvider = (message: string): ServerProviderDraft =>
++  buildServerProvider({
++    presentation: COPILOT_PRESENTATION,
++    enabled: false,
++    checkedAt: new Date().toISOString(),
++    models: BUILT_IN_MODELS,
++    probe: {
++      installed: false,
++      version: null,
++      status: "error",
++      auth: { status: "unknown" },
++      message,
++    },
++  });
++
++/**
++ * Check Copilot provider status using the SDK.
++ */
++export const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus")(function* (
++  settings: CopilotSettings,
++  options?: CopilotProviderCheckOptions,
++) {
++  const now = new Date().toISOString();
++
++  if (!settings.enabled) {
++    return buildServerProvider({
++      presentation: COPILOT_PRESENTATION,
++      enabled: false,
++      checkedAt: now,
++      models: BUILT_IN_MODELS,
++      probe: {
++        installed: false,
++        version: null,
++        status: "error",
++        auth: { status: "unknown" },
++        message: "GitHub Copilot provider is disabled.",
++      },
++    });
++  }
++
++  // Attempt SDK-based detection
++  const sdkResult = yield* Effect.tryPromise({
++    try: async () => {
++      const { CopilotClient } = await import("@github/copilot-sdk");
++      const cliPath =
++        normalizeCopilotCliPathOverride(settings.binaryPath) ?? resolveBundledCopilotCliPath();
++      const clientOptions: Record<string, unknown> = { logLevel: "error" };
++      if (cliPath) {
++        clientOptions.cliPath = cliPath;
++      }
++      const client =
++        options?.clientFactory?.(clientOptions) ?? new CopilotClient(clientOptions as any);
++      await client.start();
++      try {
++        const [models, quota] = await Promise.all([
++          client.listModels().catch(() => [] as any[]),
++          client.rpc?.account?.getQuota?.().catch(() => null),
++        ]);
++        return { started: true, models, quota, error: null as string | null };
++      } finally {
++        await client.stop().catch(() => {});
++      }
++    },
++    catch: (cause: unknown): CopilotProviderStatusCheckError => ({
++      _tag: "CopilotProviderStatusCheckError",
++      message: cause instanceof Error ? cause.message : String(cause),
++      cause,
++    }),
++  }).pipe(
++    Effect.catchTag("CopilotProviderStatusCheckError", (error) =>
++      Effect.succeed({
++        started: false,
++        models: [] as ReadonlyArray<unknown>,
++        quota: null,
++        error: error.message,
++      }),
++    ),
++  );
++
++  if (!sdkResult.started) {
++    const errorMsg = sdkResult.error ?? "Unknown error";
++    const isAuthError =
++      errorMsg.toLowerCase().includes("unauthenticated") ||
++      errorMsg.toLowerCase().includes("unauthorized");
++
++    return buildServerProvider({
++      presentation: COPILOT_PRESENTATION,
++      enabled: false,
++      checkedAt: now,
++      models: BUILT_IN_MODELS,
++      probe: {
++        installed: !errorMsg.includes("Cannot find module"),
++        version: null,
++        status: "error",
++        auth: { status: isAuthError ? "unauthenticated" : "unknown" },
++        message: isAuthError
++          ? "GitHub Copilot is not authenticated. Sign in via your IDE or GitHub CLI."
++          : `GitHub Copilot SDK error: ${errorMsg}`,
++      },
++    });
++  }
++
++  // Build models from SDK response, fall back to built-in
++  const allModels: ServerProviderModel[] =
++    sdkResult.models.length > 0
++      ? sdkResult.models.map((info: any) => ({
++          slug: info.id ?? info.slug ?? info.name,
++          name: info.name ?? info.id ?? info.slug,
++          isCustom: false,
++          capabilities: buildCapabilitiesFromSdkModel(info),
++        }))
++      : [...BUILT_IN_MODELS];
++
++  // Filter out internal-only models when the setting is enabled
++  const runtimeModels = settings.hideInternalModels
++    ? allModels.filter((model) => !model.name.toLowerCase().includes("internal only"))
++    : allModels;
++
++  return buildServerProvider({
++    presentation: COPILOT_PRESENTATION,
++    enabled: true,
++    checkedAt: now,
++    models: runtimeModels,
++    skills: [...getCopilotDiscoveredSkills()],
++    probe: {
++      installed: true,
++      version: null,
++      status: "ready",
++      auth: { status: "authenticated" },
++    },
++  });
++});
++
++// CopilotProviderLive is superseded by CopilotDriver which creates its own
++// managed snapshot per instance. Retained as dead code during migration.
+diff --git a/apps/server/src/provider/Layers/copilotCliPath.ts b/apps/server/src/provider/Layers/copilotCliPath.ts
+new file mode 100644
+index 00000000..d8eab151
+--- /dev/null
++++ b/apps/server/src/provider/Layers/copilotCliPath.ts
+@@ -0,0 +1,252 @@
++import { existsSync, readFileSync, realpathSync } from "node:fs";
++import { fileURLToPath } from "node:url";
++import { dirname, join } from "node:path";
++import { createRequire } from "node:module";
++
++const require = createRequire(import.meta.url);
++const CURRENT_DIR = dirname(fileURLToPath(import.meta.url));
++const GITHUB_SCOPE_DIR = "@github";
++const COPILOT_PATHLESS_COMMAND_PATTERN = /^copilot(?:\.(?:exe|cmd|bat))?$/i;
++const COPILOT_NPM_LOADER = "npm-loader.js";
++
++function dedupePaths(paths: ReadonlyArray<string | undefined>): string[] {
++  const resolved: string[] = [];
++  const seen = new Set<string>();
++
++  for (const candidate of paths) {
++    if (!candidate || seen.has(candidate)) continue;
++    seen.add(candidate);
++    resolved.push(candidate);
++  }
++
++  return resolved;
++}
++
++function resolveRealPath(path: string | undefined): string | undefined {
++  if (!path) return undefined;
++
++  try {
++    return realpathSync(path);
++  } catch {
++    return path;
++  }
++}
++
++function resolvePackageDirFromEntrypoint(
++  entrypoint: string | undefined,
++  exists: (path: string) => boolean = existsSync,
++): string | undefined {
++  if (!entrypoint) return undefined;
++
++  let current = dirname(entrypoint);
++  while (true) {
++    const packageJsonPath = join(current, "package.json");
++    if (exists(packageJsonPath) && isPackageRootPackageJson(packageJsonPath)) {
++      return current;
++    }
++
++    const parent = dirname(current);
++    if (parent === current) {
++      return undefined;
++    }
++
++    current = parent;
++  }
++}
++
++function isPackageRootPackageJson(packageJsonPath: string): boolean {
++  try {
++    const raw = readFileSync(packageJsonPath, "utf8");
++    const parsed = JSON.parse(raw) as { name?: unknown };
++    return typeof parsed.name === "string" && parsed.name.length > 0;
++  } catch {
++    return true;
++  }
++}
++
++function resolvePackageDir(specifier: string, issuer?: string): string | undefined {
++  try {
++    const packageRequire = issuer ? createRequire(issuer) : require;
++    const resolvedEntrypoint = resolveRealPath(packageRequire.resolve(specifier));
++    return resolvePackageDirFromEntrypoint(resolvedEntrypoint);
++  } catch {
++    return undefined;
++  }
++}
++
++function resolveSdkPackageDir(): string | undefined {
++  return resolvePackageDir("@github/copilot-sdk");
++}
++
++function resolveCopilotPackageDir(
++  sdkPackageDir: string | undefined,
++  exists: (path: string) => boolean = existsSync,
++): string | undefined {
++  const sdkNodeModulesRoot = resolveNodeModulesRootFromPackageDir(sdkPackageDir);
++  if (!sdkNodeModulesRoot) return undefined;
++
++  const copilotPackageDir = join(sdkNodeModulesRoot, GITHUB_SCOPE_DIR, "copilot");
++  if (!exists(copilotPackageDir)) {
++    return undefined;
++  }
++
++  return resolveRealPath(copilotPackageDir);
++}
++
++function resolveProcessResourcesPath(): string | undefined {
++  const processWithResourcesPath = process as NodeJS.Process & {
++    readonly resourcesPath?: string;
++  };
++  return processWithResourcesPath.resourcesPath;
++}
++
++export function normalizeCopilotCliPathOverride(
++  value: string | null | undefined,
++): string | undefined {
++  if (value == null) return undefined;
++
++  const trimmed = value.trim();
++  if (!trimmed) return undefined;
++
++  if (
++    !trimmed.includes("/") &&
++    !trimmed.includes("\\") &&
++    COPILOT_PATHLESS_COMMAND_PATTERN.test(trimmed)
++  ) {
++    return undefined;
++  }
++
++  return trimmed;
++}
++
++function resolveGithubScopeDirFromPackageDir(packageDir: string | undefined): string | undefined {
++  if (!packageDir) return undefined;
++  return dirname(packageDir);
++}
++
++function resolveNodeModulesRootFromPackageDir(packageDir: string | undefined): string | undefined {
++  if (!packageDir) return undefined;
++  return dirname(dirname(packageDir));
++}
++
++function resolveNodeModulesRoots(input: {
++  currentDir: string;
++  resourcesPath?: string;
++  sdkPackageDir?: string;
++  copilotPackageDir?: string;
++  sdkEntrypoint?: string;
++  exists?: (path: string) => boolean;
++}): string[] {
++  const exists = input.exists ?? existsSync;
++  const sdkPackageDir =
++    input.sdkPackageDir ??
++    resolvePackageDirFromEntrypoint(resolveRealPath(input.sdkEntrypoint), exists);
++  return dedupePaths([
++    input.resourcesPath ? join(input.resourcesPath, "app.asar.unpacked/node_modules") : undefined,
++    input.resourcesPath ? join(input.resourcesPath, "node_modules") : undefined,
++    join(input.currentDir, "../../../node_modules"),
++    join(input.currentDir, "../../../../../node_modules"),
++    resolveNodeModulesRootFromPackageDir(sdkPackageDir),
++    resolveNodeModulesRootFromPackageDir(input.copilotPackageDir),
++  ]);
++}
++
++function getCopilotPlatformBinaryName(platform: string): string {
++  return platform === "win32" ? "copilot.exe" : "copilot";
++}
++
++export function getBundledCopilotPlatformPackages(
++  platform: string = process.platform,
++  arch: string = process.arch,
++): ReadonlyArray<string> {
++  if (platform === "darwin" && arch === "arm64") {
++    return ["copilot-darwin-arm64"];
++  }
++  if (platform === "darwin" && arch === "x64") {
++    return ["copilot-darwin-x64"];
++  }
++  if (platform === "linux" && arch === "arm64") {
++    return ["copilot-linux-arm64"];
++  }
++  if (platform === "linux" && arch === "x64") {
++    return ["copilot-linux-x64"];
++  }
++  if (platform === "win32" && arch === "arm64") {
++    return ["copilot-win32-arm64"];
++  }
++  if (platform === "win32" && arch === "x64") {
++    return ["copilot-win32-x64"];
++  }
++
++  return [];
++}
++
++export function resolveBundledCopilotCliPathFrom(input: {
++  currentDir: string;
++  resourcesPath?: string;
++  sdkEntrypoint?: string;
++  sdkPackageDir?: string;
++  copilotPackageDir?: string;
++  platform?: string;
++  arch?: string;
++  exists?: (path: string) => boolean;
++}): string | undefined {
++  const platform = input.platform ?? process.platform;
++  const arch = input.arch ?? process.arch;
++  const exists = input.exists ?? existsSync;
++  const sdkPackageDir =
++    input.sdkPackageDir ??
++    resolvePackageDirFromEntrypoint(resolveRealPath(input.sdkEntrypoint), exists);
++  const copilotPackageDir = input.copilotPackageDir;
++  const nodeModulesRoots = resolveNodeModulesRoots({
++    currentDir: input.currentDir,
++    ...(input.resourcesPath ? { resourcesPath: input.resourcesPath } : {}),
++    ...(sdkPackageDir ? { sdkPackageDir } : {}),
++    ...(copilotPackageDir ? { copilotPackageDir } : {}),
++    ...(input.sdkEntrypoint ? { sdkEntrypoint: input.sdkEntrypoint } : {}),
++    exists,
++  });
++  const binaryName = getCopilotPlatformBinaryName(platform);
++  const platformPackages = getBundledCopilotPlatformPackages(platform, arch);
++  const githubScopeDirs = dedupePaths([
++    resolveGithubScopeDirFromPackageDir(sdkPackageDir),
++    resolveGithubScopeDirFromPackageDir(copilotPackageDir),
++  ]);
++
++  const binaryCandidates = nodeModulesRoots.flatMap((root) =>
++    platformPackages.map((packageName) => join(root, GITHUB_SCOPE_DIR, packageName, binaryName)),
++  );
++  const npmLoaderCandidates = nodeModulesRoots.map((root) =>
++    join(root, GITHUB_SCOPE_DIR, "copilot", COPILOT_NPM_LOADER),
++  );
++  const scopeBinaryCandidates = githubScopeDirs.flatMap((scopeDir) =>
++    platformPackages.map((packageName) => join(scopeDir, packageName, binaryName)),
++  );
++  const scopeLoaderCandidates = githubScopeDirs.map((scopeDir) =>
++    join(scopeDir, "copilot", COPILOT_NPM_LOADER),
++  );
++  for (const candidate of dedupePaths([
++    ...binaryCandidates,
++    ...scopeBinaryCandidates,
++    ...npmLoaderCandidates,
++    ...scopeLoaderCandidates,
++  ])) {
++    if (exists(candidate)) {
++      return candidate;
++    }
++  }
++
++  return undefined;
++}
++
++export function resolveBundledCopilotCliPath(): string | undefined {
++  const sdkPackageDir = resolveSdkPackageDir();
++  const copilotPackageDir = resolveCopilotPackageDir(sdkPackageDir);
++  const resourcesPath = resolveProcessResourcesPath();
++  return resolveBundledCopilotCliPathFrom({
++    currentDir: CURRENT_DIR,
++    ...(resourcesPath ? { resourcesPath } : {}),
++    ...(sdkPackageDir ? { sdkPackageDir } : {}),
++    ...(copilotPackageDir ? { copilotPackageDir } : {}),
++  });
++}
+diff --git a/apps/server/src/provider/Layers/copilotMcpServers.ts b/apps/server/src/provider/Layers/copilotMcpServers.ts
+new file mode 100644
+index 00000000..b1db057b
+--- /dev/null
++++ b/apps/server/src/provider/Layers/copilotMcpServers.ts
+@@ -0,0 +1,124 @@
++import fsp from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++
++import type { MCPServerConfig } from "@github/copilot-sdk";
++
++function asRecord(value: unknown): Record<string, unknown> | undefined {
++  if (!value || typeof value !== "object" || Array.isArray(value)) {
++    return undefined;
++  }
++  return value as Record<string, unknown>;
++}
++
++function asNonEmptyString(value: unknown): string | undefined {
++  if (typeof value !== "string") {
++    return undefined;
++  }
++  const trimmed = value.trim();
++  return trimmed.length > 0 ? trimmed : undefined;
++}
++
++function asStringArray(value: unknown): string[] | undefined {
++  if (!Array.isArray(value)) {
++    return undefined;
++  }
++  return value.flatMap((item) => {
++    const normalized = asNonEmptyString(item);
++    return normalized ? [normalized] : [];
++  });
++}
++
++function asStringRecord(value: unknown): Record<string, string> | undefined {
++  const record = asRecord(value);
++  if (!record) {
++    return undefined;
++  }
++
++  const entries = Object.entries(record).flatMap(([key, item]) => {
++    const normalized = asNonEmptyString(item);
++    return normalized ? [[key, normalized] as const] : [];
++  });
++
++  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
++}
++
++function asTimeout(value: unknown): number | undefined {
++  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
++}
++
++function normalizeTools(value: unknown): string[] {
++  const tools = asStringArray(value);
++  return tools ?? ["*"];
++}
++
++function toMcpServerConfig(entry: unknown): MCPServerConfig | undefined {
++  const record = asRecord(entry);
++  if (!record) {
++    return undefined;
++  }
++
++  const type = asNonEmptyString(record.type);
++  const command = asNonEmptyString(record.command);
++  const args = asStringArray(record.args) ?? [];
++  const url = asNonEmptyString(record.url);
++  const tools = normalizeTools(record.tools);
++  const timeout = asTimeout(record.timeout);
++  const env = asStringRecord(record.env);
++  const cwd = asNonEmptyString(record.cwd);
++  const headers = asStringRecord(record.headers);
++
++  if (command && (type === undefined || type === "local" || type === "stdio")) {
++    return {
++      type: "local",
++      command,
++      args,
++      tools,
++      ...(env ? { env } : {}),
++      ...(cwd ? { cwd } : {}),
++      ...(timeout !== undefined ? { timeout } : {}),
++    };
++  }
++
++  if (url && (type === undefined || type === "http" || type === "sse")) {
++    return {
++      type: type === "sse" ? "sse" : "http",
++      url,
++      tools,
++      ...(headers ? { headers } : {}),
++      ...(timeout !== undefined ? { timeout } : {}),
++    };
++  }
++
++  return undefined;
++}
++
++export async function loadCopilotMcpServers(
++  configDir: string | undefined,
++): Promise<Record<string, MCPServerConfig> | undefined> {
++  const baseDir = asNonEmptyString(configDir) ?? path.join(os.homedir(), ".copilot");
++  const configPath = path.join(baseDir, "mcp-config.json");
++
++  let raw: string;
++  try {
++    raw = await fsp.readFile(configPath, "utf-8");
++  } catch (error) {
++    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
++      return undefined;
++    }
++    throw error;
++  }
++
++  const parsed = asRecord(JSON.parse(raw));
++  const servers = asRecord(parsed?.mcpServers);
++  if (!servers) {
++    return undefined;
++  }
++
++  const normalizedEntries = Object.entries(servers).flatMap(([name, value]) => {
++    const normalized = toMcpServerConfig(value);
++    return normalized ? [[name, normalized] as const] : [];
++  });
++
++  return normalizedEntries.length > 0 ? Object.fromEntries(normalizedEntries) : undefined;
++}
+diff --git a/apps/server/src/provider/Layers/copilotTurnTracking.ts b/apps/server/src/provider/Layers/copilotTurnTracking.ts
+new file mode 100644
+index 00000000..1b831e51
+--- /dev/null
++++ b/apps/server/src/provider/Layers/copilotTurnTracking.ts
+@@ -0,0 +1,69 @@
++import { TurnId } from "@t3tools/contracts";
++import type { SessionEvent } from "@github/copilot-sdk";
++
++export type CopilotAssistantUsage = Extract<SessionEvent, { type: "assistant.usage" }>["data"];
++
++export interface CopilotTurnTrackingState {
++  currentTurnId: TurnId | undefined;
++  currentProviderTurnId: TurnId | undefined;
++  pendingCompletionTurnId: TurnId | undefined;
++  pendingCompletionProviderTurnId: TurnId | undefined;
++  pendingTurnIds: Array<TurnId>;
++  pendingTurnUsage: CopilotAssistantUsage | undefined;
++}
++
++export function completionTurnRefs(state: CopilotTurnTrackingState) {
++  return {
++    turnId: state.pendingCompletionTurnId ?? state.currentTurnId,
++    providerTurnId: state.pendingCompletionProviderTurnId ?? state.currentProviderTurnId,
++  };
++}
++
++export function beginCopilotTurn(state: CopilotTurnTrackingState, providerTurnId: TurnId): void {
++  state.pendingCompletionTurnId = undefined;
++  state.pendingCompletionProviderTurnId = undefined;
++  state.pendingTurnUsage = undefined;
++  state.currentProviderTurnId = providerTurnId;
++  state.currentTurnId = state.pendingTurnIds.shift() ?? state.currentTurnId ?? providerTurnId;
++}
++
++export function markTurnAwaitingCompletion(state: CopilotTurnTrackingState): void {
++  state.pendingCompletionTurnId = state.currentTurnId ?? state.pendingCompletionTurnId;
++  state.pendingCompletionProviderTurnId =
++    state.currentProviderTurnId ?? state.pendingCompletionProviderTurnId;
++}
++
++export function recordTurnUsage(
++  state: CopilotTurnTrackingState,
++  usage: CopilotAssistantUsage,
++): void {
++  state.pendingTurnUsage = usage;
++}
++
++export function clearTurnTracking(state: CopilotTurnTrackingState): void {
++  state.currentTurnId = undefined;
++  state.currentProviderTurnId = undefined;
++  state.pendingCompletionTurnId = undefined;
++  state.pendingCompletionProviderTurnId = undefined;
++  state.pendingTurnUsage = undefined;
++}
++
++export function assistantUsageFields(usage: CopilotAssistantUsage | undefined): {
++  usage?: CopilotAssistantUsage;
++  modelUsage?: { model: string };
++  totalCostUsd?: number;
++} {
++  if (!usage) {
++    return {};
++  }
++
++  return {
++    usage,
++    ...(usage.cost !== undefined ? { totalCostUsd: usage.cost } : {}),
++    ...(usage.model ? { modelUsage: { model: usage.model } } : {}),
++  };
++}
++
++export function isCopilotTurnTerminalEvent(event: SessionEvent): boolean {
++  return event.type === "abort" || event.type === "session.idle";
++}
+diff --git a/apps/server/src/provider/Services/CopilotAdapter.ts b/apps/server/src/provider/Services/CopilotAdapter.ts
+new file mode 100644
+index 00000000..74fcfbb6
+--- /dev/null
++++ b/apps/server/src/provider/Services/CopilotAdapter.ts
+@@ -0,0 +1,31 @@
++/**
++ * CopilotAdapter - GitHub Copilot implementation of the generic provider adapter contract.
++ *
++ * This service owns Copilot SDK session semantics and emits canonical
++ * provider runtime events. It does not perform cross-provider routing, shared
++ * event fan-out, or checkpoint orchestration.
++ *
++ * Uses Effect `Context.Service` for dependency injection and returns the
++ * shared provider-adapter error channel with `provider: "copilot"` context.
++ *
++ * @module CopilotAdapter
++ */
++import { Context } from "effect";
++
++import type { ProviderAdapterError } from "../Errors.ts";
++import type { ProviderAdapterShape } from "./ProviderAdapter.ts";
++import { ProviderDriverKind } from "@t3tools/contracts";
++
++/**
++ * CopilotAdapterShape - Service API for the GitHub Copilot provider adapter.
++ */
++export interface CopilotAdapterShape extends ProviderAdapterShape<ProviderAdapterError> {
++  readonly provider: ProviderDriverKind;
++}
++
++/**
++ * CopilotAdapter - Service tag for GitHub Copilot provider adapter operations.
++ */
++export class CopilotAdapter extends Context.Service<CopilotAdapter, CopilotAdapterShape>()(
++  "t3/provider/Services/CopilotAdapter",
++) {}
+diff --git a/apps/server/src/provider/Services/CopilotProvider.ts b/apps/server/src/provider/Services/CopilotProvider.ts
+new file mode 100644
+index 00000000..2dddc77a
+--- /dev/null
++++ b/apps/server/src/provider/Services/CopilotProvider.ts
+@@ -0,0 +1,9 @@
++import { Context } from "effect";
++
++import type { ServerProviderShape } from "./ServerProvider.ts";
++
++export interface CopilotProviderShape extends ServerProviderShape {}
++
++export class CopilotProvider extends Context.Service<CopilotProvider, CopilotProviderShape>()(
++  "t3/provider/Services/CopilotProvider",
++) {}
+diff --git a/apps/server/src/provider/builtInDrivers.ts b/apps/server/src/provider/builtInDrivers.ts
+index 5af56dc6..0f8a5536 100644
+--- a/apps/server/src/provider/builtInDrivers.ts
++++ b/apps/server/src/provider/builtInDrivers.ts
+@@ -22,6 +22,7 @@
+  */
+ import { ClaudeDriver, type ClaudeDriverEnv } from "./Drivers/ClaudeDriver.ts";
+ import { CodexDriver, type CodexDriverEnv } from "./Drivers/CodexDriver.ts";
++import { CopilotDriver, type CopilotDriverEnv } from "./Drivers/CopilotDriver.ts";
+ import { CursorDriver, type CursorDriverEnv } from "./Drivers/CursorDriver.ts";
+ import { OpenCodeDriver, type OpenCodeDriverEnv } from "./Drivers/OpenCodeDriver.ts";
+ import type { AnyProviderDriver } from "./ProviderDriver.ts";
+@@ -34,6 +35,7 @@ import type { AnyProviderDriver } from "./ProviderDriver.ts";
+ export type BuiltInDriversEnv =
+   | ClaudeDriverEnv
+   | CodexDriverEnv
++  | CopilotDriverEnv
+   | CursorDriverEnv
+   | OpenCodeDriverEnv;
+ 
+@@ -45,6 +47,7 @@ export type BuiltInDriversEnv =
+ export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv>> = [
+   CodexDriver,
+   ClaudeDriver,
++  CopilotDriver,
+   CursorDriver,
+   OpenCodeDriver,
+ ];
+diff --git a/apps/server/src/textGeneration/CopilotTextGeneration.ts b/apps/server/src/textGeneration/CopilotTextGeneration.ts
+new file mode 100644
+index 00000000..7199830b
+--- /dev/null
++++ b/apps/server/src/textGeneration/CopilotTextGeneration.ts
+@@ -0,0 +1,183 @@
++/**
++ * CopilotTextGeneration – Text generation layer using the Copilot SDK.
++ *
++ * Implements the TextGenerationShape contract by creating a one-shot
++ * Copilot SDK session, sending the prompt, collecting the response,
++ * and parsing JSON output.
++ *
++ * @module CopilotTextGeneration
++ */
++import { Effect, Layer } from "effect";
++
++import { TextGenerationError } from "@t3tools/contracts";
++import {
++  type BranchNameGenerationInput,
++  type TextGenerationShape,
++  type ThreadTitleGenerationResult,
++  TextGeneration,
++} from "./TextGeneration.ts";
++import {
++  buildBranchNamePrompt,
++  buildCommitMessagePrompt,
++  buildPrContentPrompt,
++  buildThreadTitlePrompt,
++} from "./TextGenerationPrompts.ts";
++import {
++  sanitizeCommitSubject,
++  sanitizePrTitle,
++  sanitizeThreadTitle,
++} from "./TextGenerationUtils.ts";
++import { resolveBundledCopilotCliPath } from "../provider/Layers/copilotCliPath.ts";
++
++function normalizeCliError(
++  operation: string,
++  cause: unknown,
++  fallback: string,
++): TextGenerationError {
++  const detail = cause instanceof Error ? cause.message : fallback;
++  return new TextGenerationError({ operation: `CopilotTextGeneration.${operation}`, detail });
++}
++
++function extractJsonFromResponse(text: string): string {
++  const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
++  if (fenceMatch?.[1]) return fenceMatch[1].trim();
++  const braceMatch = text.match(/\{[\s\S]*\}/);
++  if (braceMatch) return braceMatch[0];
++  return text.trim();
++}
++
++async function runCopilotGeneration(
++  prompt: string,
++  model: string | undefined,
++  cliPath: string | undefined,
++): Promise<string> {
++  const { CopilotClient } = await import("@github/copilot-sdk");
++  const clientOptions: Record<string, unknown> = { logLevel: "error" };
++  if (cliPath) clientOptions.cliPath = cliPath;
++  const client = new CopilotClient(clientOptions as any);
++  await client.start();
++
++  try {
++    const session = await client.createSession({
++      ...(model ? { model } : { model: undefined }),
++      streaming: false,
++    } as any);
++
++    let response = "";
++    session.on((event) => {
++      if (event.type === "assistant.message") response += (event as any).data?.content ?? "";
++      if (event.type === "assistant.message_delta") response += (event as any).data?.delta ?? "";
++    });
++
++    await session.send({ prompt, mode: "immediate" });
++    await new Promise<void>((resolve) => {
++      session.on((event) => {
++        if (event.type === "session.idle" || event.type === "abort") {
++          setTimeout(resolve, 500);
++        }
++      });
++      setTimeout(resolve, 30000);
++    });
++
++    await session.destroy().catch(() => {});
++    return response;
++  } finally {
++    await client.stop().catch(() => {});
++  }
++}
++
++export const makeCopilotTextGeneration = Effect.gen(function* () {
++    const cliPath = resolveBundledCopilotCliPath();
++
++    const runGeneration = (
++      operation: string,
++      prompt: string,
++      model: string | undefined,
++    ): Effect.Effect<Record<string, unknown>, TextGenerationError> =>
++      Effect.gen(function* () {
++        const raw = yield* Effect.tryPromise({
++          try: () => runCopilotGeneration(prompt, model, cliPath),
++          catch: (cause) => normalizeCliError(operation, cause, "Copilot generation failed"),
++        });
++        const jsonStr = extractJsonFromResponse(raw);
++        try {
++          return JSON.parse(jsonStr) as Record<string, unknown>;
++        } catch {
++          return yield* new TextGenerationError({
++            operation: `CopilotTextGeneration.${operation}`,
++            detail: `Failed to parse JSON: ${raw.slice(0, 200)}`,
++          });
++        }
++      });
++
++    const generateCommitMessage: TextGenerationShape["generateCommitMessage"] = Effect.fn(
++      "CopilotTextGeneration.generateCommitMessage",
++    )(function* (input) {
++      const { prompt } = buildCommitMessagePrompt({
++        branch: input.branch,
++        stagedSummary: input.stagedSummary,
++        stagedPatch: input.stagedPatch,
++        includeBranch: input.includeBranch === true,
++      });
++      const model = input.modelSelection?.model;
++      const result = yield* runGeneration("generateCommitMessage", prompt, model);
++      return {
++        subject: sanitizeCommitSubject(String(result.subject ?? "")),
++        body: typeof result.body === "string" ? result.body.trim() : "",
++        ...(typeof result.branch === "string" ? { branch: result.branch } : {}),
++      };
++    });
++
++    const generatePrContent: TextGenerationShape["generatePrContent"] = Effect.fn(
++      "CopilotTextGeneration.generatePrContent",
++    )(function* (input) {
++      const { prompt } = buildPrContentPrompt({
++        baseBranch: input.baseBranch,
++        headBranch: input.headBranch,
++        commitSummary: input.commitSummary,
++        diffSummary: input.diffSummary,
++        diffPatch: input.diffPatch,
++      });
++      const model = input.modelSelection?.model;
++      const result = yield* runGeneration("generatePrContent", prompt, model);
++      return {
++        title: sanitizePrTitle(String(result.title ?? "")),
++        body: typeof result.body === "string" ? result.body.trim() : "",
++      };
++    });
++
++    const generateBranchName: TextGenerationShape["generateBranchName"] = Effect.fn(
++      "CopilotTextGeneration.generateBranchName",
++    )(function* (input: BranchNameGenerationInput) {
++      const { prompt } = buildBranchNamePrompt({
++        message: input.message,
++        attachments: input.attachments,
++      });
++      const model = input.modelSelection?.model;
++      const result = yield* runGeneration("generateBranchName", prompt, model);
++      return { branch: String(result.branch ?? "") };
++    });
++
++    const generateThreadTitle: TextGenerationShape["generateThreadTitle"] = Effect.fn(
++      "CopilotTextGeneration.generateThreadTitle",
++    )(function* (input) {
++      const { prompt } = buildThreadTitlePrompt({
++        message: input.message,
++        attachments: input.attachments,
++      });
++      const model = input.modelSelection?.model;
++      const result = yield* runGeneration("generateThreadTitle", prompt, model);
++      return {
++        title: sanitizeThreadTitle(String(result.title ?? "")),
++      } satisfies ThreadTitleGenerationResult;
++    });
++
++    return {
++      generateCommitMessage,
++      generatePrContent,
++      generateBranchName,
++      generateThreadTitle,
++    } satisfies TextGenerationShape;
++  });
++
++export const CopilotTextGenerationLive = Layer.effect(TextGeneration, makeCopilotTextGeneration);
+diff --git a/apps/web/src/components/KeybindingsToast.browser.tsx b/apps/web/src/components/KeybindingsToast.browser.tsx
+index c9d081b3..cb08b8f3 100644
+--- a/apps/web/src/components/KeybindingsToast.browser.tsx
++++ b/apps/web/src/components/KeybindingsToast.browser.tsx
+@@ -125,6 +125,12 @@ function createBaseServerConfig(): ServerConfig {
+           serverPassword: "",
+           customModels: [],
+         },
++        copilot: {
++          enabled: true,
++          binaryPath: "",
++          customModels: [],
++          hideInternalModels: false,
++        },
+       },
+     },
+   };
+diff --git a/apps/web/src/components/chat/composerProviderState.tsx b/apps/web/src/components/chat/composerProviderState.tsx
+index dc61bd1e..a3f637bc 100644
+--- a/apps/web/src/components/chat/composerProviderState.tsx
++++ b/apps/web/src/components/chat/composerProviderState.tsx
+@@ -1,5 +1,5 @@
+ import {
+-  type ProviderDriverKind,
++  ProviderDriverKind,
+   type ProviderOptionSelection,
+   type ScopedThreadRef,
+   type ServerProviderModel,
+@@ -68,7 +68,16 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
+           composerSurfaceClassName: "shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset]",
+           modelPickerIconClassName: "ultrathink-chroma",
+         }
+-      : {}),
++      : !ultrathinkActive &&
++          promptEffort === "xhigh" &&
++          (provider === ProviderDriverKind.make("codex") ||
++            provider === ProviderDriverKind.make("copilot"))
++        ? {
++            composerFrameClassName: "xhigh-frame",
++            composerSurfaceClassName: "shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset]",
++            modelPickerIconClassName: "xhigh-chroma",
++          }
++        : {}),
+   };
+ }
+ 
+diff --git a/apps/web/src/components/settings/providerDriverMeta.ts b/apps/web/src/components/settings/providerDriverMeta.ts
+index ccdfd9a6..ff5c45c1 100644
+--- a/apps/web/src/components/settings/providerDriverMeta.ts
++++ b/apps/web/src/components/settings/providerDriverMeta.ts
+@@ -1,12 +1,13 @@
+ import {
+   ClaudeSettings,
+   CodexSettings,
++  CopilotSettings,
+   CursorSettings,
+   OpenCodeSettings,
+   ProviderDriverKind,
+ } from "@t3tools/contracts";
+ import type { Schema } from "effect";
+-import { ClaudeAI, CursorIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
++import { ClaudeAI, CursorIcon, GithubCopilotIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
+ 
+ type ProviderSettingsSchema = {
+   readonly fields: Readonly<Record<string, Schema.Top>>;
+@@ -59,6 +60,12 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] =
+     icon: OpenCodeIcon,
+     settingsSchema: OpenCodeSettings,
+   },
++  {
++    value: ProviderDriverKind.make("copilot"),
++    label: "GitHub Copilot",
++    icon: GithubCopilotIcon,
++    settingsSchema: CopilotSettings,
++  },
+ ];
+ 
+ export const PROVIDER_CLIENT_DEFINITION_BY_VALUE: Partial<
+diff --git a/apps/web/src/index.css b/apps/web/src/index.css
+index edf71b67..91169342 100644
+--- a/apps/web/src/index.css
++++ b/apps/web/src/index.css
+@@ -560,6 +560,12 @@ label:has(> select#reasoning-effort) select {
+   animation: ultrathink-rainbow 10s linear infinite;
+ }
+ 
++/* xhigh effort theming (GPT/Copilot Extra High) */
++@keyframes xhigh-pulse { 0% { background-position: 0% 50%; } 100% { background-position: 200% 50%; } }
++@keyframes xhigh-glow { 0% { filter: hue-rotate(140deg) saturate(1.4) brightness(1.1); } 50% { filter: hue-rotate(180deg) saturate(1.6) brightness(1.3); } 100% { filter: hue-rotate(140deg) saturate(1.4) brightness(1.1); } }
++.xhigh-frame { --xhigh-spectrum: linear-gradient(120deg, #0ea5e9 0%, #06b6d4 20%, #14b8a6 40%, #10b981 60%, #06b6d4 80%, #0ea5e9 100%); background-image: var(--xhigh-spectrum); background-size: 220% 220%; animation: xhigh-pulse 8s linear infinite; }
++.xhigh-chroma { animation: xhigh-glow 4s ease-in-out infinite; }
++
+ /* Thin scrollbar for model picker */
+ .model-picker-list::-webkit-scrollbar {
+   width: 4px;
+diff --git a/apps/web/src/session-logic.ts b/apps/web/src/session-logic.ts
+index a7767672..6227b766 100644
+--- a/apps/web/src/session-logic.ts
++++ b/apps/web/src/session-logic.ts
+@@ -45,6 +45,12 @@ export const PROVIDER_OPTIONS: Array<{
+     available: true,
+     pickerSidebarBadge: "new",
+   },
++  {
++    value: ProviderDriverKind.make("copilot"),
++    label: "GitHub Copilot",
++    available: true,
++    pickerSidebarBadge: "new",
++  },
+ ];
+ 
+ export interface WorkLogEntry {
+diff --git a/bun.lock b/bun.lock
+index c7aeb59b..62121100 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -52,6 +52,7 @@
+         "@effect/platform-bun": "catalog:",
+         "@effect/platform-node": "catalog:",
+         "@effect/sql-sqlite-bun": "catalog:",
++        "@github/copilot-sdk": "^0.3.0",
+         "@opencode-ai/sdk": "^1.3.15",
+         "@pierre/diffs": "^1.1.0-beta.16",
+         "effect": "catalog:",
+@@ -431,6 +432,22 @@
+ 
+     "@formkit/auto-animate": ["@formkit/auto-animate@0.9.0", "", {}, "sha512-VhP4zEAacXS3dfTpJpJ88QdLqMTcabMg0jwpOSxZ/VzfQVfl3GkZSCZThhGC5uhq/TxPHPzW0dzr4H9Bb1OgKA=="],
+ 
++    "@github/copilot": ["@github/copilot@1.0.40", "", { "optionalDependencies": { "@github/copilot-darwin-arm64": "1.0.40", "@github/copilot-darwin-x64": "1.0.40", "@github/copilot-linux-arm64": "1.0.40", "@github/copilot-linux-x64": "1.0.40", "@github/copilot-win32-arm64": "1.0.40", "@github/copilot-win32-x64": "1.0.40" }, "bin": { "copilot": "npm-loader.js" } }, "sha512-s35c/9R5q8O2ZQi/rzU9TBpum/DU06dczDSfmepCTisRHVTTKWS703J7kZhZYqL6OIGqnhmLfx4A7afT8YVKKA=="],
++
++    "@github/copilot-darwin-arm64": ["@github/copilot-darwin-arm64@1.0.40", "", { "os": "darwin", "cpu": "arm64", "bin": { "copilot-darwin-arm64": "copilot" } }, "sha512-syHKff/G53VzosHRXG6pX+MEc00tMdly0SZS4jC0fFUSY2/6R7lgi4IEZt57Q6WKdjBiqn8EvEQ94efdRdPEzA=="],
++
++    "@github/copilot-darwin-x64": ["@github/copilot-darwin-x64@1.0.40", "", { "os": "darwin", "cpu": "x64", "bin": { "copilot-darwin-x64": "copilot" } }, "sha512-ai6PgHLx5SgC7Ht3Hy2tNepdnAnqcWaPPtYFaP2UGS69r1O87JBA/pB2QHVZP3vX34/4RyoOB/WQ1kiT5pvcpg=="],
++
++    "@github/copilot-linux-arm64": ["@github/copilot-linux-arm64@1.0.40", "", { "os": "linux", "cpu": "arm64", "bin": { "copilot-linux-arm64": "copilot" } }, "sha512-mAh8GmGmkkUiFFzBIvXYmReSIw5c3NWHme0iYT2v/72RWNAwRq4HLKP9NhHapZqUPyi7jQnRxllYPybZDFS6Mw=="],
++
++    "@github/copilot-linux-x64": ["@github/copilot-linux-x64@1.0.40", "", { "os": "linux", "cpu": "x64", "bin": { "copilot-linux-x64": "copilot" } }, "sha512-gCo6RgpXwa39FZSdj5dMkN/z0xT/NS29MpkeYQ/S34SSoUsSbIKUWcuoMjRiXpaDWWuXQsFjXcqnwNs67JOejA=="],
++
++    "@github/copilot-sdk": ["@github/copilot-sdk@0.3.0", "", { "dependencies": { "@github/copilot": "^1.0.36-0", "vscode-jsonrpc": "^8.2.1", "zod": "^4.3.6" } }, "sha512-SUo35k56pzzgYgwmDPHcu7kZxPrzXbH66IWXaEf6pmb94DlA709F82HrrDeja087TL4djJ9OuvRFWWOKCosAsg=="],
++
++    "@github/copilot-win32-arm64": ["@github/copilot-win32-arm64@1.0.40", "", { "os": "win32", "cpu": "arm64", "bin": { "copilot-win32-arm64": "copilot.exe" } }, "sha512-59ANg2xfeeWwl8UNqVe4sk2OAizgMjKVRgTALYExHMc8p5HJyL8nrQ9np6pIkO/De0UpR8rUzk4D8oCqU7XLIQ=="],
++
++    "@github/copilot-win32-x64": ["@github/copilot-win32-x64@1.0.40", "", { "os": "win32", "cpu": "x64", "bin": { "copilot-win32-x64": "copilot.exe" } }, "sha512-dKS5L7SwzXZI/gaY9LIn8eoTGEPgczGLIgt1KwjfkHgk3achHwIuEjxSqPRVD1Z7q08uuOcuwVzOlwE8V38zNQ=="],
++
+     "@hono/node-server": ["@hono/node-server@1.19.14", "", { "peerDependencies": { "hono": "^4" } }, "sha512-GwtvgtXxnWsucXvbQXkRgqksiH2Qed37H9xHZocE5sA3N8O8O8/8FA3uclQXxXVzc9XBZuEOMK7+r02FmSpHtw=="],
+ 
+     "@img/colour": ["@img/colour@1.1.0", "", {}, "sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ=="],
+@@ -1989,7 +2006,7 @@
+ 
+     "vscode-json-languageservice": ["vscode-json-languageservice@4.1.8", "", { "dependencies": { "jsonc-parser": "^3.0.0", "vscode-languageserver-textdocument": "^1.0.1", "vscode-languageserver-types": "^3.16.0", "vscode-nls": "^5.0.0", "vscode-uri": "^3.0.2" } }, "sha512-0vSpg6Xd9hfV+eZAaYN63xVVMOTmJ4GgHxXnkLCh+9RsQBkWKIghzLhW2B9ebfG+LQQg8uLtsQ2aUKjTgE+QOg=="],
+ 
+-    "vscode-jsonrpc": ["vscode-jsonrpc@8.2.0", "", {}, "sha512-C+r0eKJUIfiDIfwJhria30+TYWPtuHJXHtI7J0YlOmKAo7ogxP20T0zxB7HZQIFhIyvoBPwWskjxrvAtfjyZfA=="],
++    "vscode-jsonrpc": ["vscode-jsonrpc@8.2.1", "", {}, "sha512-kdjOSJ2lLIn7r1rtrMbbNCHjyMPfRnowdKjBQ+mGq6NAW5QY2bEZC/khaC5OR8svbbjvLEaIXkOq45e2X9BIbQ=="],
+ 
+     "vscode-languageserver": ["vscode-languageserver@9.0.1", "", { "dependencies": { "vscode-languageserver-protocol": "3.17.5" }, "bin": { "installServerIntoExtension": "bin/installServerIntoExtension" } }, "sha512-woByF3PDpkHFUreUa7Hos7+pUWdeWMXRd26+ZX2A8cFx6v/JPTtd4/uN0/jB6XQHYaOlHbio03NTHCqrgG5n7g=="],
+ 
+@@ -2159,6 +2176,8 @@
+ 
+     "vscode-json-languageservice/jsonc-parser": ["jsonc-parser@3.3.1", "", {}, "sha512-HUgH65KyejrUFPvHFPbqOY0rsFip3Bo5wb4ngvdi1EpCYWUQDC5V+Y7mZws+DLkr4M//zQJoanu1SP+87Dv1oQ=="],
+ 
++    "vscode-languageserver-protocol/vscode-jsonrpc": ["vscode-jsonrpc@8.2.0", "", {}, "sha512-C+r0eKJUIfiDIfwJhria30+TYWPtuHJXHtI7J0YlOmKAo7ogxP20T0zxB7HZQIFhIyvoBPwWskjxrvAtfjyZfA=="],
++
+     "yaml-language-server/request-light": ["request-light@0.5.8", "", {}, "sha512-3Zjgh+8b5fhRJBQZoy+zbVKpAQGLyka0MPgW3zruTF4dFFJ8Fqcfu9YsAvi/rvdcaTeWG3MkbZv4WKxAn/84Lg=="],
+ 
+     "yaml-language-server/yaml": ["yaml@2.7.1", "", { "bin": { "yaml": "bin.mjs" } }, "sha512-10ULxpnOCQXxJvBgxsn9ptjq6uviG/htZKk9veJGhlqn3w/DxQ631zFF+nlQXLwmImeS5amR2dl2U8sg6U9jsQ=="],
+diff --git a/packages/contracts/src/model.ts b/packages/contracts/src/model.ts
+index cd8ab45a..bbb4a799 100644
+--- a/packages/contracts/src/model.ts
++++ b/packages/contracts/src/model.ts
+@@ -129,6 +129,7 @@ const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
+ const CLAUDE_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
+ const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
+ const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
++const COPILOT_DRIVER_KIND = ProviderDriverKind.make("copilot");
+ 
+ export const DEFAULT_MODEL = "gpt-5.4";
+ export const DEFAULT_GIT_TEXT_GENERATION_MODEL = "gpt-5.4-mini";
+@@ -138,6 +139,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
+   [CLAUDE_DRIVER_KIND]: "claude-sonnet-4-6",
+   [CURSOR_DRIVER_KIND]: "auto",
+   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
++  [COPILOT_DRIVER_KIND]: "gpt-4o",
+ };
+ 
+ /** Per-provider text generation model defaults. */
+@@ -148,6 +150,7 @@ export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER: Partial<
+   [CLAUDE_DRIVER_KIND]: "claude-haiku-4-5",
+   [CURSOR_DRIVER_KIND]: "composer-2",
+   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
++  [COPILOT_DRIVER_KIND]: "gpt-4o-mini",
+ };
+ 
+ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
+@@ -189,6 +192,7 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
+     "opus-4.5": "claude-opus-4-5",
+   },
+   [OPENCODE_DRIVER_KIND]: {},
++  [COPILOT_DRIVER_KIND]: {},
+ };
+ 
+ // ── Provider display names ────────────────────────────────────────────
+@@ -198,4 +202,5 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
+   [CLAUDE_DRIVER_KIND]: "Claude",
+   [CURSOR_DRIVER_KIND]: "Cursor",
+   [OPENCODE_DRIVER_KIND]: "OpenCode",
++  [COPILOT_DRIVER_KIND]: "GitHub Copilot",
+ };
+diff --git a/packages/contracts/src/providerRuntime.ts b/packages/contracts/src/providerRuntime.ts
+index f5e4e745..c6c55767 100644
+--- a/packages/contracts/src/providerRuntime.ts
++++ b/packages/contracts/src/providerRuntime.ts
+@@ -25,6 +25,8 @@ const RuntimeEventRawSource = Schema.Union([
+   Schema.Literal("claude.sdk.permission"),
+   Schema.Literal("codex.sdk.thread-event"),
+   Schema.Literal("opencode.sdk.event"),
++  Schema.Literal("copilot.sdk.session-event"),
++  Schema.Literal("copilot.sdk.synthetic"),
+   Schema.Literal("acp.jsonrpc"),
+   Schema.TemplateLiteral(["acp.", Schema.String, ".extension"]),
+ ]);
+diff --git a/packages/contracts/src/settings.ts b/packages/contracts/src/settings.ts
+index 087b0314..182e008e 100644
+--- a/packages/contracts/src/settings.ts
++++ b/packages/contracts/src/settings.ts
+@@ -312,6 +312,33 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
+ );
+ export type OpenCodeSettings = typeof OpenCodeSettings.Type;
+ 
++export const CopilotSettings = makeProviderSettingsSchema({
++  enabled: Schema.Boolean.pipe(
++    Schema.withDecodingDefault(Effect.succeed(true)),
++    Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
++  ),
++  binaryPath: makeBinaryPathSetting("copilot").pipe(
++    Schema.annotateKey({
++      title: "Binary path",
++      description: "Path to the Copilot SDK binary (optional, auto-detected).",
++      providerSettingsForm: { placeholder: "copilot", clearWhenEmpty: "omit" },
++    }),
++  ),
++  customModels: Schema.Array(Schema.String).pipe(
++    Schema.withDecodingDefault(Effect.succeed([])),
++    Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
++  ),
++  hideInternalModels: Schema.Boolean.pipe(
++    Schema.withDecodingDefault(Effect.succeed(false)),
++    Schema.annotateKey({
++      title: "Hide internal-only models",
++      description: "Filter out models marked as internal-only from the model picker.",
++      providerSettingsForm: { control: "switch" },
++    }),
++  ),
++});
++export type CopilotSettings = typeof CopilotSettings.Type;
++
+ export const ObservabilitySettings = Schema.Struct({
+   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+   otlpMetricsUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+@@ -344,6 +371,7 @@ export const ServerSettings = Schema.Struct({
+     claudeAgent: ClaudeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+     cursor: CursorSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
++    copilot: CopilotSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
+   // are `ProviderInstanceConfig` envelopes. The driver-specific config blob
+diff --git a/scripts/build-desktop-artifact.ts b/scripts/build-desktop-artifact.ts
+index 74e8bed0..a17a5792 100644
+--- a/scripts/build-desktop-artifact.ts
++++ b/scripts/build-desktop-artifact.ts
+@@ -573,6 +573,10 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
+     directories: {
+       buildResources: "apps/desktop/resources",
+     },
++    asarUnpack: [
++      "node_modules/@github/copilot-*/**",
++      "node_modules/@github/copilot/**",
++    ],
+   };
+   const updateChannel = resolveDesktopUpdateChannel(version);
+   const publishConfig = resolveGitHubPublishConfig(updateChannel);
+@@ -814,9 +818,20 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
+       ...commandOutputOptions(options.verbose),
+       // Windows needs shell mode to resolve .cmd shims (e.g. bun.cmd).
+       shell: process.platform === "win32",
+-    })`bun install --production --omit optional`,
++    })`bun install --production`,
+   );
+ 
++  // Force-install cross-platform Copilot SDK binaries so the asar contains
++  // the correct native module for the target platform.
++  yield* Effect.log("[desktop-artifact] Ensuring cross-platform Copilot SDK binaries...");
++  yield* runCommand(
++    ChildProcess.make({
++      cwd: stageAppDir,
++      ...commandOutputOptions(options.verbose),
++      shell: process.platform === "win32",
++    })`npm install --force @github/copilot-sdk`,
++  ).pipe(Effect.ignore({ log: true }));
++
+   const buildEnv: NodeJS.ProcessEnv = {
+     ...process.env,
+   };

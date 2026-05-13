@@ -1,0 +1,73 @@
+```json
+{
+  "feature": "copilot-cli-provider",
+  "operations": [
+    {
+      "type": "replace-in-file",
+      "path": "packages/contracts/src/provider.ts",
+      "search": "export const ProviderEnum = z.enum([\"claude\", \"codex\"]);",
+      "replace": "export const ProviderEnum = z.enum([\"claude\", \"codex\", \"copilot-cli\"]);"
+    },
+    {
+      "type": "replace-in-file",
+      "path": "packages/contracts/src/provider.ts",
+      "search": "export type Provider = z.infer<typeof ProviderEnum>;",
+      "replace": "export type Provider = z.infer<typeof ProviderEnum>;\n\nexport const CopilotCliCommandTypeEnum = z.enum([\"suggest\", \"explain\"]);\nexport type CopilotCliCommandType = z.infer<typeof CopilotCliCommandTypeEnum>;\n\nexport const CopilotCliShellTypeEnum = z.enum([\"bash\", \"zsh\", \"powershell\"]);\nexport type CopilotCliShellType = z.infer<typeof CopilotCliShellTypeEnum>;\n\nexport const CopilotCliConfigSchema = z.object({\n  commandType: CopilotCliCommandTypeEnum.default(\"suggest\"),\n  shellType: CopilotCliShellTypeEnum.default(\"bash\"),\n});\nexport type CopilotCliConfig = z.infer<typeof CopilotCliConfigSchema>;"
+    },
+    {
+      "type": "replace-in-file",
+      "path": "packages/contracts/src/providerRuntime.ts",
+      "search": "import { z } from \"zod\";",
+      "replace": "import { z } from \"zod\";\nimport { CopilotCliCommandTypeEnum, CopilotCliShellTypeEnum } from \"./provider.js\";"
+    },
+    {
+      "type": "append-file",
+      "path": "packages/contracts/src/providerRuntime.ts",
+      "content": "\n// Copilot CLI specific event schemas\nexport const CopilotCliStatusSchema = z.object({\n  ghInstalled: z.boolean(),\n  authenticated: z.boolean(),\n  extensionInstalled: z.boolean(),\n  error: z.string().optional(),\n});\nexport type CopilotCliStatus = z.infer<typeof CopilotCliStatusSchema>;\n\nexport const CopilotCliRequestSchema = z.object({\n  prompt: z.string(),\n  commandType: CopilotCliCommandTypeEnum,\n  shellType: CopilotCliShellTypeEnum.optional(),\n  context: z.string().optional(),\n});\nexport type CopilotCliRequest = z.infer<typeof CopilotCliRequestSchema>;\n\nexport const CopilotCliResponseSchema = z.object({\n  type: z.enum([\"output\", \"error\", \"complete\"]),\n  content: z.string(),\n  commandType: CopilotCliCommandTypeEnum,\n  exitCode: z.number().optional(),\n});\nexport type CopilotCliResponse = z.infer<typeof CopilotCliResponseSchema>;\n"
+    },
+    {
+      "type": "replace-in-file",
+      "path": "packages/contracts/src/index.ts",
+      "search": "export * from \"./provider.js\";",
+      "replace": "export * from \"./provider.js\";\nexport * from \"./providerRuntime.js\";"
+    },
+    {
+      "type": "ensure-directory",
+      "path": "apps/server/src/provider"
+    },
+    {
+      "type": "write-file",
+      "path": "apps/server/src/provider/copilotCliManager.ts",
+      "content": "import { spawn, exec } from \"child_process\";\nimport { promisify } from \"util\";\nimport type {\n  CopilotCliStatus,\n  CopilotCliRequest,\n  CopilotCliResponse,\n  CopilotCliCommandType,\n  CopilotCliShellType,\n} from \"@t3code/contracts\";\n\nconst execAsync = promisify(exec);\n\nexport class CopilotCliManager {\n  private static instance: CopilotCliManager | null = null;\n\n  public static getInstance(): CopilotCliManager {\n    if (!CopilotCliManager.instance) {\n      CopilotCliManager.instance = new CopilotCliManager();\n    }\n    return CopilotCliManager.instance;\n  }\n\n  /**\n   * Check if the gh CLI is installed and available in PATH\n   */\n  async checkGhInstalled(): Promise<boolean> {\n    try {\n      await execAsync(\"gh --version\");\n      return true;\n    } catch {\n      return false;\n    }\n  }\n\n  /**\n   * Check if the user is authenticated with gh CLI\n   */\n  async checkAuthenticated(): Promise<boolean> {\n    try {\n      const { stdout } = await execAsync(\"gh auth status\");\n      return stdout.includes(\"Logged in\") || !stdout.includes(\"not logged\");\n    } catch (error) {\n      // gh auth status returns non-zero exit code when not authenticated\n      return false;\n    }\n  }\n\n  /**\n   * Check if the Copilot CLI extension is installed\n   */\n  async checkExtensionInstalled(): Promise<boolean> {\n    try {\n      const { stdout } = await execAsync(\"gh extension list\");\n      return stdout.toLowerCase().includes(\"copilot\");\n    } catch {\n      return false;\n    }\n  }\n\n  /**\n   * Get the full status of Copilot CLI availability\n   */\n  async getStatus(): Promise<CopilotCliStatus> {\n    const ghInstalled = await this.checkGhInstalled();\n    \n    if (!ghInstalled) {\n      return {\n        ghInstalled: false,\n        authenticated: false,\n        extensionInstalled: false,\n        error: \"GitHub CLI (gh) is not installed. Install it from https://cli.github.com/\",\n      };\n    }\n\n    const authenticated = await this.checkAuthenticated();\n    \n    if (!authenticated) {\n      return {\n        ghInstalled: true,\n        authenticated: false,\n        extensionInstalled: false,\n        error: \"Not authenticated with GitHub CLI. Run 'gh auth login' to authenticate.\",\n      };\n    }\n\n    const extensionInstalled = await this.checkExtensionInstalled();\n    \n    if (!extensionInstalled) {\n      return {\n        ghInstalled: true,\n        authenticated: true,\n        extensionInstalled: false,\n        error: \"Copilot CLI extension is not installed. Run 'gh extension install github/gh-copilot' to install.\",\n      };\n    }\n\n    return {\n      ghInstalled: true,\n      authenticated: true,\n      extensionInstalled: true,\n    };\n  }\n\n  /**\n   * Build the command arguments for gh copilot\n   */\n  private buildCommandArgs(\n    commandType: CopilotCliCommandType,\n    prompt: string,\n    shellType?: CopilotCliShellType\n  ): string[] {\n    const args = [\"copilot\", commandType];\n    \n    if (commandType === \"suggest\" && shellType) {\n      args.push(\"-t\", shellType);\n    }\n    \n    args.push(prompt);\n    \n    return args;\n  }\n\n  /**\n   * Execute a Copilot CLI command and stream the output\n   */\n  async executeCommand(\n    request: CopilotCliRequest,\n    onData: (response: CopilotCliResponse) => void,\n    onComplete: (response: CopilotCliResponse) => void,\n    onError: (response: CopilotCliResponse) => void\n  ): Promise<void> {\n    const status = await this.getStatus();\n    \n    if (status.error) {\n      onError({\n        type: \"error\",\n        content: status.error,\n        commandType: request.commandType,\n      });\n      return;\n    }\n\n    const args = this.buildCommandArgs(\n      request.commandType,\n      request.prompt,\n      request.shellType\n    );\n\n    return new Promise((resolve) => {\n      const proc = spawn(\"gh\", args, {\n        stdio: [\"pipe\", \"pipe\", \"pipe\"],\n        env: { ...process.env, GH_PROMPT_DISABLED: \"1\" },\n      });\n\n      let outputBuffer = \"\";\n      let errorBuffer = \"\";\n\n      proc.stdout?.on(\"data\", (data: Buffer) => {\n        const chunk = data.toString();\n        outputBuffer += chunk;\n        onData({\n          type: \"output\",\n          content: chunk,\n          commandType: request.commandType,\n        });\n      });\n\n      proc.stderr?.on(\"data\", (data: Buffer) => {\n        errorBuffer += data.toString();\n      });\n\n      proc.on(\"close\", (code) => {\n        if (code === 0) {\n          onComplete({\n            type: \"complete\",\n            content: outputBuffer,\n            commandType: request.commandType,\n            exitCode: code,\n          });\n        } else {\n          onError({\n            type: \"error\",\n            content: errorBuffer || `Command exited with code ${code}`,\n            commandType: request.commandType,\n            exitCode: code ?? undefined,\n          });\n        }\n        resolve();\n      });\n\n      proc.on(\"error\", (err) => {\n        onError({\n          type: \"error\",\n          content: `Failed to execute command: ${err.message}`,\n          commandType: request.commandType,\n        });\n        resolve();\n      });\n\n      // Set a timeout for long-running commands\n      const timeout = setTimeout(() => {\n        proc.kill();\n        onError({\n          type: \"error\",\n          content: \"Command timed out after 60 seconds\",\n          commandType: request.commandType,\n        });\n        resolve();\n      }, 60000);\n\n      proc.on(\"close\", () => clearTimeout(timeout));\n    });\n  }\n\n  /**\n   * Execute a command and return the full result (non-streaming)\n   */\n  async executeCommandSync(\n    request: CopilotCliRequest\n  ): Promise<CopilotCliResponse> {\n    return new Promise((resolve) => {\n      let result: CopilotCliResponse | null = null;\n\n      this.executeCommand(\n        request,\n        () => {}, // Ignore streaming data\n        (response) => {\n          result = response;\n          resolve(result);\n        },\n        (response) => {\n          result = response;\n          resolve(result);\n        }\n      );\n    });\n  }\n}\n\nexport const copilotCliManager = CopilotCliManager.getInstance();\n"
+    },
+    {
+      "type": "write-file",
+      "path": "apps/server/src/provider/index.ts",
+      "content": "export { CopilotCliManager, copilotCliManager } from \"./copilotCliManager.js\";\n"
+    },
+    {
+      "type": "replace-in-file",
+      "path": "apps/web/src/providerModels.ts",
+      "search": "export const PROVIDERS = [\"claude\", \"codex\"] as const;",
+      "replace": "export const PROVIDERS = [\"claude\", \"codex\", \"copilot-cli\"] as const;"
+    },
+    {
+      "type": "replace-in-file",
+      "path": "apps/web/src/providerModels.ts",
+      "search": "export const PROVIDER_LABELS: Record<Provider, string> = {\n  claude: \"Claude\",\n  codex: \"Codex\",\n};",
+      "replace": "export const PROVIDER_LABELS: Record<Provider, string> = {\n  claude: \"Claude\",\n  codex: \"Codex\",\n  \"copilot-cli\": \"GitHub Copilot CLI\",\n};"
+    },
+    {
+      "type": "replace-in-file",
+      "path": "apps/web/src/providerModels.ts",
+      "search": "export const PROVIDER_DESCRIPTIONS: Record<Provider, string> = {\n  claude: \"Anthropic Claude AI assistant\",\n  codex: \"OpenAI Codex code generation\",\n};",
+      "replace": "export const PROVIDER_DESCRIPTIONS: Record<Provider, string> = {\n  claude: \"Anthropic Claude AI assistant\",\n  codex: \"OpenAI Codex code generation\",\n  \"copilot-cli\": \"GitHub Copilot CLI for shell commands and explanations\",\n};\n\nexport const COPILOT_CLI_COMMAND_TYPES = [\"suggest\", \"explain\"] as const;\nexport type CopilotCliCommandType = (typeof COPILOT_CLI_COMMAND_TYPES)[number];\n\nexport const COPILOT_CLI_SHELL_TYPES = [\"bash\", \"zsh\", \"powershell\"] as const;\nexport type CopilotCliShellType = (typeof COPILOT_CLI_SHELL_TYPES)[number];\n\nexport interface CopilotCliConfig {\n  commandType: CopilotCliCommandType;\n  shellType: CopilotCliShellType;\n}\n\nexport const DEFAULT_COPILOT_CLI_CONFIG: CopilotCliConfig = {\n  commandType: \"suggest\",\n  shellType: \"bash\",\n};"
+    },
+    {
+      "type": "append-file",
+      "path": ".docs/provider-architecture.md",
+      "content": "\n## GitHub Copilot CLI Provider\n\n### Overview\n\nThe Copilot CLI provider enables integration with GitHub Copilot through the `gh copilot` CLI extension. This provider is command-based (stateless) unlike the Claude and Codex providers which may maintain session state.\n\n### Setup Requirements\n\n1. **GitHub CLI Installation**: Install the `gh` CLI from https://cli.github.com/\n2. **Authentication**: Run `gh auth login` to authenticate with GitHub\n3. **Copilot Extension**: Install the extension with `gh extension install github/gh-copilot`\n\n### Command Types\n\n- **suggest**: Get shell command suggestions for a given task\n- **explain**: Get explanations for shell commands or code\n\n### Shell Types (for suggest command)\n\n- bash\n- zsh  \n- powershell\n\n### Architecture\n\nThe Copilot CLI provider follows a subprocess model:\n\n1. `CopilotCliManager` handles detection, authentication checks, and command execution\n2. Commands are executed via Node.js `spawn` with streaming output support\n3. Output is normalized to the shared event schema (`CopilotCliResponse`)\n4. Timeouts are implemented to prevent hanging on long-running commands\n\n### Status Detection\n\nThe manager performs three status checks:\n1. `gh --version` - Verify gh CLI is installed\n2. `gh auth status` - Verify user is authenticated\n3. `gh extension list` - Verify copilot extension is installed\n\n### Error Handling\n\nClear error messages are provided for:\n- Missing gh CLI installation\n- Authentication failures\n- Missing Copilot extension\n- Command timeouts (60 second default)\n- Non-zero exit codes\n\n### Limitations\n\n- Stateless: Each command is independent (no conversation context)\n- Interactive prompts disabled via `GH_PROMPT_DISABLED=1` environment variable\n- Streaming support depends on CLI TTY behavior\n"
+    }
+  ]
+}
+```

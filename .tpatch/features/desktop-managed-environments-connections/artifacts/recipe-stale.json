@@ -1,0 +1,5 @@
+{
+  "stale": true,
+  "reason": "patch touches files absent from recipe: apps/desktop/src/backendEnvironment.test.ts, apps/desktop/src/backendEnvironment.ts, apps/desktop/src/clientPersistence.test.ts, apps/desktop/src/clientPersistence.ts, apps/desktop/src/main.ts, apps/desktop/src/managedBackendEnvironment.ts, apps/desktop/src/managedBackendEnvironmentIpc.ts, apps/desktop/src/preload.ts, apps/web/src/clientPersistenceStorage.test.ts, apps/web/src/clientPersistenceStorage.ts, apps/web/src/components/settings/ConnectionsSettings.tsx, apps/web/src/components/settings/SettingsPanels.browser.tsx, apps/web/src/environments/runtime/catalog.ts, apps/web/src/environments/runtime/index.ts, apps/web/src/environments/runtime/service.addSavedEnvironment.test.ts, apps/web/src/environments/runtime/service.ts, apps/web/src/localApi.test.ts, packages/contracts/src/ipc.ts",
+  "detected_at": "2026-05-06T06:06:34Z"
+}

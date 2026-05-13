@@ -1,0 +1,146 @@
+diff --git a/apps/server/src/provider/Layers/CopilotProvider.ts b/apps/server/src/provider/Layers/CopilotProvider.ts
+index 27499e5e..1d6d1246 100644
+--- a/apps/server/src/provider/Layers/CopilotProvider.ts
++++ b/apps/server/src/provider/Layers/CopilotProvider.ts
+@@ -161,12 +161,6 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
+     isCustom: false,
+     capabilities: CLAUDE_EFFORT_CAPABILITIES,
+   },
+-  {
+-    slug: "claude-opus-4.6-1m",
+-    name: "Claude Opus 4.6 (1M context)",
+-    isCustom: false,
+-    capabilities: CLAUDE_EFFORT_CAPABILITIES,
+-  },
+   {
+     slug: "claude-opus-4.5",
+     name: "Claude Opus 4.5",
+@@ -310,7 +304,7 @@ const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus")(
+     }
+ 
+     // Build models from SDK response, fall back to built-in
+-    const runtimeModels: ServerProviderModel[] = sdkResult.models.length > 0
++    const allModels: ServerProviderModel[] = sdkResult.models.length > 0
+       ? sdkResult.models.map((info: any) => ({
+           slug: info.id ?? info.slug ?? info.name,
+           name: info.name ?? info.id ?? info.slug,
+@@ -319,6 +313,11 @@ const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus")(
+         }))
+       : [...BUILT_IN_MODELS];
+ 
++    // Filter out internal-only models when the setting is enabled
++    const runtimeModels = settings.hideInternalModels
++      ? allModels.filter((model) => !model.name.toLowerCase().includes("internal only"))
++      : allModels;
++
+     return buildServerProvider({
+       provider: PROVIDER,
+       enabled: true,
+diff --git a/apps/web/src/components/KeybindingsToast.browser.tsx b/apps/web/src/components/KeybindingsToast.browser.tsx
+index f6b150b0..634e635b 100644
+--- a/apps/web/src/components/KeybindingsToast.browser.tsx
++++ b/apps/web/src/components/KeybindingsToast.browser.tsx
+@@ -98,7 +98,7 @@ function createBaseServerConfig(): ServerConfig {
+       textGenerationModelSelection: { provider: "codex" as const, model: "gpt-5.4-mini" },
+       providers: {
+         codex: { enabled: true, binaryPath: "", homePath: "", customModels: [] },
+-        copilot: { enabled: true, binaryPath: "", homePath: "", customModels: [] },
++        copilot: { enabled: true, binaryPath: "", homePath: "", customModels: [], hideInternalModels: false },
+         claudeAgent: { enabled: true, binaryPath: "", customModels: [], launchArgs: "" },
+         cursor: { enabled: true, binaryPath: "", apiEndpoint: "", customModels: [] },
+         opencode: {
+diff --git a/apps/web/src/components/settings/SettingsPanels.tsx b/apps/web/src/components/settings/SettingsPanels.tsx
+index 4ce132aa..0ecb8e74 100644
+--- a/apps/web/src/components/settings/SettingsPanels.tsx
++++ b/apps/web/src/components/settings/SettingsPanels.tsx
+@@ -1458,6 +1458,36 @@ export function GeneralSettingsPanel() {
+                       </div>
+                     ) : null}
+ 
++                    {providerCard.provider === "copilot" ? (
++                      <div className="border-t border-border/60 px-4 py-3 sm:px-5">
++                        <div className="flex items-center justify-between">
++                          <div>
++                            <span className="text-xs font-medium text-foreground">
++                              Hide internal-only models
++                            </span>
++                            <p className="mt-0.5 text-xs text-muted-foreground">
++                              Filter out models marked as internal-only from the model picker.
++                            </p>
++                          </div>
++                          <Switch
++                            checked={settings.providers.copilot.hideInternalModels}
++                            onCheckedChange={(checked) =>
++                              updateSettings({
++                                providers: {
++                                  ...settings.providers,
++                                  copilot: {
++                                    ...settings.providers.copilot,
++                                    hideInternalModels: Boolean(checked),
++                                  },
++                                },
++                              })
++                            }
++                            aria-label="Hide internal-only models"
++                          />
++                        </div>
++                      </div>
++                    ) : null}
++
+                     <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+                       <div className="text-xs font-medium text-foreground">Models</div>
+                       <div className="mt-1 text-xs text-muted-foreground">
+diff --git a/apps/web/src/components/ui/toast.tsx b/apps/web/src/components/ui/toast.tsx
+index 083ca480..c2060d9a 100644
+--- a/apps/web/src/components/ui/toast.tsx
++++ b/apps/web/src/components/ui/toast.tsx
+@@ -12,6 +12,7 @@ import {
+   InfoIcon,
+   LoaderCircleIcon,
+   TriangleAlertIcon,
++  XIcon,
+ } from "lucide-react";
+ 
+ import { cn } from "~/lib/utils";
+@@ -248,7 +249,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
+           return (
+             <Toast.Root
+               className={cn(
+-                "absolute z-[calc(9999-var(--toast-index))] h-(--toast-calc-height) w-full select-none rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s] before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
++                "group/toast absolute z-[calc(9999-var(--toast-index))] h-(--toast-calc-height) w-full select-none rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s] before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
+                 // Base positioning using data-position
+                 "data-[position*=right]:right-0 data-[position*=right]:left-auto",
+                 "data-[position*=left]:right-auto data-[position*=left]:left-0",
+@@ -363,6 +364,12 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
+                   </Toast.Action>
+                 )}
+               </Toast.Content>
++              <Toast.Close
++                className="absolute right-1.5 top-1.5 rounded-md p-0.5 text-muted-foreground/40 opacity-0 transition-opacity hover:text-foreground/70 group-hover/toast:opacity-100 data-expanded:opacity-100"
++                aria-label="Close notification"
++              >
++                <XIcon className="size-3.5" />
++              </Toast.Close>
+             </Toast.Root>
+           );
+         })}
+diff --git a/packages/contracts/src/settings.ts b/packages/contracts/src/settings.ts
+index f6f41c8d..520b6010 100644
+--- a/packages/contracts/src/settings.ts
++++ b/packages/contracts/src/settings.ts
+@@ -96,6 +96,7 @@ export const CopilotSettings = Schema.Struct({
+   binaryPath: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+   homePath: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+   customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
++  hideInternalModels: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+ });
+ export type CopilotSettings = typeof CopilotSettings.Type;
+ 
+@@ -248,6 +249,7 @@ const CopilotSettingsPatch = Schema.Struct({
+   binaryPath: Schema.optionalKey(Schema.String),
+   homePath: Schema.optionalKey(Schema.String),
+   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
++  hideInternalModels: Schema.optionalKey(Schema.Boolean),
+ });
+ 
+ const CursorSettingsPatch = Schema.Struct({

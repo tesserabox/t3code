@@ -1,0 +1,184 @@
+diff --git a/apps/server/src/provider/Layers/CopilotProvider.ts b/apps/server/src/provider/Layers/CopilotProvider.ts
+index 6e84bb2c..a0fae467 100644
+--- a/apps/server/src/provider/Layers/CopilotProvider.ts
++++ b/apps/server/src/provider/Layers/CopilotProvider.ts
+@@ -42,28 +42,97 @@ const GPT_MODEL_CAPABILITIES: ModelCapabilities = {
+   promptInjectedEffortLevels: [],
+ };
+ 
++const EFFORT_LABEL_MAP: Record<string, string> = {
++  xhigh: "Extra High",
++  high: "High",
++  medium: "Medium",
++  low: "Low",
++};
++
++const DEFAULT_EFFORT = "high";
++
++/**
++ * Build ModelCapabilities dynamically from SDK model info.
++ * Uses `supportedReasoningEfforts` from the SDK response to populate
++ * effort levels, instead of hardcoding per model family.
++ */
++function buildCapabilitiesFromSdkModel(info: any): ModelCapabilities {
++  const efforts: string[] = info.supportedReasoningEfforts ?? [];
++  const defaultEffort: string | undefined = info.defaultReasoningEffort;
++
++  if (efforts.length === 0) {
++    return DEFAULT_COPILOT_MODEL_CAPABILITIES;
++  }
++
++  return {
++    reasoningEffortLevels: efforts.map((value: string) => ({
++      value,
++      label: EFFORT_LABEL_MAP[value] ?? value.charAt(0).toUpperCase() + value.slice(1),
++      ...(value === (defaultEffort ?? DEFAULT_EFFORT) ? { isDefault: true } : {}),
++    })),
++    supportsFastMode: false,
++    supportsThinkingToggle: false,
++    contextWindowOptions: [],
++    promptInjectedEffortLevels: [],
++  };
++}
++
++const CLAUDE_EFFORT_CAPABILITIES: ModelCapabilities = {
++  reasoningEffortLevels: [
++    { value: "high", label: "High", isDefault: true },
++    { value: "medium", label: "Medium" },
++    { value: "low", label: "Low" },
++  ],
++  supportsFastMode: false,
++  supportsThinkingToggle: false,
++  contextWindowOptions: [],
++  promptInjectedEffortLevels: [],
++};
++
++const CLAUDE_OPUS_47_CAPABILITIES: ModelCapabilities = {
++  reasoningEffortLevels: [
++    { value: "medium", label: "Medium", isDefault: true },
++  ],
++  supportsFastMode: false,
++  supportsThinkingToggle: false,
++  contextWindowOptions: [],
++  promptInjectedEffortLevels: [],
++};
++
+ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
+   {
+-    slug: "gpt-5",
+-    name: "GPT-5",
++    slug: "gpt-5.4",
++    name: "GPT-5.4",
+     isCustom: false,
+     capabilities: GPT_MODEL_CAPABILITIES,
+   },
+   {
+-    slug: "gpt-5-mini",
+-    name: "GPT-5 Mini",
++    slug: "gpt-5.4-mini",
++    name: "GPT-5.4 Mini",
+     isCustom: false,
+     capabilities: GPT_MODEL_CAPABILITIES,
+   },
+   {
+-    slug: "gpt-5.4",
+-    name: "GPT-5.4",
++    slug: "gpt-5.3-codex",
++    name: "GPT-5.3 Codex",
+     isCustom: false,
+     capabilities: GPT_MODEL_CAPABILITIES,
+   },
+   {
+-    slug: "gpt-5.4-mini",
+-    name: "GPT-5.4 Mini",
++    slug: "gpt-5.2-codex",
++    name: "GPT-5.2 Codex",
++    isCustom: false,
++    capabilities: GPT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "gpt-5.2",
++    name: "GPT-5.2",
++    isCustom: false,
++    capabilities: GPT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "gpt-5-mini",
++    name: "GPT-5 Mini",
+     isCustom: false,
+     capabilities: GPT_MODEL_CAPABILITIES,
+   },
+@@ -71,18 +140,42 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
+     slug: "gpt-4.1",
+     name: "GPT-4.1",
+     isCustom: false,
+-    capabilities: GPT_MODEL_CAPABILITIES,
++    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
+   },
+   {
+     slug: "claude-sonnet-4.6",
+     name: "Claude Sonnet 4.6",
+     isCustom: false,
+-    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
++    capabilities: CLAUDE_EFFORT_CAPABILITIES,
+   },
+   {
+     slug: "claude-opus-4.7",
+     name: "Claude Opus 4.7",
+     isCustom: false,
++    capabilities: CLAUDE_OPUS_47_CAPABILITIES,
++  },
++  {
++    slug: "claude-opus-4.6",
++    name: "Claude Opus 4.6",
++    isCustom: false,
++    capabilities: CLAUDE_EFFORT_CAPABILITIES,
++  },
++  {
++    slug: "claude-opus-4.6-1m",
++    name: "Claude Opus 4.6 (1M context)",
++    isCustom: false,
++    capabilities: CLAUDE_EFFORT_CAPABILITIES,
++  },
++  {
++    slug: "claude-opus-4.5",
++    name: "Claude Opus 4.5",
++    isCustom: false,
++    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "claude-sonnet-4.5",
++    name: "Claude Sonnet 4.5",
++    isCustom: false,
+     capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
+   },
+   {
+@@ -92,14 +185,14 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
+     capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
+   },
+   {
+-    slug: "gemini-3.1-pro",
+-    name: "Gemini 3.1 Pro",
++    slug: "claude-sonnet-4",
++    name: "Claude Sonnet 4",
+     isCustom: false,
+     capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
+   },
+   {
+-    slug: "gemini-3-pro-preview",
+-    name: "Gemini 3 Pro Preview",
++    slug: "gemini-3.1-pro",
++    name: "Gemini 3.1 Pro",
+     isCustom: false,
+     capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
+   },
+@@ -219,9 +312,7 @@ const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus")(
+           slug: info.id ?? info.slug ?? info.name,
+           name: info.name ?? info.id ?? info.slug,
+           isCustom: false,
+-          capabilities: (info.id ?? "").startsWith("gpt-")
+-            ? GPT_MODEL_CAPABILITIES
+-            : DEFAULT_COPILOT_MODEL_CAPABILITIES,
++          capabilities: buildCapabilitiesFromSdkModel(info),
+         }))
+       : [...BUILT_IN_MODELS];
