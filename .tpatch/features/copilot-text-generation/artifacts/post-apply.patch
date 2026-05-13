@@ -1,11 +1,3 @@
-<<<<<<< HEAD
-diff --git a/apps/server/src/git/Layers/CopilotTextGeneration.ts b/apps/server/src/git/Layers/CopilotTextGeneration.ts
-new file mode 100644
-index 00000000..284a406d
---- /dev/null
-+++ b/apps/server/src/git/Layers/CopilotTextGeneration.ts
-@@ -0,0 +1,184 @@
-=======
 diff --git a/README.md b/README.md
 index e4523250..de1b1514 100644
 --- a/README.md
@@ -4277,7 +4269,6 @@ index 00000000..7199830b
 --- /dev/null
 +++ b/apps/server/src/textGeneration/CopilotTextGeneration.ts
 @@ -0,0 +1,183 @@
->>>>>>> reconcile/multi-provider
 +/**
 + * CopilotTextGeneration – Text generation layer using the Copilot SDK.
 + *
@@ -4295,32 +4286,19 @@ index 00000000..7199830b
 +  type TextGenerationShape,
 +  type ThreadTitleGenerationResult,
 +  TextGeneration,
-<<<<<<< HEAD
-+} from "../Services/TextGeneration.ts";
-=======
 +} from "./TextGeneration.ts";
->>>>>>> reconcile/multi-provider
 +import {
 +  buildBranchNamePrompt,
 +  buildCommitMessagePrompt,
 +  buildPrContentPrompt,
 +  buildThreadTitlePrompt,
-<<<<<<< HEAD
-+} from "../Prompts.ts";
-=======
 +} from "./TextGenerationPrompts.ts";
->>>>>>> reconcile/multi-provider
 +import {
 +  sanitizeCommitSubject,
 +  sanitizePrTitle,
 +  sanitizeThreadTitle,
-<<<<<<< HEAD
-+} from "../Utils.ts";
-+import { resolveBundledCopilotCliPath } from "../../provider/Layers/copilotCliPath.ts";
-=======
 +} from "./TextGenerationUtils.ts";
 +import { resolveBundledCopilotCliPath } from "../provider/Layers/copilotCliPath.ts";
->>>>>>> reconcile/multi-provider
 +
 +function normalizeCliError(
 +  operation: string,
@@ -4379,13 +4357,7 @@ index 00000000..7199830b
 +  }
 +}
 +
-<<<<<<< HEAD
-+export const CopilotTextGenerationLive = Layer.effect(
-+  TextGeneration,
-+  Effect.gen(function* () {
-=======
 +export const makeCopilotTextGeneration = Effect.gen(function* () {
->>>>>>> reconcile/multi-provider
 +    const cliPath = resolveBundledCopilotCliPath();
 +
 +    const runGeneration = (
@@ -4477,63 +4449,6 @@ index 00000000..7199830b
 +      generateBranchName,
 +      generateThreadTitle,
 +    } satisfies TextGenerationShape;
-<<<<<<< HEAD
-+  }),
-+);
-diff --git a/apps/server/src/git/Layers/RoutingTextGeneration.ts b/apps/server/src/git/Layers/RoutingTextGeneration.ts
-index f04ea43f..79a3518c 100644
---- a/apps/server/src/git/Layers/RoutingTextGeneration.ts
-+++ b/apps/server/src/git/Layers/RoutingTextGeneration.ts
-@@ -16,6 +16,7 @@ import { CodexTextGenerationLive } from "./CodexTextGeneration.ts";
- import { ClaudeTextGenerationLive } from "./ClaudeTextGeneration.ts";
- import { CursorTextGenerationLive } from "./CursorTextGeneration.ts";
- import { OpenCodeTextGenerationLive } from "./OpenCodeTextGeneration.ts";
-+import { CopilotTextGenerationLive } from "./CopilotTextGeneration.ts";
- 
- // ---------------------------------------------------------------------------
- // Internal service tags so both concrete layers can coexist.
-@@ -37,6 +38,10 @@ class OpenCodeTextGen extends Context.Service<OpenCodeTextGen, TextGenerationSha
-   "t3/git/Layers/RoutingTextGeneration/OpenCodeTextGen",
- ) {}
- 
-+class CopilotTextGenTag extends Context.Service<CopilotTextGenTag, TextGenerationShape>()(
-+  "t3/git/Layers/RoutingTextGeneration/CopilotTextGen",
-+) {}
-+
- // ---------------------------------------------------------------------------
- // Routing implementation
- // ---------------------------------------------------------------------------
-@@ -45,7 +50,7 @@ const makeRoutingTextGeneration = Effect.gen(function* () {
-   const codexTextGen = yield* CodexTextGen;
-   const byProvider: Record<string, TextGenerationShape> = {
-     codex: codexTextGen,
--    copilot: codexTextGen,
-+    copilot: yield* CopilotTextGenTag,
-     claudeAgent: yield* ClaudeTextGen,
-     cursor: yield* CursorTextGen,
-     opencode: yield* OpenCodeTextGen,
-@@ -95,6 +100,14 @@ const InternalOpenCodeLayer = Layer.effect(
-   }),
- ).pipe(Layer.provide(OpenCodeTextGenerationLive));
- 
-+const InternalCopilotLayer = Layer.effect(
-+  CopilotTextGenTag,
-+  Effect.gen(function* () {
-+    const svc = yield* TextGeneration;
-+    return svc;
-+  }),
-+).pipe(Layer.provide(CopilotTextGenerationLive));
-+
- export const RoutingTextGenerationLive = Layer.effect(
-   TextGeneration,
-   makeRoutingTextGeneration,
-@@ -103,4 +116,5 @@ export const RoutingTextGenerationLive = Layer.effect(
-   Layer.provide(InternalClaudeLayer),
-   Layer.provide(InternalCursorLayer),
-   Layer.provide(InternalOpenCodeLayer),
-+  Layer.provide(InternalCopilotLayer),
- );
-=======
 +  });
 +
 +export const CopilotTextGenerationLive = Layer.effect(TextGeneration, makeCopilotTextGeneration);
@@ -4840,4 +4755,3 @@ index 74e8bed0..a17a5792 100644
    const buildEnv: NodeJS.ProcessEnv = {
      ...process.env,
    };
->>>>>>> reconcile/multi-provider

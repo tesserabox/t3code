@@ -44,21 +44,29 @@ requested    → tpatch analyze    → analyzed
 analyzed     → tpatch define     → defined
 defined      → tpatch explore    → defined (exploration.md enriched)
 defined      → tpatch implement  → implementing (apply-recipe.json ready)
-implementing → tpatch apply --mode execute                          → applied
-             OR tpatch apply --mode started / edit / --mode done    → applied
+implementing → tpatch apply                                         → applied
+             OR tpatch apply --mode started / edit / --mode done    → applied (advanced)
 applied      → tpatch record     → active
 active       → tpatch reconcile  → active | upstream_merged | blocked
 ```
 
 Never skip a phase. Never go backwards without `tpatch reconcile`.
 
+## Verify (freshness overlay)
+
+**Verify before composing.** When you finish `tpatch apply` and want a cheap, machine-checkable signal that the feature is structurally healthy, run `tpatch verify <slug>`. Verify writes a freshness record on the feature; downstream readers see a `verified-fresh` label until the recipe, patch, or any hard parent's state drifts, at which point the label flips to `verified-stale`. The lifecycle state is never changed by verify — `applied` stays `applied`. Verify is read-only on the working tree. It does **not** run the project's test suite; for that, use `tpatch test`.
+
+Run `tpatch verify --all` to walk every tracked feature in topological order; pre-apply features are reported with a `skipped: pre-apply` row at their topo position. Non-zero exit if any feature failed.
+
+If `tpatch status` reports `dependent-broken`, a downstream feature's base SHA is no longer reachable — re-record affected features on the new base or run `tpatch reconcile`.
+
 ## Before You Run Anything
 
 1. `tpatch status <slug>` — see current state and last command.
 2. `tpatch next <slug>` — get the exact next command (add `--format harness-json` for structured output).
 3. Only then proceed. Do not guess the next phase from file presence.
-4. Run tpatch record <slug> BEFORE git commit. If you already committed, use tpatch record <slug> --from <base> — a clean working tree without --from is refused.
-5. Run tpatch reconcile only on a CLEAN working tree at the target upstream state. Commit or stash first; reconcile refuses dirty trees, conflict markers, and .orig/.rej leftovers. See docs/reconcile.md for the workflow patterns.
+4. Run tpatch record <slug> BEFORE git commit. If you already committed, prefer tpatch record <slug> --auto (infers base from .tpatch/upstream.lock + merge-base); fall back to tpatch record <slug> --from <base> when --auto refuses (ambiguous merge-base or empty lock). A clean working tree without --auto/--from is refused. Or run `tpatch land <slug>` to compose record + safe-stage (limits the index to the feature's apply path set plus `.tpatch/features/<slug>/`) + one Git commit carrying the locked four-trailer block (`Tpatch-Feature`, `Tpatch-Patch-SHA`, `Tpatch-Recipe-SHA`, `Tpatch-Base-Commit`) plus the repo `Co-authored-by:` trailer. Use `--dry-run` to preview without mutating; use `--allow-extra-paths` to opt into staging dirty paths outside the feature scope.
+5. Run tpatch reconcile only on a CLEAN working tree at the target upstream state. Commit or stash first; reconcile refuses dirty trees, conflict markers, mid-merge state, and `*.orig` / `*.rej` leftovers. Reconcile is a mutating operation (it can replay patches and update `.tpatch/` artifacts), so re-run `tpatch record` afterwards to capture any changes.
 
 ## Phases — Path A and Path B
 
@@ -201,7 +209,7 @@ Toggle the whole feature with `features_dependencies: true|false` in `.tpatch/co
 
 ## Reconcile Phase 3.5 — Provider-assisted conflict resolution (v0.5.0)
 
-On 3-way conflict, `tpatch reconcile --resolve` asks the provider to merge each conflicted file inside a **shadow worktree** (`.tpatch/shadow/<slug>-<ts>/`). The real working tree is never touched until you accept. See `docs/adrs/ADR-010-provider-conflict-resolver.md` for the full decision table.
+On 3-way conflict, `tpatch reconcile --resolve` asks the provider to merge each conflicted file inside a **shadow worktree** (`.tpatch/shadow/<slug>-<ts>/`). The real working tree is never touched until you accept.
 
 ### Flags
 
@@ -267,7 +275,7 @@ When `tpatch reconcile` cannot forward-apply cleanly, it returns verdict `3WayCo
 6. Forward-apply: edit the files directly in the working tree; tpatch does not need to drive this.
 7. Once the tree is clean and the feature works, run:
    ```
-   tpatch apply <slug> --mode execute         # or --mode started / --mode done if you authored ad-hoc
+   tpatch apply <slug>                          # auto runs prepare→execute→done; or use --mode started / --mode done if you authored ad-hoc
    tpatch record <slug>
    ```
 8. The `post-apply.patch` is rewritten; the recipe is regenerated on the next `implement`.
@@ -294,6 +302,7 @@ When they disagree — e.g. the recipe's `replace-in-file` can no longer find it
 | `tpatch implement <slug>` | Generate deterministic apply recipe (add `--manual` for Path B) |
 | `tpatch apply <slug>` | Execute apply recipe or record an interactive session |
 | `tpatch record <slug>` | Capture patches (tracked + untracked files) |
+| `tpatch land <slug>` | Project a feature into Git history (one commit + Tpatch-Feature trailer block) |
 | `tpatch reconcile [slug...]` | Reconcile features against upstream |
 | `tpatch provider check` | Validate LLM provider endpoint |
 | `tpatch config show\|set` | Manage configuration |

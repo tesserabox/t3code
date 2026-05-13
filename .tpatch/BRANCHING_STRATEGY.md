@@ -1,17 +1,19 @@
 # Branching Strategy for Fork Management
 
-## Current State
+## Current State (pre-reconcile v0.0.23)
 ```
-upstream/main (ada410bc, v0.0.21) ← our upstream tracking ref
+upstream/main (b83e9c95, v0.0.23) ← 62 commits ahead of our lock
          │
-         └── main (ada410bc) ← synced with upstream, clean base
+         └── main (2245ccfd, tag: pre-reconcile-v0.0.23) ← production fork with 25 features
               │
-              └── feature/copilot-provider-v2 (6460e521) ← ALL our features, typechecks ✅
+              └── (last lock: 9df3c640, v0.0.21) features, typechecks ✅
 ```
 
 **Old branches (archive, do not use):**
 - `feature/copilot-provider` — pre-v0.0.21, based on old upstream
+- `feature/copilot-provider-v2` — merged into main during v0.0.21 reconcile
 - `reconciliation/v0.0.21-assessment` — invalid merge, case study data only
+- `reconcile/v0.0.22` — merged into main, completed
 
 ## Strategy: `main` = Our Fully-Featured Fork
 
@@ -22,74 +24,58 @@ upstream/main (ada410bc, v0.0.21) ← our upstream tracking ref
 
 ### Workflow
 
-**Normal development:**
+**When upstream releases a new version (proven fresh branch approach):**
 ```bash
-# Work on feature/copilot-provider-v2 (or any feature branch)
-git checkout feature/copilot-provider-v2
-# Make changes, typecheck, commit
-git push origin feature/copilot-provider-v2
-# When ready, merge into main:
-git checkout main
-git merge feature/copilot-provider-v2
-git push origin main
-```
+# 1. Tag save point
+git tag pre-reconcile-v<version> HEAD
 
-**When upstream releases a new version:**
-```bash
-# 1. Fetch upstream
+# 2. Fetch upstream
 git fetch upstream
 
-# 2. Create a reconciliation branch from upstream
-git checkout -b reconcile/v0.0.22 upstream/main
+# 3. Run tpatch reconcile for verdicts
+tpatch reconcile --from <lock-commit> --to upstream/main
 
-# 3. Copy tpatch metadata
+# 4. Create reconciliation branch from upstream
+git checkout -b reconcile/v<version> upstream/main
+
+# 5. Copy tpatch + claude metadata
 git checkout main -- .tpatch/ .claude/
+git add .tpatch/ .claude/ && git commit -m "chore: bring tpatch metadata"
 
-# 4. Re-apply features (Option A: fresh branch approach)
-# Copy our new files (CopilotAdapter, CopilotProvider, etc.)
-# Add copilot to all Record<ProviderKind, ...>
-# Adapt to any new upstream API changes
-# TypeScript guides you — compile errors show exactly what's missing
+# 6. Re-apply features in dependency order (Path B — agent-authored)
+# For each feature:
+#   tpatch apply <slug> --mode started
+#   <make changes, adapt to new upstream APIs>
+#   git commit -m "feat(<slug>): re-apply for v<version>"
+#   tpatch apply <slug> --mode done
+#   tpatch record <slug> --from HEAD~1
 
-# 5. Typecheck
-bun run typecheck  # must be 10/10
+# 7. Typecheck
+bun run typecheck  # must pass all packages
 
-# 6. Merge into main
+# 8. Merge into main
 git checkout main
-git merge reconcile/v0.0.22
+git merge reconcile/v<version>
 git push origin main
 
-# 7. Delete the reconciliation branch
-git branch -d reconcile/v0.0.22
+# 9. Update upstream lock
+tpatch reconcile --update-lock
 ```
 
 **Key rules:**
 1. **Never merge upstream directly into main** — always use a reconciliation branch
 2. **Never rebase main** — it's the stable production ref
-3. **Feature branches branch from main** — they include our customizations
-4. **tpatch reconcile runs on the reconciliation branch** — not on main
-5. **Main is always deployable** — if typecheck passes, it's good
+3. **tpatch reconcile runs before branching** — verdicts guide re-application
+4. **Apply features in dependency order** — roots first (copilot-cli-provider before dependents)
+5. **One commit per feature** — enables clean `tpatch record --from HEAD~1`
+6. **Tag before reconcile** — `pre-reconcile-v<version>` for safe rollback
+7. **Main is always deployable** — if typecheck passes, it's good
 
-### Applying this now
-
-```bash
-# Make main point to our fully-featured v2 branch
-git checkout main
-git merge feature/copilot-provider-v2
-git push origin main
+### Current reconciliation target
 ```
-
-After this:
-```
-upstream/main (ada410bc) ← upstream tracking, read-only
-main (merged v2) ← our production fork, all features
-```
-
-### Future upstream sync
-```
-upstream/main (new commits)
+upstream/main (b83e9c95, v0.0.23, 62 commits ahead)
          │
-         └── reconcile/v0.0.22 ← fresh from upstream, re-apply features here
+         └── reconcile/v0.0.23 ← create from upstream, re-apply features here
               │
               └── main (merge reconcile when ready)
 ```
