@@ -1,0 +1,11 @@
+{
+  "slug": "session-search",
+  "title": "Add in-session search (Cmd/Ctrl+F) to find text within the current chat thread. Should search across all messages (user and assistant), tool outputs, and work log entries. Highlight matches and allow navigation between results. Similar to browser find-in-page but scoped to the thread content.",
+  "outcome": "upstreamed",
+  "phase": "phase-2-operation-level",
+  "upstream_ref": "upstream/main",
+  "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+  "notes": [
+    "All recipe operations already present in upstream"
+  ]
+}

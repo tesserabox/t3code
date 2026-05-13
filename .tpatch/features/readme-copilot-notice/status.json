@@ -2,15 +2,20 @@
   "id": "readme-copilot-notice",
   "slug": "readme-copilot-notice",
   "title": "Add a section to README.md documenting the experimental Copilot provider integration, with a warning that sessions created with the Copilot provider are not backward-compatible with upstream t3code — switching back to upstream will fail to load those sessions.",
-  "state": "applied",
+  "state": "blocked",
   "compatibility": "unknown",
   "requested_at": "2026-04-21T05:46:38Z",
-  "updated_at": "2026-05-03T07:26:11Z",
-  "last_command": "record",
-  "notes": "Patch recorded",
+  "updated_at": "2026-05-13T08:00:32Z",
+  "last_command": "reconcile",
+  "notes": "Reconciliation blocked — manual intervention needed",
   "apply": {
     "base_commit": "fc8a225a788a0590f38d2c2e9494cfb68a342fe0",
     "has_patch": true
   },
-  "reconcile": {}
+  "reconcile": {
+    "attempted_at": "2026-05-13T08:00:32Z",
+    "upstream_ref": "upstream/main",
+    "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+    "outcome": "blocked"
+  }
 }

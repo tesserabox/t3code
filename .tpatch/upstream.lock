@@ -1,6 +1,6 @@
 # Upstream Lock
-# Updated by tpatch reconcile at 2026-04-18T08:24:23Z
-remote: upstream
-branch: upstream/main
-commit: 9df3c640210fecccb58f7fbc735f81ca0ee011bd
-url: ""
+# Updated by tpatch reconcile at 2026-05-13T08:00:36Z
+remote: "upstream"
+branch: "main"
+commit: "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa"
+url: "https://github.com/pingdotgg/t3code.git"

@@ -2,18 +2,26 @@
   "id": "copilot-text-generation",
   "slug": "copilot-text-generation",
   "title": "Implement native text generation for the Copilot provider. Currently thread titles, commit messages, branch names, and PR content route to the Codex CLI, which requires Codex to be installed. Create CopilotTextGeneration.ts that uses the Copilot SDK session to generate text, matching the pattern of ClaudeTextGeneration.ts. Wire into RoutingTextGeneration.ts to replace the codexTextGen fallback.",
-  "state": "applied",
+  "state": "blocked",
   "compatibility": "unknown",
   "requested_at": "2026-04-27T04:50:12Z",
-  "updated_at": "2026-05-03T07:26:11Z",
-  "last_command": "record",
-  "notes": "Patch recorded",
+  "updated_at": "2026-05-13T08:00:28Z",
+  "last_command": "reconcile",
+  "notes": "Reconciliation blocked — manual intervention needed",
   "apply": {
     "completed_at": "2026-04-27T05:51:55Z",
     "base_commit": "fc8a225a788a0590f38d2c2e9494cfb68a342fe0",
     "has_patch": true
   },
-  "reconcile": {},
+  "reconcile": {
+    "attempted_at": "2026-05-13T08:00:28Z",
+    "upstream_ref": "upstream/main",
+    "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+    "outcome": "blocked",
+    "labels": [
+      "blocked-by-parent"
+    ]
+  },
   "depends_on": [
     {
       "slug": "copilot-cli-provider",

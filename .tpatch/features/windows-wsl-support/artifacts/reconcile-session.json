@@ -1,0 +1,17 @@
+{
+  "slug": "windows-wsl-support",
+  "title": "Add Windows and WSL support for T3 Code. Support running projects from both Windows filesystem and WSL distros in the same desktop instance, with desktop-managed environment registration, isolated per-environment state, wsl.exe server spawning, wslpath translation, auto-install of the server binary inside WSL, and native file watching via inotify.",
+  "outcome": "blocked",
+  "phase": "phase-4-blocked",
+  "upstream_ref": "upstream/main",
+  "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+  "notes": [
+    "Operation-level: 29 present, 21 applicable, 34 conflicts",
+    "Provider semantic check error: generation request failed: Post \"http://localhost:4141/v1/messages\": context deadline exceeded",
+    "Patch cannot be applied cleanly — manual intervention needed",
+    "git: error: corrupt patch at line 1440"
+  ],
+  "conflicts": [
+    "Forward-apply failed — check for merge conflicts"
+  ]
+}

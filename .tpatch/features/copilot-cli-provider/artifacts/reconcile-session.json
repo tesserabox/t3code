@@ -1,13 +1,17 @@
 {
   "slug": "copilot-cli-provider",
   "title": "Expand the providers so that not only claude and codex are\n supported, but add the ability to use the copilot cli, as requested in\n this github issue from the upstream\n https://github.com/pingdotgg/t3code/issues/193",
-  "outcome": "reapplied",
-  "phase": "phase-4-forward-apply",
+  "outcome": "blocked",
+  "phase": "phase-4-blocked",
   "upstream_ref": "upstream/main",
-  "upstream_commit": "9df3c640210fecccb58f7fbc735f81ca0ee011bd",
+  "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
   "notes": [
-    "Operation-level: 1 present, 19 applicable, 37 conflicts",
-    "Provider semantic check: still_needed",
-    "Patch can be re-applied cleanly to upstream"
+    "Operation-level: 5 present, 3 applicable, 56 conflicts",
+    "Provider semantic check error: generation request failed: Post \"http://localhost:4141/v1/messages\": context deadline exceeded",
+    "Patch cannot be applied cleanly — manual intervention needed",
+    "git: error: corrupt patch at line 3291"
+  ],
+  "conflicts": [
+    "Forward-apply failed — check for merge conflicts"
   ]
 }
