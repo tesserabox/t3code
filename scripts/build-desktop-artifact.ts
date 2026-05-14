@@ -571,6 +571,10 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     directories: {
       buildResources: "apps/desktop/resources",
     },
+    asarUnpack: [
+      "node_modules/@github/copilot-*/**",
+      "node_modules/@github/copilot/**",
+    ],
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
   const publishConfig = resolveGitHubPublishConfig(updateChannel);
@@ -814,6 +818,17 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       shell: process.platform === "win32",
     })`bun install --production --omit optional`,
   );
+
+  // Force-install cross-platform Copilot SDK binaries so the asar contains
+  // the correct native module for the target platform.
+  yield* Effect.log("[desktop-artifact] Ensuring cross-platform Copilot SDK binaries...");
+  yield* runCommand(
+    ChildProcess.make({
+      cwd: stageAppDir,
+      ...commandOutputOptions(options.verbose),
+      shell: process.platform === "win32",
+    })`npm install --force @github/copilot-sdk`,
+  ).pipe(Effect.ignore({ log: true }));
 
   const buildEnv: NodeJS.ProcessEnv = {
     ...process.env,
