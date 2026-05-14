@@ -331,6 +331,33 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
 );
 export type OpenCodeSettings = typeof OpenCodeSettings.Type;
 
+export const CopilotSettings = makeProviderSettingsSchema({
+  enabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+    Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+  ),
+  binaryPath: makeBinaryPathSetting("copilot").pipe(
+    Schema.annotateKey({
+      title: "Binary path",
+      description: "Path to the Copilot SDK binary (optional, auto-detected).",
+      providerSettingsForm: { placeholder: "copilot", clearWhenEmpty: "omit" },
+    }),
+  ),
+  customModels: Schema.Array(Schema.String).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+    Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+  ),
+  hideInternalModels: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+    Schema.annotateKey({
+      title: "Hide internal-only models",
+      description: "Filter out models marked as internal-only from the model picker.",
+      providerSettingsForm: { control: "switch" },
+    }),
+  ),
+});
+export type CopilotSettings = typeof CopilotSettings.Type;
+
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   otlpMetricsUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
@@ -367,6 +394,7 @@ export const ServerSettings = Schema.Struct({
   // is removed entirely.
   providers: Schema.Struct({
     codex: CodexSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    copilot: CopilotSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     claudeAgent: ClaudeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     cursor: CursorSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
