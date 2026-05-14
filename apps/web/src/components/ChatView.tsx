@@ -147,6 +147,7 @@ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { ChatHeader } from "./chat/ChatHeader";
+import { SessionSearchBar } from "./chat/SessionSearchBar";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import { resolveEffectiveEnvMode, resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
@@ -704,6 +705,9 @@ export default function ChatView(props: ChatViewProps) {
   const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
     useState<Record<string, number>>({});
   const [planSidebarOpen, setPlanSidebarOpen] = useState(false);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
   const shouldUsePlanSidebarSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   // Tracks whether the user explicitly dismissed the sidebar for the active turn.
   const planSidebarDismissedForTurnRef = useRef<string | null>(null);
@@ -1358,6 +1362,19 @@ export default function ChatView(props: ChatViewProps) {
     threadError: activeThread?.error,
   });
   const isWorking = phase === "running" || isSendBusy || isConnecting || isRevertingCheckpoint;
+
+  const searchMatches = useMemo(() => {
+    if (!searchQuery.trim() || !activeThread) return [];
+    const query = searchQuery.toLowerCase();
+    const matches: Array<{ messageId: string; index: number }> = [];
+    for (const msg of activeThread.messages) {
+      if (msg.text.toLowerCase().includes(query)) {
+        matches.push({ messageId: msg.id, index: matches.length });
+      }
+    }
+    return matches;
+  }, [searchQuery, activeThread]);
+
   const activeWorkStartedAt = deriveActiveWorkStartedAt(
     activeLatestTurn,
     activeThread?.session ?? null,
@@ -2524,6 +2541,19 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
 
+      if (command === "chat.search") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (isSearchOpen) {
+          setIsSearchOpen(false);
+          setSearchQuery("");
+          setCurrentMatchIndex(0);
+        } else {
+          setIsSearchOpen(true);
+        }
+        return;
+      }
+
       const scriptId = projectScriptIdFromCommand(command);
       if (!scriptId || !activeProject) return;
       const script = activeProject.scripts.find((entry) => entry.id === scriptId);
@@ -3552,6 +3582,34 @@ export default function ChatView(props: ChatViewProps) {
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {/* Messages Wrapper */}
           <div className="relative flex min-h-0 flex-1 flex-col">
+            {isSearchOpen ? (
+              <SessionSearchBar
+                query={searchQuery}
+                onQueryChange={(q) => {
+                  setSearchQuery(q);
+                  setCurrentMatchIndex(0);
+                }}
+                matchCount={searchMatches.length}
+                currentMatchIndex={currentMatchIndex}
+                onNext={() =>
+                  setCurrentMatchIndex((i) =>
+                    searchMatches.length > 0 ? (i + 1) % searchMatches.length : 0,
+                  )
+                }
+                onPrevious={() =>
+                  setCurrentMatchIndex((i) =>
+                    searchMatches.length > 0
+                      ? (i - 1 + searchMatches.length) % searchMatches.length
+                      : 0,
+                  )
+                }
+                onClose={() => {
+                  setIsSearchOpen(false);
+                  setSearchQuery("");
+                  setCurrentMatchIndex(0);
+                }}
+              />
+            ) : null}
             {/* Messages — LegendList handles virtualization and scrolling internally */}
             <MessagesTimeline
               key={activeThread.id}
