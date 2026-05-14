@@ -1,15 +1,20 @@
 # T3 Code
 
-T3 Code is a minimal web GUI for coding agents (currently Codex, Claude, and OpenCode, more coming soon).
+T3 Code is a minimal web GUI for coding agents (currently Codex, Claude, Copilot, and more coming soon).
+
+> [!CAUTION]
+> **Copilot support is experimental.** The integration depends on `@github/copilot-sdk` which is
+> pre-1.0 and may introduce backward-incompatible changes at any time.
 
 ## Installation
 
 > [!WARNING]
-> T3 Code currently supports Codex, Claude, and OpenCode.
+> T3 Code currently supports Codex, Claude, Copilot, and OpenCode.
 > Install and authenticate at least one provider before use:
 >
 > - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
 > - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
+> - Copilot: run `gh auth login` (requires [GitHub CLI](https://cli.github.com/))
 > - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
 
 ### Run without installing
