@@ -7,7 +7,8 @@
  *
  * @module CopilotTextGeneration
  */
-import { Effect, Layer } from "effect";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 
 import { TextGenerationError } from "@t3tools/contracts";
 import {
@@ -73,9 +74,11 @@ async function runCopilotGeneration(
     await new Promise<void>((resolve) => {
       session.on((event) => {
         if (event.type === "session.idle" || event.type === "abort") {
+          // @effect-diagnostics-next-line effect/globalTimers:off
           setTimeout(resolve, 500);
         }
       });
+      // @effect-diagnostics-next-line effect/globalTimers:off
       setTimeout(resolve, 30000);
     });
 
@@ -100,14 +103,15 @@ export const makeCopilotTextGeneration = Effect.gen(function* () {
           catch: (cause) => normalizeCliError(operation, cause, "Copilot generation failed"),
         });
         const jsonStr = extractJsonFromResponse(raw);
-        try {
-          return JSON.parse(jsonStr) as Record<string, unknown>;
-        } catch {
-          return yield* new TextGenerationError({
-            operation: `CopilotTextGeneration.${operation}`,
-            detail: `Failed to parse JSON: ${raw.slice(0, 200)}`,
-          });
-        }
+        const parsed = yield* Effect.try({
+          try: () => JSON.parse(jsonStr) as Record<string, unknown>,
+          catch: () =>
+            new TextGenerationError({
+              operation: `CopilotTextGeneration.${operation}`,
+              detail: `Failed to parse JSON: ${raw.slice(0, 200)}`,
+            }),
+        });
+        return parsed;
       });
 
     const generateCommitMessage: TextGenerationShape["generateCommitMessage"] = Effect.fn(

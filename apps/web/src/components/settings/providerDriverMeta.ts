@@ -6,7 +6,7 @@ import {
   OpenCodeSettings,
   ProviderDriverKind,
 } from "@t3tools/contracts";
-import type { Schema } from "effect";
+import type * as Schema from "effect/Schema";
 import { ClaudeAI, CursorIcon, GithubCopilotIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
 
 type ProviderSettingsSchema = {
@@ -42,6 +42,12 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     settingsSchema: CodexSettings,
   },
   {
+    value: ProviderDriverKind.make("copilot"),
+    label: "GitHub Copilot",
+    icon: GithubCopilotIcon,
+    settingsSchema: CopilotSettings,
+  },
+  {
     value: ProviderDriverKind.make("claudeAgent"),
     label: "Claude",
     icon: ClaudeAI,
@@ -59,12 +65,6 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     label: "OpenCode",
     icon: OpenCodeIcon,
     settingsSchema: OpenCodeSettings,
-  },
-  {
-    value: ProviderDriverKind.make("copilot"),
-    label: "GitHub Copilot",
-    icon: GithubCopilotIcon,
-    settingsSchema: CopilotSettings,
   },
 ];
 

@@ -1,8 +1,13 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Layer, PlatformError, Scope } from "effect";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as PlatformError from "effect/PlatformError";
+import * as Scope from "effect/Scope";
 import { describe, expect } from "vitest";
 
 import { checkpointRefForThreadTurn } from "../Utils.ts";
@@ -114,11 +119,87 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
           cwd: tmp,
           fromCheckpointRef,
           toCheckpointRef,
+          ignoreWhitespace: true,
         });
 
         expect(diff).toContain("diff --git");
         expect(diff).not.toContain("[truncated]");
         expect(diff).toContain("+line 04999");
+      }),
+    );
+
+    it.effect("can hide indentation churn when changes wrap existing lines", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-checkpoint-store-whitespace");
+        const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 0);
+        const toCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+
+        const componentPath = path.join(tmp, "Component.tsx");
+        yield* writeTextFile(
+          componentPath,
+          [
+            "export function View() {",
+            "  return (",
+            "    <section>",
+            "      <h1>Title</h1>",
+            "      <p>Body</p>",
+            "    </section>",
+            "  );",
+            "}",
+            "",
+          ].join("\n"),
+        );
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: fromCheckpointRef,
+        });
+        yield* writeTextFile(
+          componentPath,
+          [
+            "export function View() {",
+            "  return (",
+            "    <section>",
+            "      {isReady ? (",
+            "        <div>",
+            "          <h1>Title</h1>",
+            "          <p>Body</p>",
+            "        </div>",
+            "      ) : null}",
+            "    </section>",
+            "  );",
+            "}",
+            "",
+          ].join("\n"),
+        );
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: toCheckpointRef,
+        });
+
+        const normalDiff = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+          ignoreWhitespace: false,
+        });
+        const whitespaceIgnoredDiff = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+          ignoreWhitespace: true,
+        });
+
+        expect(normalDiff).toContain("diff --git");
+        expect(normalDiff).toContain("-      <h1>Title</h1>");
+        expect(normalDiff).toContain("+          <h1>Title</h1>");
+        expect(whitespaceIgnoredDiff).toContain("diff --git");
+        expect(whitespaceIgnoredDiff).toContain("+      {isReady ? (");
+        expect(whitespaceIgnoredDiff).toContain("+        <div>");
+        expect(whitespaceIgnoredDiff).not.toContain("-      <h1>Title</h1>");
+        expect(whitespaceIgnoredDiff).not.toContain("+          <h1>Title</h1>");
       }),
     );
   });

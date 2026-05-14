@@ -27,7 +27,11 @@ import {
 } from "@github/copilot-sdk";
 
 type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
-import { Effect, Layer, Queue, Stream } from "effect";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -675,7 +679,7 @@ function makeSyntheticEvent(
     ...withRefs({
       threadId,
       eventId: makeEventId("copilot-synthetic"),
-      createdAt: new Date().toISOString(),
+      createdAt: DateTime.formatIso(DateTime.nowUnsafe()),
       turnId: extra?.turnId,
       itemId: extra?.itemId,
       requestId: extra?.requestId,
@@ -719,14 +723,14 @@ function createSessionRecord(input: {
     client: input.client,
     session: input.session,
     threadId: input.threadId,
-    createdAt: new Date().toISOString(),
+    createdAt: DateTime.formatIso(DateTime.nowUnsafe()),
     runtimeMode: input.runtimeMode,
     cwd: input.cwd,
     configDir: input.configDir,
     model: input.model,
     reasoningEffort: input.reasoningEffort,
     interactionMode: undefined,
-    updatedAt: new Date().toISOString(),
+    updatedAt: DateTime.formatIso(DateTime.nowUnsafe()),
     turnSentAt: undefined,
     lastError: undefined,
     currentTurnId: undefined,
@@ -1682,7 +1686,7 @@ export const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
           record.model = input.model;
           record.reasoningEffort = input.reasoningEffort;
           record.interactionMode = undefined;
-          record.updatedAt = new Date().toISOString();
+          record.updatedAt = DateTime.formatIso(DateTime.nowUnsafe());
           record.unsubscribe = nextSession.on((event) => {
             handleSessionEvent(record, event);
           });
@@ -1964,6 +1968,7 @@ export const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
             }
           } catch (err: unknown) {
             const message = err instanceof Error ? err.message : String(err);
+            // @effect-diagnostics-next-line effect/globalConsole:off
             console.warn("[CopilotAdapter] rpc.skills discovery failed:", message);
           }
         })();
@@ -2032,7 +2037,7 @@ export const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
         yield* syncInteractionMode(record, interactionMode);
 
         const turnId = TurnId.make(`copilot-turn-${randomUUID()}`);
-        const turnSentAt = new Date().toISOString();
+        const turnSentAt = DateTime.formatIso(DateTime.nowUnsafe());
         record.pendingTurnIds.push(turnId);
         record.currentTurnId = turnId;
         record.currentProviderTurnId = undefined;
@@ -2065,7 +2070,7 @@ export const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
           ),
         );
 
-        record.updatedAt = new Date().toISOString();
+        record.updatedAt = DateTime.formatIso(DateTime.nowUnsafe());
 
         return {
           threadId: input.threadId,

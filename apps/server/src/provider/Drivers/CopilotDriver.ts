@@ -7,7 +7,10 @@
  *
  * @module CopilotDriver
  */
-import { Effect, Schema, Stream } from "effect";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import {
   CopilotSettings,
   ProviderDriverKind,
@@ -21,6 +24,7 @@ import { makeCopilotTextGeneration } from "../../textGeneration/CopilotTextGener
 import { makeCopilotAdapter, type CopilotAdapterLiveOptions } from "../Layers/CopilotAdapter.ts";
 import { checkCopilotProviderStatus } from "../Layers/CopilotProvider.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
+import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import {
   type ProviderDriver,
@@ -42,7 +46,7 @@ const makePendingCopilotProvider = (): ServerProviderDraft =>
   buildServerProvider({
     presentation: COPILOT_PRESENTATION,
     enabled: false,
-    checkedAt: new Date().toISOString(),
+    checkedAt: DateTime.formatIso(DateTime.nowUnsafe()),
     models: [],
     probe: {
       installed: false,
@@ -95,6 +99,11 @@ export const CopilotDriver: ProviderDriver<CopilotSettings, CopilotDriverEnv> = 
         continuationGroupKey,
       });
 
+      const maintenanceCapabilities = makeManualOnlyProviderMaintenanceCapabilities({
+        provider: DRIVER_KIND,
+        packageName: "@github/copilot-sdk",
+      });
+
       const adapterOptions: CopilotAdapterLiveOptions = {
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       };
@@ -106,10 +115,11 @@ export const CopilotDriver: ProviderDriver<CopilotSettings, CopilotDriverEnv> = 
       );
 
       const snapshot = yield* makeManagedServerProvider<CopilotSettings>({
+        maintenanceCapabilities,
         getSettings: Effect.succeed(effectiveConfig),
         streamSettings: Stream.never,
         haveSettingsChanged: () => false,
-        initialSnapshot: () => stampIdentity(makePendingCopilotProvider()),
+        initialSnapshot: () => Effect.succeed(stampIdentity(makePendingCopilotProvider())),
         checkProvider,
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
       }).pipe(

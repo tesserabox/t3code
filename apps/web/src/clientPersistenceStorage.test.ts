@@ -10,17 +10,11 @@ const savedRegistryRecord: PersistedSavedEnvironmentRecord = {
   wsBaseUrl: "wss://remote.example.com/",
   createdAt: "2026-04-09T00:00:00.000Z",
   lastConnectedAt: null,
-};
-
-const managedSavedRegistryRecord: PersistedSavedEnvironmentRecord = {
-  ...savedRegistryRecord,
-  environmentId: EnvironmentId.make("environment-managed"),
-  label: "Ubuntu",
-  httpBaseUrl: "http://127.0.0.1:3881/",
-  wsBaseUrl: "ws://127.0.0.1:3881/",
-  management: {
-    kind: "desktop-managed",
-    environmentKey: "wsl:Ubuntu",
+  desktopSsh: {
+    alias: "devbox",
+    hostname: "devbox.example.com",
+    username: "julius",
+    port: 22,
   },
 };
 
@@ -73,12 +67,9 @@ describe("clientPersistenceStorage", () => {
 
     writeBrowserSavedEnvironmentRegistry([savedRegistryRecord]);
     expect(writeBrowserSavedEnvironmentSecret(testEnvironmentId, "bearer-token")).toBe(true);
-    writeBrowserSavedEnvironmentRegistry([savedRegistryRecord, managedSavedRegistryRecord]);
+    writeBrowserSavedEnvironmentRegistry([savedRegistryRecord]);
 
-    expect(readBrowserSavedEnvironmentRegistry()).toEqual([
-      savedRegistryRecord,
-      managedSavedRegistryRecord,
-    ]);
+    expect(readBrowserSavedEnvironmentRegistry()).toEqual([savedRegistryRecord]);
     expect(readBrowserSavedEnvironmentSecret(testEnvironmentId)).toBe("bearer-token");
     expect(
       JSON.parse(testWindow.localStorage.getItem(SAVED_ENVIRONMENT_REGISTRY_STORAGE_KEY)!),
@@ -89,7 +80,6 @@ describe("clientPersistenceStorage", () => {
           ...savedRegistryRecord,
           bearerToken: "bearer-token",
         },
-        managedSavedRegistryRecord,
       ],
     });
   });

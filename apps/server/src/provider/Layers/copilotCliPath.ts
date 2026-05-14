@@ -1,3 +1,4 @@
+// @effect-diagnostics effect/nodeBuiltinImport:off
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";

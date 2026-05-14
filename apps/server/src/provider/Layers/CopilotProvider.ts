@@ -13,7 +13,8 @@ import type {
   ServerProviderModel,
   CopilotSettings,
 } from "@t3tools/contracts";
-import { Effect } from "effect";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
 
 import { buildServerProvider, type ServerProviderDraft } from "../providerSnapshot.ts";
 import { CopilotProvider } from "../Services/CopilotProvider.ts";
@@ -226,7 +227,7 @@ const makePendingCopilotProvider = (): ServerProviderDraft =>
   buildServerProvider({
     presentation: COPILOT_PRESENTATION,
     enabled: false,
-    checkedAt: new Date().toISOString(),
+    checkedAt: DateTime.formatIso(DateTime.nowUnsafe()),
     models: BUILT_IN_MODELS,
     probe: {
       installed: false,
@@ -241,7 +242,7 @@ const makeErrorProvider = (message: string): ServerProviderDraft =>
   buildServerProvider({
     presentation: COPILOT_PRESENTATION,
     enabled: false,
-    checkedAt: new Date().toISOString(),
+    checkedAt: DateTime.formatIso(DateTime.nowUnsafe()),
     models: BUILT_IN_MODELS,
     probe: {
       installed: false,
@@ -259,7 +260,7 @@ export const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus"
   settings: CopilotSettings,
   options?: CopilotProviderCheckOptions,
 ) {
-  const now = new Date().toISOString();
+  const now = DateTime.formatIso(yield* DateTime.now);
 
   if (!settings.enabled) {
     return buildServerProvider({

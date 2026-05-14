@@ -19,10 +19,12 @@ const BrowserSavedEnvironmentRecordSchema = Schema.Struct({
   wsBaseUrl: Schema.String,
   createdAt: Schema.String,
   lastConnectedAt: Schema.NullOr(Schema.String),
-  management: Schema.optionalKey(
+  desktopSsh: Schema.optionalKey(
     Schema.Struct({
-      kind: Schema.Literal("desktop-managed"),
-      environmentKey: Schema.String,
+      alias: Schema.String,
+      hostname: Schema.String,
+      username: Schema.NullOr(Schema.String),
+      port: Schema.NullOr(Schema.Number),
     }),
   ),
   bearerToken: Schema.optionalKey(Schema.String),
@@ -43,15 +45,15 @@ function hasWindow(): boolean {
 function toPersistedSavedEnvironmentRecord(
   record: PersistedSavedEnvironmentRecord,
 ): PersistedSavedEnvironmentRecord {
-  return {
+  const nextRecord = {
     environmentId: record.environmentId,
     label: record.label,
     httpBaseUrl: record.httpBaseUrl,
     wsBaseUrl: record.wsBaseUrl,
     createdAt: record.createdAt,
     lastConnectedAt: record.lastConnectedAt,
-    ...(record.management ? { management: record.management } : {}),
   };
+  return record.desktopSsh ? { ...nextRecord, desktopSsh: record.desktopSsh } : nextRecord;
 }
 
 export function readBrowserClientSettings(): ClientSettings | null {
@@ -142,7 +144,7 @@ export function writeBrowserSavedEnvironmentRegistry(
             wsBaseUrl: record.wsBaseUrl,
             createdAt: record.createdAt,
             lastConnectedAt: record.lastConnectedAt,
-            ...(record.management ? { management: record.management } : {}),
+            ...(record.desktopSsh ? { desktopSsh: record.desktopSsh } : {}),
             bearerToken,
           }
         : toPersistedSavedEnvironmentRecord(record);
@@ -174,18 +176,16 @@ export function writeBrowserSavedEnvironmentSecret(
         return record;
       }
       found = true;
-      return Object.assign(
-        {
-          environmentId: record.environmentId,
-          label: record.label,
-          httpBaseUrl: record.httpBaseUrl,
-          wsBaseUrl: record.wsBaseUrl,
-          createdAt: record.createdAt,
-          lastConnectedAt: record.lastConnectedAt,
-          bearerToken: secret,
-        },
-        record.management ? { management: record.management } : {},
-      ) satisfies BrowserSavedEnvironmentRecord;
+      const nextRecord = {
+        environmentId: record.environmentId,
+        label: record.label,
+        httpBaseUrl: record.httpBaseUrl,
+        wsBaseUrl: record.wsBaseUrl,
+        createdAt: record.createdAt,
+        lastConnectedAt: record.lastConnectedAt,
+        bearerToken: secret,
+      };
+      return record.desktopSsh ? { ...nextRecord, desktopSsh: record.desktopSsh } : nextRecord;
     }),
   });
   return found;

@@ -32,6 +32,7 @@ export const PROVIDER_OPTIONS: Array<{
   pickerSidebarBadge?: "new" | "soon";
 }> = [
   { value: ProviderDriverKind.make("codex"), label: "Codex", available: true },
+  { value: ProviderDriverKind.make("copilot"), label: "GitHub Copilot", available: true },
   { value: ProviderDriverKind.make("claudeAgent"), label: "Claude", available: true },
   {
     value: ProviderDriverKind.make("opencode"),
@@ -42,12 +43,6 @@ export const PROVIDER_OPTIONS: Array<{
   {
     value: ProviderDriverKind.make("cursor"),
     label: "Cursor",
-    available: true,
-    pickerSidebarBadge: "new",
-  },
-  {
-    value: ProviderDriverKind.make("copilot"),
-    label: "GitHub Copilot",
     available: true,
     pickerSidebarBadge: "new",
   },
