@@ -1,0 +1,52 @@
+{
+  "study_id": "t3code-upstream-v0.0.23-2026-05",
+  "computed_at": "2026-05-14T06:10:00Z",
+  "totals": {
+    "features_total": 25,
+    "features_with_code": 17,
+    "features_applied": 13,
+    "features_upstreamed": 3,
+    "features_skipped_blocked": 2,
+    "features_skipped_requested": 8,
+    "commits_in_reconcile": 4,
+    "hunks_total": 53,
+    "patches_total": 4,
+    "files_changed": 22,
+    "lines_added": 3580,
+    "upstream_commits": 62
+  },
+  "verdicts": {
+    "blocked": 15,
+    "upstreamed": 2,
+    "not_evaluated": 8
+  },
+  "ground_truth_distribution": {
+    "reapplies_clean": 9,
+    "reapplies_with_relocation": 4,
+    "upstream_absorbed": 3,
+    "true_conflict": 2,
+    "unknown": 7
+  },
+  "tpatch_verdict_accuracy": {
+    "upstreamed_correct": 2,
+    "upstreamed_false_positive": 0,
+    "blocked_actually_clean": 9,
+    "blocked_actually_relocation": 4,
+    "blocked_actually_conflict": 2,
+    "notes": "tpatch blocked verdict is overly conservative — 13/15 blocked features actually reapply cleanly or with minor relocation. Only 2/15 are true conflicts (desktop features with heavy upstream restructure)."
+  },
+  "adaptation_types": {
+    "api_change": 1,
+    "lint_compliance": 1,
+    "type_union_extension": 1,
+    "effect_wrapper": 1,
+    "insertion_point_relocation": 2,
+    "content_rewrite": 1
+  },
+  "typecheck": {
+    "command": "bun run typecheck",
+    "packages_total": 13,
+    "packages_passed": 13,
+    "result": "pass"
+  }
+}
