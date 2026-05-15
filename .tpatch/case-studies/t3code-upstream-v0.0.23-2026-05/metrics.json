@@ -6,10 +6,10 @@
   "totals": {
     "features_total": 25,
     "features_with_code": 17,
-    "features_applied": 14,
+    "features_applied": 15,
     "features_upstreamed": 1,
     "features_skipped_blocked": 2,
-    "features_skipped_requested": 8,
+    "features_skipped_requested": 5,
     "commits_in_reconcile": 5,
     "hunks_total": 53,
     "patches_total": 5,

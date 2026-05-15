@@ -1,8 +1,22 @@
 # Implementation Record: copilot-skill-controls
 
-**Recorded**: 2026-05-03T07:26:10Z
-**Files changed**: 27
-**Patch size**: 169894 bytes
+**Recorded**: 2026-05-15T20:50:35Z
+**Files changed**: 7
+**Patch size**: 8409 bytes
+**Capture mode**: committed range
+**Base commit**: HEAD~1
+**Upper bound**: HEAD
+
+## Change Summary
+
+```
+ .tpatch/FEATURES.md                                |    4 +-
+ .../artifacts/apply-session.json                   |    6 +-
+ .../artifacts/post-apply-diff.txt                  |   43 +-
+ .../artifacts/post-apply.patch                     | 4847 +-------------------
+ .../features/copilot-skill-controls/status.json    |   15 +-
+ 5 files changed, 187 insertions(+), 4728 deletions(-)
+```
 
 ## Replay Instructions
 
@@ -13,4 +27,4 @@ To re-apply this feature to a clean checkout:
 git apply .tpatch/features/copilot-skill-controls/artifacts/post-apply.patch
 ```
 
-*Patch was captured as a committed diff from `e42c13bf~1` to `HEAD`.*
+*Patch was captured as a committed diff from `HEAD~1` to `HEAD`.*

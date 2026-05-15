@@ -5,12 +5,12 @@
   "state": "applied",
   "compatibility": "unknown",
   "requested_at": "2026-05-12T02:47:48Z",
-  "updated_at": "2026-05-14T06:30:00Z",
-  "last_command": "manual-fix",
-  "notes": "False upstream_merged verdict corrected. Re-applied for v0.0.23.",
+  "updated_at": "2026-05-15T20:51:11Z",
+  "last_command": "record",
+  "notes": "Patch recorded",
   "apply": {
     "completed_at": "2026-05-12T05:17:19Z",
-    "base_commit": "a72b9092245cd7ed2626e3ee71089dc221bf2e3c",
+    "base_commit": "5032b49b3777368215b3f46049eed7863c0f98d8",
     "has_patch": true
   },
   "reconcile": {

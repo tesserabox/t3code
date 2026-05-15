@@ -1,0 +1,5 @@
+{
+  "stale": true,
+  "reason": "patch touches files absent from recipe: packages/shared/src/keybindings.ts; recipe references files absent from patch: apps/server/src/keybindings.ts",
+  "detected_at": "2026-05-15T20:51:11Z"
+}

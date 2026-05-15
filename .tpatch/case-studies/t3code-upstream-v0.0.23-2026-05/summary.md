@@ -91,3 +91,34 @@ The 2 true conflicts (`desktop-managed-environments-connections`, `windows-wsl-s
 1. **Always verify `upstreamed` verdicts**: After tpatch reconcile, manually check every feature marked `upstreamed` by searching for the actual upstream implementation. Do not trust the verdict without evidence.
 2. **Independent review catches what automation misses**: The two false positives were caught by reviewers who simply searched for the expected code. Build this into the reconcile checklist.
 3. **Data drift check**: Ensure study.json, metrics.json, and features.jsonl agree on counts. The original data had inconsistent counts (2 vs 3 upstreamed) that went unnoticed until review.
+
+---
+
+## Post-Review Actions Log (2026-05-15)
+
+### session-search re-applied
+The false-positive `upstreamed` verdict was caught by independent reviewers. The feature was re-applied:
+- `SessionSearchBar` component restored from pre-reconcile tag
+- `chat.search` keybinding added to contracts + shared keybindings
+- Search state, memo, and command handler added to ChatView.tsx
+- tpatch status reverted to `applied`, patch re-recorded
+
+### copilot-skill-controls implemented (was never actually implemented)
+Reviewers noted the feature had only scaffolding code (skill discovery error handling), not the actual enable/disable/reload functionality. Rather than reverting to `requested`, we implemented the full feature:
+- `ProviderAdapterShape`: added optional `setSkillEnabled` method
+- `CopilotAdapter`: implemented `setSkillEnabled` calling `rpc.skills.enable()`/`disable()` on the SDK
+- `ProviderRegistryShape` + `ProviderRegistryLive`: routing through adapter with error recovery
+- WS RPC: new `server.setSkillEnabled` endpoint
+- Contracts: `WsServerSetSkillEnabledRpc` schema
+- tpatch status transitioned: `requested` → `implementing` → `applied`
+- Note: Web UI toggle not yet built — server-side plumbing is complete
+
+### Data corrections applied
+- `features.jsonl`: ground_truth corrected for both false-positive features
+- `metrics.json`: revised verdict accuracy to reflect 0/2 upstreamed correct
+- `study.json`: aligned counts (14 applied → 15 applied with skill controls)
+
+### Lessons for next reconciliation
+1. Add "verify upstreamed" step to reconcile checklist before merging
+2. Request independent review of all upstreamed/retired verdicts
+3. Cross-check feature.jsonl counts against study.json before committing

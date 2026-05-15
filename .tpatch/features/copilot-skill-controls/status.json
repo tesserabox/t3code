@@ -2,15 +2,15 @@
   "id": "copilot-skill-controls",
   "slug": "copilot-skill-controls",
   "title": "Add mid-session skill management for Copilot provider. Wire up rpc.skills.enable(), rpc.skills.disable(), and rpc.skills.reload() SDK methods. Add UI toggles to enable/disable individual skills during an active session without restarting.",
-  "state": "requested",
+  "state": "applied",
   "compatibility": "unknown",
   "requested_at": "2026-04-22T10:44:43Z",
-  "updated_at": "2026-05-14T06:30:00Z",
-  "last_command": "manual-fix",
-  "notes": "False upstream_merged verdict. Recipe only had error-handling scaffolding around skill discovery, not the actual enable/disable/reload RPC + UI toggles. The scaffolding is present because it was part of the CopilotAdapter brought with copilot-cli-provider. Feature core (toggle UI) was never implemented.",
+  "updated_at": "2026-05-15T20:50:35Z",
+  "last_command": "record",
+  "notes": "Patch recorded",
   "apply": {
-    "completed_at": "2026-04-23T09:35:48Z",
-    "base_commit": "fc8a225a788a0590f38d2c2e9494cfb68a342fe0",
+    "completed_at": "2026-05-15T20:50:35Z",
+    "base_commit": "686977843e9978c2d7fa895c7fe24bb45af0dbd2",
     "has_patch": true
   },
   "reconcile": {
