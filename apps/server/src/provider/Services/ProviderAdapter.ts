@@ -120,6 +120,15 @@ export interface ProviderAdapterShape<TError> {
   readonly stopAll: () => Effect.Effect<void, TError>;
 
   /**
+   * Enable or disable a skill by name. Optional — only supported by adapters
+   * that expose skill management (e.g., Copilot SDK).
+   */
+  readonly setSkillEnabled?: (
+    skillName: string,
+    enabled: boolean,
+  ) => Effect.Effect<void, TError>;
+
+  /**
    * Canonical runtime event stream emitted by this adapter.
    */
   readonly streamEvents: Stream.Stream<ProviderRuntimeEvent>;

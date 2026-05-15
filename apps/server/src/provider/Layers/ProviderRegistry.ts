@@ -687,6 +687,14 @@ export const ProviderRegistryLive = Layer.effect(
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
       getProviderMaintenanceCapabilitiesForInstance,
       setProviderMaintenanceActionState,
+      setSkillEnabled: (instanceId, skillName, enabled) =>
+        Effect.gen(function* () {
+          const instances = yield* instanceRegistry.listInstances;
+          const instance = instances.find((i) => i.instanceId === instanceId);
+          if (instance?.adapter.setSkillEnabled) {
+            yield* instance.adapter.setSkillEnabled(skillName, enabled).pipe(Effect.ignore);
+          }
+        }).pipe(Effect.ignore),
       get streamChanges() {
         return Stream.fromPubSub(changesPubSub);
       },

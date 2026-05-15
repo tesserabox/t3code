@@ -28,6 +28,7 @@ import {
   ProjectWriteFileError,
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
+  type ProviderInstanceId,
   ThreadId,
   type TerminalEvent,
   WS_METHODS,
@@ -851,6 +852,16 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             {
               "rpc.aggregate": "server",
             },
+          ),
+        [WS_METHODS.serverSetSkillEnabled]: (input: { instanceId: ProviderInstanceId; skillName: string; enabled: boolean }) =>
+          observeRpcEffect(
+            WS_METHODS.serverSetSkillEnabled,
+            Effect.gen(function* () {
+              yield* providerRegistry.setSkillEnabled(input.instanceId, input.skillName, input.enabled);
+              const providers = yield* providerRegistry.refreshInstance(input.instanceId);
+              return { providers };
+            }),
+            { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverUpsertKeybinding]: (rule) =>
           observeRpcEffect(

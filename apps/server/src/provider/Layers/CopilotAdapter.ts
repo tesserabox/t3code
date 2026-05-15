@@ -2247,6 +2247,46 @@ export const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
           }),
       });
 
+    const setSkillEnabled: CopilotAdapterShape["setSkillEnabled"] = (skillName, enabled) =>
+      Effect.tryPromise({
+        try: async () => {
+          // Find any active session to use its RPC interface
+          const record = Array.from(sessions.values()).find((r) => r.session);
+          if (!record?.session) {
+            throw new Error("No active Copilot session — cannot toggle skill.");
+          }
+          const rpc = record.session as unknown as CopilotSkillsRpc;
+          if (enabled) {
+            if (!rpc.skills?.enable) {
+              throw new Error("Copilot SDK does not support rpc.skills.enable()");
+            }
+            await rpc.skills.enable({ name: skillName });
+          } else {
+            if (!rpc.skills?.disable) {
+              throw new Error("Copilot SDK does not support rpc.skills.disable()");
+            }
+            await rpc.skills.disable({ name: skillName });
+          }
+          // Update local skill state
+          for (const skill of discoveredCopilotSkills) {
+            if (skill.name === skillName) {
+              (skill as { enabled: boolean }).enabled = enabled;
+            }
+          }
+          // Reload skills list to get fresh state from SDK
+          if (rpc.skills?.reload) {
+            await rpc.skills.reload();
+          }
+        },
+        catch: (cause) =>
+          new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId: ThreadId.make("_skill-toggle"),
+            detail: toMessage(cause, `Failed to ${enabled ? "enable" : "disable"} skill "${skillName}".`),
+            cause,
+          }),
+      });
+
     return {
       provider: PROVIDER,
       capabilities: {
@@ -2263,6 +2303,7 @@ export const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
       readThread,
       rollbackThread,
       stopAll,
+      setSkillEnabled,
       streamEvents: Stream.fromQueue(runtimeEventQueue),
     } satisfies CopilotAdapterShape;
   });

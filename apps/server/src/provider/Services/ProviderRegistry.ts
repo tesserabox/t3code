@@ -74,6 +74,16 @@ export interface ProviderRegistryShape {
    * change. The array contains the full current state.
    */
   readonly streamChanges: Stream.Stream<ReadonlyArray<ServerProvider>>;
+
+  /**
+   * Toggle a skill on a provider instance. Routes through the adapter's
+   * `setSkillEnabled` if supported. No-op if the adapter doesn't support it.
+   */
+  readonly setSkillEnabled: (
+    instanceId: ProviderInstanceId,
+    skillName: string,
+    enabled: boolean,
+  ) => Effect.Effect<void>;
 }
 
 export class ProviderRegistry extends Context.Service<ProviderRegistry, ProviderRegistryShape>()(
