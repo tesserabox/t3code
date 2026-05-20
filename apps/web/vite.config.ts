@@ -79,7 +79,11 @@ export default defineConfig({
     ],
   },
   define: {
-    // In dev mode, tell the web app where the WebSocket server lives
+    // Explicitly clear VITE_HTTP_URL so the client falls back to
+    // window.location.origin for HTTP requests (proxied by vite,
+    // same-origin for cookies). The WS URL stays configured so it
+    // connects directly to the backend server.
+    "import.meta.env.VITE_HTTP_URL": JSON.stringify(""),
     "import.meta.env.VITE_WS_URL": JSON.stringify(configuredWsUrl ?? ""),
     "import.meta.env.VITE_HOSTED_APP_URL": JSON.stringify(configuredHostedAppUrl ?? ""),
     "import.meta.env.VITE_HOSTED_APP_CHANNEL": JSON.stringify(configuredHostedAppChannel),
