@@ -7,7 +7,7 @@
 
 supported, but add the ability to use the copilot cli, as requested in
 this github issue from the upstream
-https://github.com/pingdotgg/t3code/issues/193 | blocked | unknown |
+https://github.com/pingdotgg/t3code/issues/193 | applied | unknown |
 | `copilot-command-events` | Wire up Copilot SDK command and shell execution events. Map command.execute, command.completed, command.queued, shell_completed, and shell_detached_completed events in CopilotAdapter mapSessionEvent to surface as command execution timeline entries. These are currently dropped by the default case. | blocked | unknown |
 | `copilot-cross-platform-build` | Add all Copilot SDK platform binaries as direct dependencies so cross-platform desktop builds include the correct native binary regardless of build host OS. Without this, building a Windows installer on macOS produces a package missing copilot.exe. | blocked | unknown |
 | `copilot-dynamic-models` | Build model capabilities dynamically from Copilot SDK runtime data instead of static BUILT_IN_MODELS. Use supportedReasoningEfforts from client.listModels() to populate reasoningEffortLevels per model. Also investigate using copilot-api for broader model listing (44 models vs SDK's 16). | blocked | unknown |

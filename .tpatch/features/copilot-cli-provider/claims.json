@@ -24,9 +24,30 @@
       "source": "manual"
     },
     {
+      "claim_id": "21322c9093fd",
+      "kind": "path",
+      "value": "pnpm-lock.yaml",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "3fe5abd98a8d",
+      "kind": "path",
+      "value": "apps/server/src/provider/Layers/CopilotAdapter.test.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
       "claim_id": "45c2bfdc5f16",
       "kind": "path",
       "value": "apps/server/src/provider/Layers/copilotMcpServers.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "579e69face61",
+      "kind": "path",
+      "value": "apps/web/src/components/settings/AddProviderInstanceDialog.tsx",
       "mode": "advisory",
       "source": "manual"
     },
@@ -55,6 +76,13 @@
       "claim_id": "67e4d01a929f",
       "kind": "path",
       "value": "packages/contracts/src/providerRuntime.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "694dec9237a0",
+      "kind": "path",
+      "value": "apps/server/src/provider/Layers/CopilotProvider.test.ts",
       "mode": "advisory",
       "source": "manual"
     },
@@ -108,9 +136,30 @@
       "source": "manual"
     },
     {
+      "claim_id": "aafadff9f8f7",
+      "kind": "path",
+      "value": "apps/server/src/provider/Layers/copilotClientOptions.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "b7ffdd21b2c3",
+      "kind": "path",
+      "value": "pnpm-workspace.yaml",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
       "claim_id": "be80cb4c3fb5",
       "kind": "path",
       "value": "apps/server/src/provider/Layers/copilotTurnTracking.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "d7b347ceb037",
+      "kind": "path",
+      "value": "apps/server/src/provider/Layers/copilotClientOptions.test.ts",
       "mode": "advisory",
       "source": "manual"
     },

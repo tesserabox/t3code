@@ -1,7 +1,7 @@
 {
   "version": 1,
   "feature": "copilot-cli-provider",
-  "current_generation": 1,
+  "current_generation": 2,
   "generations": [
     {
       "generation": 1,
@@ -11,7 +11,7 @@
       "git_patch_id": "b74d7f855527bd9e504fbe552a883c076f71fbe7",
       "git_patch_id_algorithm": "git-patch-id-stable",
       "recipe_sha256": "7f4422cedf02eddf8803416019c2310d4d2e3fe44e1db930228b8f984243d17e",
-      "canonical_patch": "artifacts/post-apply.patch",
+      "canonical_patch": "",
       "audit_patch": "patches/016-record.patch",
       "base_commit": "48ea81c54",
       "upper": {
@@ -62,6 +62,76 @@
         "bun.lock",
         "packages/contracts/src/providerRuntime.ts",
         "packages/contracts/src/settings.ts"
+      ],
+      "dependencies": [],
+      "refs": {
+        "anchors": "",
+        "fingerprints": "",
+        "relations": "",
+        "vector_manifest": ""
+      }
+    },
+    {
+      "generation": 2,
+      "generation_id": "pg_08181c322994",
+      "kind": "amend-refresh",
+      "patch_sha256": "068fb783ae4dd7a6b982de668e54c23f968d4ca177dc448c2a154c08846cbee8",
+      "git_patch_id": "8e23d8a35a64b94ed3d5071ec9df58eb9481b1c5",
+      "git_patch_id_algorithm": "git-patch-id-stable",
+      "recipe_sha256": "a76aff46d954184bfc47bc1661a50286938a85dea4bf93b35c89e1660ada065e",
+      "canonical_patch": "artifacts/post-apply.patch",
+      "audit_patch": "patches/017-record.patch",
+      "base_commit": "HEAD~1",
+      "upper": {
+        "kind": "commit",
+        "ref": "HEAD",
+        "commit": "c5d93565b62172fafaab2e51012451ad0c61f486"
+      },
+      "capture": {
+        "mode": "committed-range",
+        "pathspecs": [
+          "apps/server/package.json",
+          "apps/server/src/provider/Drivers/CopilotDriver.ts",
+          "apps/server/src/provider/Layers/CopilotAdapter.test.ts",
+          "apps/server/src/provider/Layers/CopilotAdapter.ts",
+          "apps/server/src/provider/Layers/CopilotProvider.test.ts",
+          "apps/server/src/provider/Layers/CopilotProvider.ts",
+          "apps/server/src/provider/Layers/copilotClientOptions.test.ts",
+          "apps/server/src/provider/Layers/copilotClientOptions.ts",
+          "apps/server/src/provider/Services/CopilotAdapter.ts",
+          "apps/server/src/provider/builtInDrivers.ts",
+          "apps/server/src/textGeneration/CopilotTextGeneration.ts",
+          "apps/web/src/components/chat/providerIconUtils.ts",
+          "apps/web/src/components/settings/AddProviderInstanceDialog.tsx",
+          "apps/web/src/components/settings/providerDriverMeta.ts",
+          "apps/web/src/session-logic.ts",
+          "packages/contracts/src/providerRuntime.ts",
+          "packages/contracts/src/settings.ts",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml"
+        ],
+        "claim_ids": []
+      },
+      "touched_paths": [
+        "apps/server/package.json",
+        "apps/server/src/provider/Drivers/CopilotDriver.ts",
+        "apps/server/src/provider/Layers/CopilotAdapter.test.ts",
+        "apps/server/src/provider/Layers/CopilotAdapter.ts",
+        "apps/server/src/provider/Layers/CopilotProvider.test.ts",
+        "apps/server/src/provider/Layers/CopilotProvider.ts",
+        "apps/server/src/provider/Layers/copilotClientOptions.test.ts",
+        "apps/server/src/provider/Layers/copilotClientOptions.ts",
+        "apps/server/src/provider/Services/CopilotAdapter.ts",
+        "apps/server/src/provider/builtInDrivers.ts",
+        "apps/server/src/textGeneration/CopilotTextGeneration.ts",
+        "apps/web/src/components/chat/providerIconUtils.ts",
+        "apps/web/src/components/settings/AddProviderInstanceDialog.tsx",
+        "apps/web/src/components/settings/providerDriverMeta.ts",
+        "apps/web/src/session-logic.ts",
+        "packages/contracts/src/providerRuntime.ts",
+        "packages/contracts/src/settings.ts",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml"
       ],
       "dependencies": [],
       "refs": {
