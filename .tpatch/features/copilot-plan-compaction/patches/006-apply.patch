@@ -1,0 +1,42 @@
+diff --git a/apps/server/src/provider/Layers/CopilotAdapter.ts b/apps/server/src/provider/Layers/CopilotAdapter.ts
+index bec476bb..f1234115 100644
+--- a/apps/server/src/provider/Layers/CopilotAdapter.ts
++++ b/apps/server/src/provider/Layers/CopilotAdapter.ts
+@@ -1493,27 +1493,16 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+     ) => {
+       const onPermissionRequest = (request: PermissionRequest) => {
+         const permissionRequest = request as CopilotPermissionRequest;
+-        // In plan mode, restrict write/shell operations:
+-        // - Supervised modes: let the request flow to the user for approval
+-        //   (don't silently deny — the user should decide)
+-        // - Full-access mode: auto-deny writes/shell since there's no user to ask
+-        //   and plan mode should be read-only
+-        const interactionMode = getInteractionMode();
+-        const runtimeMode = getRuntimeMode();
+-        if (
+-          interactionMode === "plan" &&
+-          (permissionRequest.kind === "shell" || permissionRequest.kind === "write")
+-        ) {
+-          if (runtimeMode === "full-access") {
+-            return Promise.resolve(
+-              toSdkPermissionRequestResult({
+-                kind: "reject",
+-              }),
+-            );
+-          }
+-          // In supervised/approval-required modes, fall through to the
+-          // normal approval flow so the user sees the request
+-        }
++        // Plan mode: trust the SDK's mode.set("plan") to guide the agent via
++        // system prompt. Do NOT hard-block tools — the SDK and VS Code don't
++        // enforce plan mode at the permission level either. If the agent tries
++        // tools in plan mode, let the normal permission flow handle it:
++        // - full-access: auto-approve (agent self-corrects via system prompt)
++        // - supervised: show dialog to user (user decides)
++        //
++        // Previous approach silently rejected shell/write in plan mode,
++        // causing the agent to stop without feedback. See case study
++        // 2026-04-26-fresh-branch-reconciliation.md.
+ 
+         return getRuntimeMode() === "full-access"
+           ? Promise.resolve(toSdkPermissionRequestResult({ kind: "approve-once" }))

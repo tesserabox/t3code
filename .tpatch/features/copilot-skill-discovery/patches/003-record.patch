@@ -1,0 +1,101 @@
+diff --git a/apps/server/src/provider/Layers/CopilotAdapter.ts b/apps/server/src/provider/Layers/CopilotAdapter.ts
+index dae6e16a..aa9fc1b1 100644
+--- a/apps/server/src/provider/Layers/CopilotAdapter.ts
++++ b/apps/server/src/provider/Layers/CopilotAdapter.ts
+@@ -123,6 +123,7 @@ interface ActiveCopilotSession extends CopilotTurnTrackingState {
+  * Module-level store for discovered Copilot skills.
+  * Populated from `session.skills_loaded` events and `rpc.skills.list()`.
+  * Read by `CopilotProvider.ts` during snapshot enrichment.
++ * Merged by name to support multi-session and event/RPC race tolerance.
+  */
+ let discoveredCopilotSkills: ReadonlyArray<ServerProviderSkill> = [];
+ 
+@@ -131,6 +132,31 @@ export function getCopilotDiscoveredSkills(): ReadonlyArray<ServerProviderSkill>
+   return discoveredCopilotSkills;
+ }
+ 
++/** Expected response shape from rpc.skills.list() */
++interface CopilotSkillsListResponse {
++  skills: ReadonlyArray<{
++    name: string;
++    description?: string;
++    source?: string;
++    userInvocable?: boolean;
++    enabled?: boolean;
++    path?: string;
++  }>;
++}
++
++/**
++ * Merge incoming skills with existing discovered skills by name.
++ * Incoming skills replace existing ones with the same name; skills
++ * from other sessions/sources are preserved.
++ */
++function mergeDiscoveredSkills(incoming: ReadonlyArray<ServerProviderSkill>): void {
++  const byName = new Map(discoveredCopilotSkills.map((s) => [s.name, s]));
++  for (const skill of incoming) {
++    byName.set(skill.name, skill);
++  }
++  discoveredCopilotSkills = Array.from(byName.values());
++}
++
+ function mapSdkSkillToServerProviderSkill(skill: {
+   name: string;
+   description?: string;
+@@ -138,7 +164,11 @@ function mapSdkSkillToServerProviderSkill(skill: {
+   userInvocable?: boolean;
+   enabled?: boolean;
+   path?: string;
+-}): ServerProviderSkill {
++}): ServerProviderSkill | null {
++  // Filter out non-user-invocable skills — they shouldn't appear in $ autocomplete
++  if (skill.userInvocable === false) {
++    return null;
++  }
+   const name = skill.name.trim();
+   const displayName = name
+     .replace(/[-_]/g, " ")
+@@ -147,7 +177,7 @@ function mapSdkSkillToServerProviderSkill(skill: {
+     name,
+     path: skill.path?.trim() || name,
+     enabled: skill.enabled !== false,
+-    ...(skill.description ? { shortDescription: skill.description } : {}),
++    ...(skill.description ? { description: skill.description, shortDescription: skill.description } : {}),
+     ...(skill.source ? { scope: skill.source } : {}),
+     ...(displayName !== name ? { displayName } : {}),
+   };
+@@ -1117,8 +1147,10 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+             },
+           ];
+         case "session.skills_loaded": {
+-          const skills = (event.data.skills ?? []).map(mapSdkSkillToServerProviderSkill);
+-          discoveredCopilotSkills = skills;
++          const skills = (event.data.skills ?? [])
++            .map(mapSdkSkillToServerProviderSkill)
++            .filter((s): s is ServerProviderSkill => s !== null);
++          mergeDiscoveredSkills(skills);
+           return [];
+         }
+         case "exit_plan_mode.requested":
+@@ -1602,12 +1634,18 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+         // the session.skills_loaded event handler. Fire-and-forget.
+         void (async () => {
+           try {
+-            const skillsResult = await (session.rpc as any).skills?.list?.();
++            const skillsResult = await (
++              session.rpc as { skills?: { list?: () => Promise<CopilotSkillsListResponse> } }
++            ).skills?.list?.();
+             if (Array.isArray(skillsResult?.skills) && skillsResult.skills.length > 0) {
+-              discoveredCopilotSkills = skillsResult.skills.map(mapSdkSkillToServerProviderSkill);
++              const mapped = skillsResult.skills
++                .map(mapSdkSkillToServerProviderSkill)
++                .filter((s): s is ServerProviderSkill => s !== null);
++              mergeDiscoveredSkills(mapped);
+             }
+-          } catch {
+-            // Experimental RPC — silently ignore failures
++          } catch (err: unknown) {
++            const message = err instanceof Error ? err.message : String(err);
++            console.warn("[CopilotAdapter] rpc.skills.list() failed:", message);
+           }
+         })();

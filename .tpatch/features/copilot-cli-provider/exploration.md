@@ -1,0 +1,39 @@
+# Exploration: copilot-cli-provider
+
+## Relevant Files
+
+### Provider Contract Definitions
+- `packages/contracts/src/provider.ts` - Core provider type definitions where `copilot-cli` provider type needs to be added to the provider enum and CopilotCliConfig type defined
+- `packages/contracts/src/providerRuntime.ts` - Provider runtime schemas where Copilot CLI-specific runtime events need to be defined
+- `packages/contracts/src/index.ts` - Contract exports that will need to export new Copilot CLI types
+
+### Server-Side Provider Implementation
+- `apps/server/src/provider/` - Provider directory where new `copilotCliManager.ts` should be created (following pattern of existing provider managers)
+- `apps/server/src/codexAppServerManager.ts` - Reference implementation for how existing providers are structured (subprocess management, event handling)
+- `apps/server/src/processRunner.ts` - Process execution utilities that will be used for running `gh copilot` CLI commands
+- `apps/server/src/orchestration/` - Orchestration layer that dispatches to providers, will need to route to Copilot CLI provider
+
+### Web UI Provider Selection
+- `apps/web/src/providerModels.ts` - Provider model definitions for UI, needs Copilot CLI provider option added
+- `apps/web/src/modelSelection.ts` - Model/provider selection logic that needs to handle Copilot CLI
+- `apps/web/src/store.ts` - Application state store where provider selection is persisted
+
+### Documentation
+- `.docs/provider-architecture.md` - Provider architecture documentation that should document Copilot CLI provider specifics
+
+### Shared Utilities
+- `packages/shared/src/shell.ts` - Shell utilities that may be relevant for CLI detection and execution
+
+## Minimal Changeset
+
+1. **Add Copilot CLI provider type to contracts** (`packages/contracts/src/provider.ts`): Add `copilot-cli` to the provider enum, define `CopilotCliConfig` interface with command type (suggest/explain) and shell type options
+
+2. **Create Copilot CLI manager** (`apps/server/src/provider/copilotCliManager.ts` - new file): Implement CLI detection (`gh` binary check), auth detection (`gh auth status`), extension detection (`gh extension list`), and command execution wrapper for `gh copilot suggest` and `gh copilot explain`
+
+3. **Register provider in orchestration** (`apps/server/src/orchestration/`): Add dispatch logic to route requests to the new Copilot CLI manager
+
+4. **Add UI provider option** (`apps/web/src/providerModels.ts`): Add Copilot CLI to available providers with appropriate capability flags and configuration options
+
+5. **Update provider runtime events** (`packages/contracts/src/providerRuntime.ts`): Add event types for Copilot CLI responses, normalizing them to the shared event schema
+
+6. **Document the provider** (`.docs/provider-architecture.md`): Add section covering Copilot CLI setup requirements, authentication flow, and command-based interaction model

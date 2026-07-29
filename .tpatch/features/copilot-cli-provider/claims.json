@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "feature": "copilot-cli-provider",
+  "claims": [
+    {
+      "claim_id": "02ea7bd05cfa",
+      "kind": "path",
+      "value": "apps/server/src/provider/Layers/copilotCliPath.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "03768aa3e04d",
+      "kind": "path",
+      "value": "apps/server/package.json",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "109c3d1471f5",
+      "kind": "path",
+      "value": "apps/web/src/components/KeybindingsToast.browser.tsx",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "45c2bfdc5f16",
+      "kind": "path",
+      "value": "apps/server/src/provider/Layers/copilotMcpServers.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "5d3086a40f9d",
+      "kind": "path",
+      "value": "apps/server/src/provider/Drivers/CopilotDriver.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "635ca1225135",
+      "kind": "path",
+      "value": "apps/server/src/provider/Services/CopilotAdapter.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "66210b66facb",
+      "kind": "path",
+      "value": "apps/web/src/components/settings/providerDriverMeta.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "67e4d01a929f",
+      "kind": "path",
+      "value": "packages/contracts/src/providerRuntime.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "73bb56812d97",
+      "kind": "path",
+      "value": "apps/server/src/provider/Layers/CopilotProvider.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "7aaa941a23cc",
+      "kind": "path",
+      "value": "bun.lock",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "9d03a1bd1e50",
+      "kind": "path",
+      "value": "apps/server/src/provider/Services/CopilotProvider.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "9d647bf8aefe",
+      "kind": "path",
+      "value": "packages/contracts/src/settings.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "a03561373075",
+      "kind": "path",
+      "value": "apps/web/src/components/chat/providerIconUtils.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "a2eeeb87a58b",
+      "kind": "path",
+      "value": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "aa2e41f24732",
+      "kind": "path",
+      "value": "apps/server/src/textGeneration/CopilotTextGeneration.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "be80cb4c3fb5",
+      "kind": "path",
+      "value": "apps/server/src/provider/Layers/copilotTurnTracking.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "de25f7c467a0",
+      "kind": "path",
+      "value": "apps/web/src/session-logic.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "df0c9593b4e4",
+      "kind": "path",
+      "value": "apps/server/src/provider/builtInDrivers.ts",
+      "mode": "advisory",
+      "source": "manual"
+    }
+  ]
+}

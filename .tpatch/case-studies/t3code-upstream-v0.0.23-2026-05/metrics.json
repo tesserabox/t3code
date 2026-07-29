@@ -1,0 +1,62 @@
+{
+  "study_id": "t3code-upstream-v0.0.23-2026-05",
+  "computed_at": "2026-05-14T06:10:00Z",
+  "revised_at": "2026-05-14T06:40:00Z",
+  "revision_note": "Post-review correction: 2 upstreamed verdicts were false positives (session-search, copilot-skill-controls). Only toast-close-button was genuinely upstreamed (pre-reconcile).",
+  "totals": {
+    "features_total": 25,
+    "features_with_code": 17,
+    "features_applied": 15,
+    "features_upstreamed": 1,
+    "features_skipped_blocked": 2,
+    "features_skipped_requested": 5,
+    "commits_in_reconcile": 5,
+    "hunks_total": 53,
+    "patches_total": 5,
+    "files_changed": 26,
+    "lines_added": 3728,
+    "upstream_commits": 62
+  },
+  "verdicts": {
+    "blocked": 15,
+    "upstreamed": 2,
+    "not_evaluated": 8
+  },
+  "verdict_post_review": {
+    "blocked_correct": 15,
+    "upstreamed_correct": 0,
+    "upstreamed_false_positive": 2,
+    "notes": "Both upstreamed verdicts were false positives. session-search: no upstream implementation exists. copilot-skill-controls: recipe only matched error-handling scaffolding baked into the adapter, not the actual feature."
+  },
+  "ground_truth_distribution": {
+    "reapplies_clean": 9,
+    "reapplies_with_relocation": 5,
+    "upstream_absorbed_pre_reconcile": 1,
+    "false_positive_upstreamed": 2,
+    "true_conflict": 2,
+    "unknown": 6
+  },
+  "tpatch_verdict_accuracy": {
+    "upstreamed_correct": 0,
+    "upstreamed_false_positive": 2,
+    "blocked_actually_clean": 9,
+    "blocked_actually_relocation": 4,
+    "blocked_actually_conflict": 2,
+    "overall_false_positive_rate": "17/17 (100% — all verdicts were either overly conservative or wrong)",
+    "notes": "tpatch reconcile produced zero correct actionable verdicts. All 15 blocked features needed manual re-application regardless. Both upstreamed verdicts were false positives that would have caused feature loss if trusted."
+  },
+  "adaptation_types": {
+    "api_change": 1,
+    "lint_compliance": 1,
+    "type_union_extension": 1,
+    "effect_wrapper": 1,
+    "insertion_point_relocation": 3,
+    "content_rewrite": 1
+  },
+  "typecheck": {
+    "command": "bun run typecheck",
+    "packages_total": 13,
+    "packages_passed": 13,
+    "result": "pass"
+  }
+}

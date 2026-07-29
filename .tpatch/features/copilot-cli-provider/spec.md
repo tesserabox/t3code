@@ -1,0 +1,103 @@
+# Specification: copilot-cli-provider
+
+## Acceptance Criteria
+
+1. Users can select "GitHub Copilot CLI" as a provider option in the UI alongside existing Claude and Codex providers
+2. The system detects whether `gh` CLI is installed and whether the user is authenticated via `gh auth status`
+3. The system detects whether the Copilot CLI extension is installed via `gh extension list`
+4. Clear error messages are displayed when Copilot CLI is not installed, `gh` CLI is missing, or authentication has failed
+5. Users can send prompts that are executed via `gh copilot suggest` or `gh copilot explain` commands
+6. Copilot CLI output is captured and displayed in the conversation view, with streaming if supported by the CLI
+7. Copilot CLI responses are normalized to the shared event schema used by other providers
+8. Existing Claude and Codex provider functionality remains unchanged (no regressions)
+9. Provider selection persists across browser sessions via existing persistence mechanism
+10. Provider-specific configuration options for Copilot CLI (e.g., command type: suggest vs explain) are exposed in the UI
+11. Documentation is updated to reflect Copilot CLI provider setup requirements and usage
+
+## Implementation Plan
+
+### Phase 1: Research and Contract Definition
+
+1. **Investigate Copilot CLI interface**
+   - Document exact command signatures for `gh copilot suggest` and `gh copilot explain`
+   - Determine if streaming output is supported (check for `--format` flags or TTY behavior)
+   - Identify how context/files can be passed to commands
+   - Review upstream issue t3code/issues/193 for additional requirements
+
+2. **Define provider type in contracts**
+   - Add `copilot-cli` to provider enum in `packages/contracts/src/`
+   - Create `CopilotCliConfig` type for provider-specific configuration (command type, shell type for suggest)
+   - Define `CopilotCliEvent` types that map to the shared event schema
+   - Add Zod schemas for validation
+
+### Phase 2: Core Provider Implementation
+
+3. **Create Copilot CLI manager**
+   - Create `apps/server/src/copilotCliManager.ts` following the pattern of existing managers
+   - Implement CLI detection: check for `gh` binary in PATH
+   - Implement auth detection: execute `gh auth status` and parse result
+   - Implement extension detection: execute `gh extension list` and check for copilot
+
+4. **Implement command execution**
+   - Create subprocess wrapper for executing `gh copilot` commands
+   - Handle stdin for passing prompts/context
+   - Capture stdout/stderr streams
+   - Implement timeout handling for long-running commands
+
+5. **Implement session abstraction**
+   - Design pseudo-session model for command-based interaction (since Copilot CLI is stateless)
+   - Track conversation history client-side if needed for context
+   - Map request/response cycles to the provider session interface
+
+### Phase 3: Event Normalization and Integration
+
+6. **Implement event normalization**
+   - Create transformer to convert Copilot CLI output to shared event schema
+   - Handle different output formats (suggest returns shell commands, explain returns text)
+   - Map CLI exit codes to appropriate error events
+
+7. **Register provider in providerManager**
+   - Add Copilot CLI provider to `apps/server/src/providerManager.ts`
+   - Implement dispatch logic for routing to `copilotCliManager`
+   - Add provider capability flags (e.g., supports streaming: conditional)
+
+### Phase 4: UI Integration
+
+8. **Update provider selection UI**
+   - Add Copilot CLI option to provider dropdown in `apps/web/src/`
+   - Display provider status (installed/authenticated) as badges or indicators
+   - Show appropriate setup instructions when requirements not met
+
+9. **Add Copilot CLI configuration UI**
+   - Create settings panel for Copilot CLI-specific options
+   - Add command type selector (suggest/explain)
+   - Add shell type selector for suggest command (bash, zsh, powershell)
+
+10. **Handle response display**
+    - Ensure conversation view properly renders Copilot CLI responses
+    - Add syntax highlighting for shell command suggestions
+    - Display command type indicator in response UI
+
+### Phase 5: Error Handling and Polish
+
+11. **Implement comprehensive error handling**
+    - Create specific error types for: CLI not found, not authenticated, extension not installed, command timeout, rate limiting
+    - Display actionable error messages with installation/auth instructions
+    - Add retry logic where appropriate
+
+12. **Add persistence**
+    - Ensure Copilot CLI selection persists via existing provider persistence mechanism
+    - Persist Copilot CLI-specific configuration options
+
+### Phase 6: Documentation and Testing
+
+13. **Update documentation**
+    - Update `.docs/provider-architecture.md` with Copilot CLI provider details
+    - Document setup requirements (gh CLI, authentication, extension installation)
+    - Add troubleshooting guide for common issues
+
+14. **Testing**
+    - Add unit tests for `copilotCliManager` including mock subprocess responses
+    - Add integration tests for provider selection and command execution
+    - Test error scenarios (missing CLI, auth failure, timeout)
+    - Verify no regressions in Claude and Codex providers

@@ -1,0 +1,18 @@
+{
+  "id": "copilot-tool-detail",
+  "slug": "copilot-tool-detail",
+  "title": "Surface tool arguments in the Copilot work log. Extract arguments from the SDK tool.execution_start event and format a summary (e.g. Bash: git status) into the detail field of work log entries. Server-side only change in toolDetailFromEvent() — the UI already renders the detail field.",
+  "state": "requested",
+  "compatibility": "unknown",
+  "requested_at": "2026-05-13T07:15:33Z",
+  "updated_at": "2026-05-13T07:15:33Z",
+  "last_command": "add",
+  "apply": {},
+  "reconcile": {},
+  "depends_on": [
+    {
+      "slug": "copilot-cli-provider",
+      "kind": "hard"
+    }
+  ]
+}

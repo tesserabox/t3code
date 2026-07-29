@@ -1,0 +1,56 @@
+{
+  "feature": "copilot-hide-internal-models",
+  "version": 1,
+  "description": "Add toggle to hide internal-only models and remove restricted model from static fallback.",
+  "operations": [
+    {
+      "id": "01",
+      "type": "replace-in-file",
+      "path": "packages/contracts/src/settings.ts",
+      "search": "  binaryPath: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(\"\"))),\n  homePath: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(\"\"))),\n  customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),\n});\nexport type CopilotSettings = typeof CopilotSettings.Type;\n",
+      "replace": "  binaryPath: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(\"\"))),\n  homePath: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(\"\"))),\n  customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),\n  hideInternalModels: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),\n});\nexport type CopilotSettings = typeof CopilotSettings.Type;\n"
+    },
+    {
+      "id": "02",
+      "type": "replace-in-file",
+      "path": "packages/contracts/src/settings.ts",
+      "search": "  binaryPath: Schema.optionalKey(Schema.String),\n  homePath: Schema.optionalKey(Schema.String),\n  customModels: Schema.optionalKey(Schema.Array(Schema.String)),\n});\n\nconst CursorSettingsPatch = Schema.Struct({",
+      "replace": "  binaryPath: Schema.optionalKey(Schema.String),\n  homePath: Schema.optionalKey(Schema.String),\n  customModels: Schema.optionalKey(Schema.Array(Schema.String)),\n  hideInternalModels: Schema.optionalKey(Schema.Boolean),\n});\n\nconst CursorSettingsPatch = Schema.Struct({"
+    },
+    {
+      "id": "03",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotProvider.ts",
+      "search": "    isCustom: false,\n    capabilities: CLAUDE_EFFORT_CAPABILITIES,\n  },\n  {\n    slug: \"claude-opus-4.6-1m\",\n    name: \"Claude Opus 4.6 (1M context)\",\n    isCustom: false,\n    capabilities: CLAUDE_EFFORT_CAPABILITIES,\n  },\n  {\n    slug: \"claude-opus-4.5\",\n    name: \"Claude Opus 4.5\",",
+      "replace": "    isCustom: false,\n    capabilities: CLAUDE_EFFORT_CAPABILITIES,\n  },\n  {\n    slug: \"claude-opus-4.5\",\n    name: \"Claude Opus 4.5\","
+    },
+    {
+      "id": "04",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotProvider.ts",
+      "search": "    }\n\n    // Build models from SDK response, fall back to built-in\n    const runtimeModels: ServerProviderModel[] = sdkResult.models.length > 0\n      ? sdkResult.models.map((info: any) => ({\n          slug: info.id ?? info.slug ?? info.name,\n          name: info.name ?? info.id ?? info.slug,",
+      "replace": "    }\n\n    // Build models from SDK response, fall back to built-in\n    const allModels: ServerProviderModel[] = sdkResult.models.length > 0\n      ? sdkResult.models.map((info: any) => ({\n          slug: info.id ?? info.slug ?? info.name,\n          name: info.name ?? info.id ?? info.slug,"
+    },
+    {
+      "id": "05",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotProvider.ts",
+      "search": "        }))\n      : [...BUILT_IN_MODELS];\n\n    return buildServerProvider({\n      provider: PROVIDER,\n      enabled: true,",
+      "replace": "        }))\n      : [...BUILT_IN_MODELS];\n\n    // Filter out internal-only models when the setting is enabled\n    const runtimeModels = settings.hideInternalModels\n      ? allModels.filter((model) => !model.name.toLowerCase().includes(\"internal only\"))\n      : allModels;\n\n    return buildServerProvider({\n      provider: PROVIDER,\n      enabled: true,"
+    },
+    {
+      "id": "06",
+      "type": "replace-in-file",
+      "path": "apps/web/src/components/settings/SettingsPanels.tsx",
+      "search": "                      </div>\n                    ) : null}\n\n                    <div className=\"border-t border-border/60 px-4 py-3 sm:px-5\">\n                      <div className=\"text-xs font-medium text-foreground\">Models</div>\n                      <div className=\"mt-1 text-xs text-muted-foreground\">",
+      "replace": "                      </div>\n                    ) : null}\n\n                    {providerCard.provider === \"copilot\" ? (\n                      <div className=\"border-t border-border/60 px-4 py-3 sm:px-5\">\n                        <div className=\"flex items-center justify-between\">\n                          <div>\n                            <span className=\"text-xs font-medium text-foreground\">\n                              Hide internal-only models\n                            </span>\n                            <p className=\"mt-0.5 text-xs text-muted-foreground\">\n                              Filter out models marked as internal-only from the model picker.\n                            </p>\n                          </div>\n                          <Switch\n                            checked={settings.providers.copilot.hideInternalModels}\n                            onCheckedChange={(checked) =>\n                              updateSettings({\n                                providers: {\n                                  ...settings.providers,\n                                  copilot: {\n                                    ...settings.providers.copilot,\n                                    hideInternalModels: Boolean(checked),\n                                  },\n                                },\n                              })\n                            }\n                            aria-label=\"Hide internal-only models\"\n                          />\n                        </div>\n                      </div>\n                    ) : null}\n\n                    <div className=\"border-t border-border/60 px-4 py-3 sm:px-5\">\n                      <div className=\"text-xs font-medium text-foreground\">Models</div>\n                      <div className=\"mt-1 text-xs text-muted-foreground\">"
+    },
+    {
+      "id": "07",
+      "type": "replace-in-file",
+      "path": "apps/web/src/components/KeybindingsToast.browser.tsx",
+      "search": "      textGenerationModelSelection: { provider: \"codex\" as const, model: \"gpt-5.4-mini\" },\n      providers: {\n        codex: { enabled: true, binaryPath: \"\", homePath: \"\", customModels: [] },\n        copilot: { enabled: true, binaryPath: \"\", homePath: \"\", customModels: [] },\n        claudeAgent: { enabled: true, binaryPath: \"\", customModels: [], launchArgs: \"\" },\n        cursor: { enabled: true, binaryPath: \"\", apiEndpoint: \"\", customModels: [] },\n        opencode: {",
+      "replace": "      textGenerationModelSelection: { provider: \"codex\" as const, model: \"gpt-5.4-mini\" },\n      providers: {\n        codex: { enabled: true, binaryPath: \"\", homePath: \"\", customModels: [] },\n        copilot: { enabled: true, binaryPath: \"\", homePath: \"\", customModels: [], hideInternalModels: false },\n        claudeAgent: { enabled: true, binaryPath: \"\", customModels: [], launchArgs: \"\" },\n        cursor: { enabled: true, binaryPath: \"\", apiEndpoint: \"\", customModels: [] },\n        opencode: {"
+    }
+  ]
+}

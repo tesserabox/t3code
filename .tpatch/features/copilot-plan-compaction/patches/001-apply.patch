@@ -1,0 +1,119 @@
+diff --git a/apps/server/src/provider/Layers/CopilotAdapter.ts b/apps/server/src/provider/Layers/CopilotAdapter.ts
+index 6fbed044..9387814b 100644
+--- a/apps/server/src/provider/Layers/CopilotAdapter.ts
++++ b/apps/server/src/provider/Layers/CopilotAdapter.ts
+@@ -1012,6 +1012,64 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+               },
+             },
+           ];
++        case "session.compaction_start":
++          return [
++            {
++              ...base(),
++              type: "session.state.changed",
++              payload: {
++                state: "waiting",
++                reason: "session.compaction_start",
++                detail: event.data,
++              },
++            },
++          ];
++        case "session.compaction_complete": {
++          const compactionEvents: ProviderRuntimeEvent[] = [
++            {
++              ...base(),
++              type: "thread.state.changed",
++              payload: {
++                state: "compacted",
++                detail: event.data,
++              },
++            },
++          ];
++          if (event.data.success === false && trimToUndefined(event.data.error)) {
++            compactionEvents.push({
++              ...base(),
++              type: "runtime.warning",
++              payload: {
++                message: `Context compaction failed: ${event.data.error}`,
++                detail: event.data,
++              },
++            });
++          }
++          return compactionEvents;
++        }
++        case "session.truncation":
++          return [
++            {
++              ...base(),
++              type: "runtime.warning",
++              payload: {
++                message: `Context truncated: ${event.data.tokensRemovedDuringTruncation} tokens removed (${event.data.messagesRemovedDuringTruncation} messages), ${event.data.postTruncationTokensInMessages}/${event.data.tokenLimit} tokens remaining.`,
++                detail: event.data,
++              },
++            },
++          ];
++        case "exit_plan_mode.requested":
++          return [
++            {
++              ...base({ turnId: currentSyntheticTurnId(record) }),
++              type: "turn.proposed.completed",
++              payload: {
++                planMarkdown: event.data.planContent ?? event.data.summary ?? "",
++              },
++            },
++          ];
++        case "exit_plan_mode.completed":
++          return [];
+         default:
+           return [];
+       }
+@@ -1021,11 +1079,23 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+       threadId: ThreadId,
+       getCurrentTurnId: () => TurnId | undefined,
+       getRuntimeMode: () => ProviderSession["runtimeMode"],
++      getInteractionMode: () => "default" | "plan" | undefined,
+       pendingApprovalResolvers: Map<string, PendingApprovalRequest>,
+       pendingUserInputResolvers: Map<string, PendingUserInputRequest>,
+     ) => {
+-      const onPermissionRequest = (request: PermissionRequest) =>
+-        getRuntimeMode() === "full-access"
++      const onPermissionRequest = (request: PermissionRequest) => {
++        // In plan mode, deny write and shell operations — planning should not modify files
++        const interactionMode = getInteractionMode();
++        if (
++          interactionMode === "plan" &&
++          (request.kind === "shell" || request.kind === "write")
++        ) {
++          return Promise.resolve<PermissionRequestResult>({
++            kind: "denied-interactively-by-user",
++          });
++        }
++
++        return getRuntimeMode() === "full-access"
+           ? Promise.resolve<PermissionRequestResult>({ kind: "approved" })
+           : new Promise<PermissionRequestResult>((resolve) => {
+               const requestId = `copilot-approval-${randomUUID()}`;
+@@ -1050,6 +1120,7 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+                 ),
+               ]);
+             });
++      };
+ 
+       const onUserInputRequest = (request: CopilotUserInputRequest) =>
+         new Promise<CopilotUserInputResponse>((resolve) => {
+@@ -1182,6 +1253,7 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+             record.threadId,
+             () => record.currentTurnId,
+             () => record.runtimeMode,
++            () => record.interactionMode,
+             record.pendingApprovalResolvers,
+             record.pendingUserInputResolvers,
+           );
+@@ -1368,6 +1440,7 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+           input.threadId,
+           () => sessionRecord?.currentTurnId,
+           () => sessionRecord?.runtimeMode ?? input.runtimeMode,
++          () => sessionRecord?.interactionMode,
+           pendingApprovalResolvers,
+           pendingUserInputResolvers,
+         );

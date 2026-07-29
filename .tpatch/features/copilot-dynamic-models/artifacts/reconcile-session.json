@@ -1,0 +1,20 @@
+{
+  "slug": "copilot-dynamic-models",
+  "title": "Build model capabilities dynamically from Copilot SDK runtime data instead of static BUILT_IN_MODELS. Use supportedReasoningEfforts from client.listModels() to populate reasoningEffortLevels per model. Also investigate using copilot-api for broader model listing (44 models vs SDK's 16).",
+  "outcome": "blocked",
+  "phase": "phase-4-blocked",
+  "upstream_ref": "upstream/main",
+  "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+  "notes": [
+    "Operation-level: 2 present, 0 applicable, 2 conflicts",
+    "Provider semantic check error: generation request failed: Post \"http://localhost:4141/v1/messages\": context deadline exceeded",
+    "Patch cannot be applied cleanly — manual intervention needed",
+    "git: error: .git/logs/HEAD: Not a directory\nerror: .git/logs/refs/heads/main: Not a directory\nerror: .git/logs/refs/remotes/origin/HEAD: Not a directory"
+  ],
+  "conflicts": [
+    "Forward-apply failed — check for merge conflicts"
+  ],
+  "labels": [
+    "blocked-by-parent"
+  ]
+}

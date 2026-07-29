@@ -1,0 +1,22 @@
+{
+  "id": "upgrade-github-copilot-sdk-to-0-3-0-adapt-the-copilot",
+  "slug": "upgrade-github-copilot-sdk-to-0-3-0-adapt-the-copilot",
+  "title": "Upgrade @github/copilot-sdk to 0.3.0, adapt the Copilot provider to the new permission approval protocol, and fix Windows Bun/Electron CLI resolution",
+  "state": "blocked",
+  "compatibility": "unknown",
+  "requested_at": "2026-04-25T10:56:31Z",
+  "updated_at": "2026-05-13T08:00:33Z",
+  "last_command": "reconcile",
+  "notes": "Reconciliation blocked — manual intervention needed",
+  "apply": {
+    "completed_at": "2026-04-25T11:00:46Z",
+    "base_commit": "fc8a225a788a0590f38d2c2e9494cfb68a342fe0",
+    "has_patch": true
+  },
+  "reconcile": {
+    "attempted_at": "2026-05-13T08:00:33Z",
+    "upstream_ref": "upstream/main",
+    "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+    "outcome": "blocked"
+  }
+}

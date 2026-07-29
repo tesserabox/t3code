@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "feature": "windows-wsl-support",
+  "claims": [
+    {
+      "claim_id": "0db57f3931b6",
+      "kind": "path",
+      "value": "apps/server/src/cli-config.test.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "1a211b6f343d",
+      "kind": "path",
+      "value": "apps/desktop/src/main.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "1f7561d19c49",
+      "kind": "path",
+      "value": "apps/server/src/cli.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "4f15f1daa4e9",
+      "kind": "path",
+      "value": "apps/desktop/src/backendTarget.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "7d9c774c2268",
+      "kind": "path",
+      "value": "apps/desktop/src/backendEnvironment.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "895b7b025839",
+      "kind": "path",
+      "value": "apps/desktop/src/wslBackendTarget.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "b68e60e6bde5",
+      "kind": "path",
+      "value": "apps/desktop/src/wslServerBundle.ts",
+      "mode": "advisory",
+      "source": "manual"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+# Test run — 2026-05-05T03:25:03Z
+# Command: bun run --filter t3 build
+# Directory: D:\Development\TesseraCode\t3code
+
+t3 build: [20:25:02.460] INFO (#1): [cli] Running tsdown...
+t3 build: [20:25:03.391] INFO (#1): [cli] Applied development icon overrides to dist/client
+t3 build: [20:25:03.391] INFO (#1): [cli] Bundled web app into dist/client
+t3 build: Exited with code 0

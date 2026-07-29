@@ -1,0 +1,3497 @@
+diff --git a/.claude/instructions.md b/.claude/instructions.md
+new file mode 100644
+index 00000000..05c75628
+--- /dev/null
++++ b/.claude/instructions.md
+@@ -0,0 +1,104 @@
++# T3 Code Fork — Agent Instructions
++
++## What this is
++A fork of [pingdotgg/t3code](https://github.com/pingdotgg/t3code) — a multi-provider coding assistant (Codex, Claude, Cursor, OpenCode). We added **GitHub Copilot** as a provider using `@github/copilot-sdk`.
++
++## Branch
++`feature/copilot-provider` on `origin` (tesserabox/t3code). Sits on top of `main` which tracks `upstream/main`.
++
++## tpatch — fork patch management
++This repo uses `tpatch` to track fork-specific features as replayable patches. Key commands:
++
++```bash
++tpatch status                          # see all features and their state
++tpatch add --slug <slug> "description" # register a new feature
++tpatch apply <slug> --mode started     # snapshot before edits
++tpatch apply <slug> --mode done        # capture diff after edits
++tpatch record <slug> --from <ref>      # save patch (use --from main for full diff)
++tpatch reconcile --upstream-ref upstream/main  # check features against new upstream
++```
++
++**Important**: tpatch's LLM-driven `implement` phase produces low-quality recipes. Always use **Path B** — `--mode started`, make changes manually/with agent, then `--mode done` + `record`. The agent acts as the "tpatch provider" for conflict resolution and feature implementation.
++
++### Recipe management
++After implementing changes, rebuild recipes from git diffs to ensure they're deterministically replayable:
++- Recipes use `write-file` for new files and `replace-in-file` for modifications
++- `search` strings must match the **upstream** (pre-change) file content
++- Validate with `tpatch apply <slug> --mode execute --dry-run` on a clean upstream tree
++- Record patches with `tpatch record <slug> --from <base-ref>` — look for "Patch validated: applies cleanly"
++
++## Active features (all `applied`)
++| Feature | What it does |
++|---------|-------------|
++| `copilot-cli-provider` | Full Copilot provider — SDK adapter, services, registry wiring, UI, Electron build fixes |
++| `copilot-dynamic-models` | Runtime model capabilities from SDK's `listModels()` instead of static list |
++| `effort-theming` | Animated teal border when GPT xhigh effort is selected |
++
++## Upstream sync workflow
++```bash
++git fetch upstream
++git checkout main
++git merge --ff-only upstream/main
++# Restore .tpatch from feature branch (do NOT pop stash with source files):
++git checkout feature/copilot-provider -- .tpatch/
++# Run reconcile on CLEAN upstream tree (no source changes):
++tpatch reconcile --upstream-ref upstream/main
++# If "reapplied": act as provider to merge changes onto new upstream
++# If "blocked": reconcile report tells you which files conflict
++```
++
++**Critical**: Do NOT `git stash pop` source changes before reconcile. Reconcile needs a clean tree to produce accurate diagnostics. Only restore `.tpatch/` metadata first.
++
++## Dev setup
++```bash
++nvm use 24              # Node 24+ for native .ts support
++export PATH="./node_modules/.bin:$PATH"
++bun install
++bun run dev             # starts server + web
++bun run typecheck       # verify all 9 packages
++```
++
++## Key files for Copilot provider
++
++### Server
++- `apps/server/src/provider/Services/CopilotAdapter.ts` — service tag
++- `apps/server/src/provider/Services/CopilotProvider.ts` — service tag
++- `apps/server/src/provider/Layers/CopilotAdapter.ts` — full SDK adapter (~1757 lines)
++- `apps/server/src/provider/Layers/CopilotProvider.ts` — detection + model listing
++- `apps/server/src/provider/Layers/copilotCliPath.ts` — binary resolution for Electron
++- `apps/server/src/provider/Layers/copilotTurnTracking.ts` — turn ID state machine
++- `apps/server/src/provider/Layers/copilotMcpServers.ts` — MCP config loader
++
++### Contracts
++- `packages/contracts/src/orchestration.ts` — `ProviderKind`, `CopilotModelSelection`
++- `packages/contracts/src/model.ts` — `CopilotModelOptions`, defaults, aliases, display names
++- `packages/contracts/src/settings.ts` — `CopilotSettings`, `CopilotSettingsPatch`
++
++### Web
++- `apps/web/src/session-logic.ts` — `PROVIDER_OPTIONS` (UI picker list)
++- `apps/web/src/composerDraftStore.ts` — `normalizeProviderKind()`, `normalizeProviderModelOptions()`
++- `apps/web/src/components/chat/TraitsPicker.tsx` — `getRawEffort()`, `getEffortKey()`
++- `apps/web/src/components/chat/composerProviderRegistry.tsx` — provider state + theming
++
++## Known patterns / gotchas
++
++### TypeScript
++- Every `Record<ProviderKind, ...>` must include `copilot` or TS will error at compile time
++- Constructing `ModelSelection` from a dynamic `provider: ProviderKind` requires `as ModelSelection` cast (discriminated union narrowing limitation)
++
++### Runtime
++- `normalizeProviderKind()` in `composerDraftStore.ts` is a runtime gate — missing providers silently fail (clicks do nothing)
++- `TraitsPicker.tsx` `getRawEffort()` and `getEffortKey()` need copilot cases for effort selection to work
++- Copilot uses `reasoningEffort` (same key as Codex), not `effort` (Claude's key)
++
++### Electron / Production builds
++- `scripts/build-desktop-artifact.ts` must NOT use `--omit optional` (copilot binary is optional dep)
++- `asarUnpack` must include `node_modules/@github/copilot-*/**` so binary is executable
++- `CopilotProvider.ts` must use `resolveBundledCopilotCliPath()` (not raw `binaryPath`) for Electron
++- On first desktop launch, provider status may fail before `syncShellEnvironment()` hydrates PATH — restart fixes it
++
++### Architecture
++- Copilot follows the same Effect-TS Service/Layer pattern as all providers
++- Claude and Copilot both use SDK npm packages that wrap CLI binaries
++- Codex and OpenCode spawn CLI binaries directly over JSON-RPC
++- Cursor uses ACP protocol via `@t3tools/effect-acp`
+diff --git a/apps/server/package.json b/apps/server/package.json
+index 250a667a..b7cf3e0e 100644
+--- a/apps/server/package.json
++++ b/apps/server/package.json
+@@ -25,6 +25,7 @@
+     "test:process-reaper": "vitest run src/server.test.ts src/provider/Layers/ClaudeAdapter.test.ts src/provider/Layers/ProviderSessionDirectory.test.ts src/provider/Layers/ProviderSessionReaper.test.ts src/provider/Layers/CodexAdapter.test.ts"
+   },
+   "dependencies": {
++    "@github/copilot-sdk": "^0.2.2",
+     "@anthropic-ai/claude-agent-sdk": "^0.2.111",
+     "@effect/platform-bun": "catalog:",
+     "@effect/platform-node": "catalog:",
+diff --git a/apps/server/src/git/Services/TextGeneration.ts b/apps/server/src/git/Services/TextGeneration.ts
+index 78d37a01..90285d36 100644
+--- a/apps/server/src/git/Services/TextGeneration.ts
++++ b/apps/server/src/git/Services/TextGeneration.ts
+@@ -13,7 +13,7 @@ import type { ChatAttachment, ModelSelection } from "@t3tools/contracts";
+ import type { TextGenerationError } from "@t3tools/contracts";
+ 
+ /** Providers that support git text generation (commit messages, PR content, branch names). */
+-export type TextGenerationProvider = "codex" | "claudeAgent" | "cursor" | "opencode";
++export type TextGenerationProvider = "codex" | "copilot" | "claudeAgent" | "cursor" | "opencode";
+ 
+ export interface CommitMessageGenerationInput {
+   cwd: string;
+diff --git a/apps/server/src/provider/Layers/CopilotAdapter.ts b/apps/server/src/provider/Layers/CopilotAdapter.ts
+new file mode 100644
+index 00000000..6fbed044
+--- /dev/null
++++ b/apps/server/src/provider/Layers/CopilotAdapter.ts
+@@ -0,0 +1,1760 @@
++import { randomUUID } from "node:crypto";
++
++import {
++  type CodexReasoningEffort,
++  type ModelSelection,
++  EventId,
++  type ProviderApprovalDecision,
++  ProviderItemId,
++  type ProviderRuntimeEvent,
++  type ProviderSession,
++  type ProviderTurnStartResult,
++  type ProviderUserInputAnswers,
++  RuntimeItemId,
++  RuntimeRequestId,
++  RuntimeTaskId,
++  ThreadId,
++  TurnId,
++} from "@t3tools/contracts";
++import {
++  CopilotClient,
++  type CopilotClientOptions,
++  type ModelInfo,
++  type PermissionRequest,
++  type PermissionRequestResult,
++  type SessionEvent,
++} from "@github/copilot-sdk";
++import { Effect, Layer, Queue, Stream } from "effect";
++
++import { resolveAttachmentPath } from "../../attachmentStore.ts";
++import { ServerConfig } from "../../config.ts";
++import { ServerSettingsService } from "../../serverSettings.ts";
++import {
++  ProviderAdapterProcessError,
++  ProviderAdapterRequestError,
++  ProviderAdapterSessionNotFoundError,
++  ProviderAdapterValidationError,
++} from "../Errors.ts";
++import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
++import {
++  assistantUsageFields,
++  beginCopilotTurn,
++  clearTurnTracking,
++  completionTurnRefs,
++  isCopilotTurnTerminalEvent,
++  markTurnAwaitingCompletion,
++  recordTurnUsage,
++  type CopilotTurnTrackingState,
++} from "./copilotTurnTracking.ts";
++import { loadCopilotMcpServers } from "./copilotMcpServers.ts";
++import { normalizeCopilotCliPathOverride, resolveBundledCopilotCliPath } from "./copilotCliPath.ts";
++import { CopilotAdapter, type CopilotAdapterShape } from "../Services/CopilotAdapter.ts";
++import type {
++  ProviderThreadSnapshot,
++  ProviderThreadTurnSnapshot,
++} from "../Services/ProviderAdapter.ts";
++
++const PROVIDER = "copilot" as const;
++const USER_INPUT_QUESTION_ID = "answer";
++const USER_INPUT_QUESTION_HEADER = "Question";
++
++export interface CopilotAdapterLiveOptions {
++  readonly nativeEventLogger?: EventNdjsonLogger;
++  readonly clientFactory?: (options: CopilotClientOptions) => CopilotClientHandle;
++}
++
++interface PendingApprovalRequest {
++  readonly requestType:
++    | "command_execution_approval"
++    | "file_change_approval"
++    | "file_read_approval"
++    | "dynamic_tool_call"
++    | "unknown";
++  readonly turnId: TurnId | undefined;
++  readonly resolve: (result: PermissionRequestResult) => void;
++}
++
++interface CopilotUserInputRequest {
++  readonly question: string;
++  readonly choices?: ReadonlyArray<string>;
++  readonly allowFreeform?: boolean;
++}
++
++interface CopilotUserInputResponse {
++  readonly answer: string;
++  readonly wasFreeform: boolean;
++}
++
++interface PendingUserInputRequest {
++  readonly request: CopilotUserInputRequest;
++  readonly turnId: TurnId | undefined;
++  readonly resolve: (result: CopilotUserInputResponse) => void;
++}
++
++interface CopilotSessionConfiguration {
++  readonly model: string | undefined;
++  readonly reasoningEffort: CodexReasoningEffort | undefined;
++}
++
++interface ActiveCopilotSession extends CopilotTurnTrackingState {
++  readonly client: CopilotClientHandle;
++  session: CopilotSessionHandle;
++  readonly threadId: ThreadId;
++  readonly createdAt: string;
++  readonly runtimeMode: ProviderSession["runtimeMode"];
++  cwd: string | undefined;
++  configDir: string | undefined;
++  model: string | undefined;
++  reasoningEffort: CodexReasoningEffort | undefined;
++  interactionMode: "default" | "plan" | undefined;
++  updatedAt: string;
++  lastError: string | undefined;
++  toolTitlesByCallId: Map<string, string>;
++  pendingApprovalResolvers: Map<string, PendingApprovalRequest>;
++  pendingUserInputResolvers: Map<string, PendingUserInputRequest>;
++  unsubscribe: () => void;
++}
++
++interface CopilotSessionHandle {
++  readonly sessionId: string;
++  readonly rpc: {
++    readonly mode: {
++      set(input: { mode: "interactive" | "plan" | "autopilot" }): Promise<{
++        mode: "interactive" | "plan" | "autopilot";
++      }>;
++    };
++    readonly plan: {
++      read(): Promise<{
++        exists: boolean;
++        content: string | null;
++        path: string | null;
++      }>;
++    };
++  };
++  destroy(): Promise<void>;
++  on(handler: (event: SessionEvent) => void): () => void;
++  send(options: { prompt: string; attachments?: unknown; mode?: string }): Promise<string>;
++  abort(): Promise<void>;
++  getMessages(): Promise<SessionEvent[]>;
++}
++
++interface CopilotClientHandle {
++  start(): Promise<void>;
++  listModels(): Promise<ModelInfo[]>;
++  createSession(
++    config: Parameters<CopilotClient["createSession"]>[0],
++  ): Promise<CopilotSessionHandle>;
++  resumeSession(
++    sessionId: string,
++    config: Parameters<CopilotClient["resumeSession"]>[1],
++  ): Promise<CopilotSessionHandle>;
++  stop(): Promise<Error[]>;
++}
++
++function toMessage(cause: unknown, fallback: string): string {
++  if (cause instanceof Error && cause.message.length > 0) {
++    return cause.message;
++  }
++  return fallback;
++}
++
++function makeEventId(prefix: string) {
++  return EventId.make(`${prefix}-${randomUUID()}`);
++}
++
++function toTurnId(value: string | undefined): TurnId | undefined {
++  if (!value || value.trim().length === 0) return undefined;
++  return TurnId.make(value);
++}
++
++function toRuntimeItemId(value: string | undefined) {
++  if (!value || value.trim().length === 0) return undefined;
++  return RuntimeItemId.make(value);
++}
++
++function toProviderItemId(value: string | undefined) {
++  if (!value || value.trim().length === 0) return undefined;
++  return ProviderItemId.make(value);
++}
++
++function toRuntimeRequestId(value: string | undefined) {
++  if (!value || value.trim().length === 0) return undefined;
++  return RuntimeRequestId.make(value);
++}
++
++function toRuntimeTaskId(value: string | undefined) {
++  if (!value || value.trim().length === 0) return undefined;
++  return RuntimeTaskId.make(value);
++}
++
++function asRecord(value: unknown): Record<string, unknown> | undefined {
++  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
++  return value as Record<string, unknown>;
++}
++
++function normalizeString(value: unknown): string | undefined {
++  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
++}
++
++function trimToUndefined(value: string | undefined): string | undefined {
++  if (!value) return undefined;
++  const trimmed = value.trim();
++  return trimmed.length > 0 ? trimmed : undefined;
++}
++
++function toNonNegativeInt(value: number | undefined) {
++  return value === undefined || !Number.isFinite(value)
++    ? undefined
++    : Math.max(0, Math.floor(value));
++}
++
++function toPositiveInt(value: number | undefined) {
++  const normalized = toNonNegativeInt(value);
++  return normalized && normalized > 0 ? normalized : undefined;
++}
++
++function mapSessionUsageInfo(usage: Extract<SessionEvent, { type: "session.usage_info" }>["data"]) {
++  return {
++    usedTokens: toNonNegativeInt(usage.currentTokens) ?? 0,
++    ...(toNonNegativeInt(usage.currentTokens) !== undefined
++      ? { totalProcessedTokens: toNonNegativeInt(usage.currentTokens) }
++      : {}),
++    ...(toPositiveInt(usage.tokenLimit) ? { maxTokens: toPositiveInt(usage.tokenLimit) } : {}),
++  };
++}
++
++function mapAssistantUsage(usage: Extract<SessionEvent, { type: "assistant.usage" }>["data"]) {
++  const inputTokens = toNonNegativeInt(usage.inputTokens);
++  const outputTokens = toNonNegativeInt(usage.outputTokens);
++  const cachedInputTokens = toNonNegativeInt(usage.cacheReadTokens);
++  const durationMs = toNonNegativeInt(usage.duration);
++  const usedTokens = (inputTokens ?? 0) + (outputTokens ?? 0) + (cachedInputTokens ?? 0);
++  return {
++    usedTokens,
++    totalProcessedTokens: usedTokens,
++    ...(inputTokens !== undefined ? { inputTokens } : {}),
++    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
++    ...(outputTokens !== undefined ? { outputTokens } : {}),
++    ...(usedTokens > 0 ? { lastUsedTokens: usedTokens } : {}),
++    ...(inputTokens !== undefined ? { lastInputTokens: inputTokens } : {}),
++    ...(cachedInputTokens !== undefined ? { lastCachedInputTokens: cachedInputTokens } : {}),
++    ...(outputTokens !== undefined ? { lastOutputTokens: outputTokens } : {}),
++    ...(durationMs !== undefined ? { durationMs } : {}),
++  };
++}
++
++function mapSupportedModelsById(models: ReadonlyArray<ModelInfo>) {
++  return new Map(models.map((model) => [model.id, model]));
++}
++
++function getCopilotReasoningEffortFromSelection(
++  modelSelection: ModelSelection | undefined,
++): CodexReasoningEffort | undefined {
++  if (!modelSelection || modelSelection.provider !== PROVIDER) {
++    return undefined;
++  }
++  const reasoningEffort = normalizeString(modelSelection.options?.reasoningEffort);
++  return reasoningEffort === "low" ||
++    reasoningEffort === "medium" ||
++    reasoningEffort === "high" ||
++    reasoningEffort === "xhigh"
++    ? reasoningEffort
++    : undefined;
++}
++
++function extractResumeSessionId(resumeCursor: unknown): string | undefined {
++  if (typeof resumeCursor === "string" && resumeCursor.trim().length > 0) {
++    return resumeCursor.trim();
++  }
++  const record = asRecord(resumeCursor);
++  const sessionId = normalizeString(record?.sessionId);
++  return sessionId;
++}
++
++function toCopilotSessionMode(interactionMode: "default" | "plan"): "interactive" | "plan" {
++  return interactionMode === "plan" ? "plan" : "interactive";
++}
++
++function toInteractionMode(mode: string): "default" | "plan" {
++  return mode === "plan" ? "plan" : "default";
++}
++
++function approvalDecisionToPermissionResult(
++  decision: ProviderApprovalDecision,
++): PermissionRequestResult {
++  switch (decision) {
++    case "accept":
++    case "acceptForSession":
++      return { kind: "approved" };
++    case "decline":
++    case "cancel":
++    default:
++      return { kind: "denied-interactively-by-user" };
++  }
++}
++
++function requestTypeFromPermissionRequest(request: PermissionRequest) {
++  switch (request.kind) {
++    case "shell":
++      return "command_execution_approval" as const;
++    case "write":
++      return "file_change_approval" as const;
++    case "read":
++      return "file_read_approval" as const;
++    case "mcp":
++    case "custom-tool":
++      return "dynamic_tool_call" as const;
++    default:
++      return "unknown" as const;
++  }
++}
++
++function requestDetailFromPermissionRequest(request: PermissionRequest): string | undefined {
++  switch (request.kind) {
++    case "shell":
++      return trimToUndefined(String(request.fullCommandText ?? ""));
++    case "write":
++      return trimToUndefined(String(request.fileName ?? request.intention ?? ""));
++    case "read":
++      return trimToUndefined(String(request.path ?? request.intention ?? ""));
++    case "mcp":
++      return trimToUndefined(String(request.toolTitle ?? request.toolName ?? ""));
++    case "url":
++      return trimToUndefined(String(request.url ?? request.intention ?? ""));
++    case "custom-tool":
++      return trimToUndefined(String(request.toolName ?? request.toolDescription ?? ""));
++    default:
++      return undefined;
++  }
++}
++
++function itemTypeFromToolEvent(event: Extract<SessionEvent, { type: "tool.execution_start" }>) {
++  return event.data.mcpToolName ? "mcp_tool_call" : "dynamic_tool_call";
++}
++
++function toolDetailFromEvent(data: {
++  readonly toolName?: string;
++  readonly mcpToolName?: string;
++  readonly mcpServerName?: string;
++}) {
++  return trimToUndefined(
++    [data.mcpServerName, data.mcpToolName ?? data.toolName].filter(Boolean).join(" / "),
++  );
++}
++
++function withRefs(input: {
++  readonly threadId: ThreadId;
++  readonly eventId: EventId;
++  readonly createdAt: string;
++  readonly turnId: TurnId | undefined;
++  readonly providerTurnId?: TurnId | undefined;
++  readonly itemId: string | undefined;
++  readonly requestId: string | undefined;
++  readonly rawMethod: string | undefined;
++  readonly rawPayload: unknown;
++}): Omit<ProviderRuntimeEvent, "type" | "payload"> {
++  const providerTurnId = input.providerTurnId ?? input.turnId;
++  const providerItemId = toProviderItemId(input.itemId);
++  const providerRequestId = trimToUndefined(input.requestId);
++  return {
++    eventId: input.eventId,
++    provider: PROVIDER,
++    threadId: input.threadId,
++    createdAt: input.createdAt,
++    ...(input.turnId ? { turnId: input.turnId } : {}),
++    ...(input.itemId ? { itemId: toRuntimeItemId(input.itemId) } : {}),
++    ...(input.requestId ? { requestId: toRuntimeRequestId(input.requestId) } : {}),
++    ...(providerTurnId || providerItemId || providerRequestId
++      ? {
++          providerRefs: {
++            ...(providerTurnId ? { providerTurnId } : {}),
++            ...(providerItemId ? { providerItemId } : {}),
++            ...(providerRequestId ? { providerRequestId } : {}),
++          },
++        }
++      : {}),
++    raw: {
++      source: input.rawMethod ? "copilot.sdk.session-event" : "copilot.sdk.synthetic",
++      ...(input.rawMethod ? { method: input.rawMethod } : {}),
++      payload: input.rawPayload,
++    },
++  };
++}
++
++function mapHistoryToTurns(
++  threadId: ThreadId,
++  events: ReadonlyArray<SessionEvent>,
++): ProviderThreadSnapshot {
++  const turns: Array<ProviderThreadTurnSnapshot> = [];
++  let current: { id: TurnId; items: Array<unknown> } | undefined;
++
++  for (const event of events) {
++    if (event.type === "assistant.turn_start") {
++      current = {
++        id: TurnId.make(event.data.turnId),
++        items: [event],
++      };
++      turns.push(current);
++      continue;
++    }
++
++    if (!current) {
++      continue;
++    }
++
++    current.items.push(event);
++    if (isCopilotTurnTerminalEvent(event)) {
++      current = undefined;
++    }
++  }
++
++  return {
++    threadId,
++    turns: turns.map((turn) => ({
++      id: turn.id,
++      items: turn.items,
++    })),
++  };
++}
++
++function makeSyntheticEvent(
++  threadId: ThreadId,
++  type: ProviderRuntimeEvent["type"],
++  payload: ProviderRuntimeEvent["payload"],
++  extra?: {
++    readonly turnId?: TurnId | undefined;
++    readonly itemId?: string | undefined;
++    readonly requestId?: string | undefined;
++  },
++): ProviderRuntimeEvent {
++  return {
++    ...withRefs({
++      threadId,
++      eventId: makeEventId("copilot-synthetic"),
++      createdAt: new Date().toISOString(),
++      turnId: extra?.turnId,
++      itemId: extra?.itemId,
++      requestId: extra?.requestId,
++      rawMethod: undefined,
++      rawPayload: payload,
++    }),
++    type,
++    payload,
++  } as ProviderRuntimeEvent;
++}
++
++function resolveUserInputAnswer(
++  pending: PendingUserInputRequest,
++  answers: ProviderUserInputAnswers,
++): CopilotUserInputResponse {
++  const direct = answers[USER_INPUT_QUESTION_ID];
++  const candidate =
++    typeof direct === "string"
++      ? direct
++      : Object.values(answers).find((value): value is string => typeof value === "string");
++  const answer = trimToUndefined(candidate) ?? "";
++  return {
++    answer,
++    wasFreeform: !pending.request.choices?.includes(answer),
++  };
++}
++
++function createSessionRecord(input: {
++  readonly threadId: ThreadId;
++  readonly client: CopilotClientHandle;
++  readonly session: CopilotSessionHandle;
++  readonly runtimeMode: ProviderSession["runtimeMode"];
++  readonly pendingApprovalResolvers: Map<string, PendingApprovalRequest>;
++  readonly pendingUserInputResolvers: Map<string, PendingUserInputRequest>;
++  readonly cwd: string | undefined;
++  readonly configDir: string | undefined;
++  readonly model: string | undefined;
++  readonly reasoningEffort: CodexReasoningEffort | undefined;
++}): ActiveCopilotSession {
++  return {
++    client: input.client,
++    session: input.session,
++    threadId: input.threadId,
++    createdAt: new Date().toISOString(),
++    runtimeMode: input.runtimeMode,
++    cwd: input.cwd,
++    configDir: input.configDir,
++    model: input.model,
++    reasoningEffort: input.reasoningEffort,
++    interactionMode: undefined,
++    updatedAt: new Date().toISOString(),
++    lastError: undefined,
++    currentTurnId: undefined,
++    currentProviderTurnId: undefined,
++    pendingCompletionTurnId: undefined,
++    pendingCompletionProviderTurnId: undefined,
++    pendingTurnIds: [],
++    pendingTurnUsage: undefined,
++    toolTitlesByCallId: new Map(),
++    pendingApprovalResolvers: input.pendingApprovalResolvers,
++    pendingUserInputResolvers: input.pendingUserInputResolvers,
++    unsubscribe: () => undefined,
++  };
++}
++
++const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
++  Effect.gen(function* () {
++    const serverConfig = yield* ServerConfig;
++    const serverSettings = yield* ServerSettingsService;
++    const nativeEventLogger = options?.nativeEventLogger;
++    const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
++    const sessions = new Map<ThreadId, ActiveCopilotSession>();
++    const services = yield* Effect.context<never>();
++    const runPromise = Effect.runPromiseWith(services);
++
++    const emitRuntimeEvents = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
++      runPromise(Queue.offerAll(runtimeEventQueue, events).pipe(Effect.asVoid)).catch(
++        () => undefined,
++      );
++
++    const writeNativeEvent = (threadId: ThreadId, event: SessionEvent) => {
++      if (!nativeEventLogger) return Promise.resolve();
++      return runPromise(nativeEventLogger.write(event, threadId)).catch(() => undefined);
++    };
++
++    const currentSyntheticTurnId = (record: ActiveCopilotSession) =>
++      completionTurnRefs(record).turnId ?? record.currentTurnId;
++
++    const syncInteractionMode = (
++      record: ActiveCopilotSession,
++      interactionMode: "default" | "plan",
++    ) => {
++      if (record.interactionMode === interactionMode) {
++        return Effect.void;
++      }
++      return Effect.tryPromise({
++        try: async () => {
++          await record.session.rpc.mode.set({
++            mode: toCopilotSessionMode(interactionMode),
++          });
++          record.interactionMode = interactionMode;
++        },
++        catch: (cause) =>
++          new ProviderAdapterRequestError({
++            provider: PROVIDER,
++            method: "session.mode.set",
++            detail: toMessage(cause, "Failed to switch GitHub Copilot interaction mode."),
++            cause,
++          }),
++      });
++    };
++
++    const emitLatestProposedPlan = (record: ActiveCopilotSession) =>
++      Effect.tryPromise({
++        try: () => record.session.rpc.plan.read(),
++        catch: (cause) =>
++          new ProviderAdapterRequestError({
++            provider: PROVIDER,
++            method: "session.plan.read",
++            detail: toMessage(cause, "Failed to read the GitHub Copilot plan."),
++            cause,
++          }),
++      }).pipe(
++        Effect.flatMap((plan) => {
++          const planMarkdown = trimToUndefined(plan.content ?? undefined);
++          if (!plan.exists || !planMarkdown) {
++            return Effect.void;
++          }
++          return Queue.offer(
++            runtimeEventQueue,
++            makeSyntheticEvent(
++              record.threadId,
++              "turn.proposed.completed",
++              {
++                planMarkdown,
++              },
++              { turnId: currentSyntheticTurnId(record) },
++            ),
++          ).pipe(Effect.asVoid);
++        }),
++      );
++
++    const mapSessionEvent = (
++      record: ActiveCopilotSession,
++      event: SessionEvent,
++    ): ReadonlyArray<ProviderRuntimeEvent> => {
++      const currentTurnId = record.currentTurnId;
++      const currentProviderTurnId = record.currentProviderTurnId;
++      const resolveOrchestrationTurnId = (
++        providerTurnId: TurnId | undefined,
++      ): TurnId | undefined => {
++        if (providerTurnId && currentProviderTurnId && providerTurnId === currentProviderTurnId) {
++          return currentTurnId ?? providerTurnId;
++        }
++        return currentTurnId ?? providerTurnId;
++      };
++      const base = (input?: {
++        readonly turnId?: TurnId | undefined;
++        readonly providerTurnId?: TurnId | undefined;
++        readonly itemId?: string | undefined;
++        readonly requestId?: string | undefined;
++      }) =>
++        withRefs({
++          threadId: record.threadId,
++          eventId: EventId.make(event.id),
++          createdAt: event.timestamp,
++          turnId: resolveOrchestrationTurnId(input?.providerTurnId ?? input?.turnId),
++          providerTurnId: input?.providerTurnId ?? input?.turnId,
++          itemId: input?.itemId,
++          requestId: input?.requestId,
++          rawMethod: event.type,
++          rawPayload: event,
++        });
++
++      switch (event.type) {
++        case "session.start":
++        case "session.resume":
++          return [
++            {
++              ...base(),
++              type: "session.started",
++              payload: {
++                message:
++                  event.type === "session.resume"
++                    ? "Resumed GitHub Copilot session"
++                    : "Started GitHub Copilot session",
++                resume: event.data,
++              },
++            },
++            {
++              ...base(),
++              type: "thread.started",
++              payload: {
++                providerThreadId:
++                  event.type === "session.start" ? event.data.sessionId : record.session.sessionId,
++              },
++            },
++          ];
++        case "session.info":
++          return [
++            {
++              ...base(),
++              type: "runtime.warning",
++              payload: {
++                message: event.data.message,
++                detail: event.data,
++              },
++            },
++          ];
++        case "session.warning":
++          return [
++            {
++              ...base(),
++              type: "runtime.warning",
++              payload: {
++                message: event.data.message,
++                detail: event.data,
++              },
++            },
++          ];
++        case "session.error":
++          return [
++            {
++              ...base(),
++              type: "runtime.error",
++              payload: {
++                message: event.data.message,
++                class: "provider_error",
++                detail: event.data,
++              },
++            },
++            {
++              ...base(),
++              type: "session.state.changed",
++              payload: {
++                state: "error",
++                reason: "session.error",
++                detail: event.data,
++              },
++            },
++          ];
++        case "session.idle": {
++          const idleCompletionRefs = completionTurnRefs(record);
++          const idleCompletionEvents: ProviderRuntimeEvent[] =
++            idleCompletionRefs.turnId || idleCompletionRefs.providerTurnId
++              ? [
++                  {
++                    ...base(idleCompletionRefs),
++                    type: "turn.completed",
++                    payload: {
++                      state: "completed",
++                      ...assistantUsageFields(record.pendingTurnUsage),
++                    },
++                  } satisfies ProviderRuntimeEvent,
++                ]
++              : [];
++          return [
++            ...idleCompletionEvents,
++            {
++              ...base(),
++              type: "session.state.changed",
++              payload: {
++                state: "ready",
++                reason: "session.idle",
++              },
++            },
++            {
++              ...base(),
++              type: "thread.state.changed",
++              payload: {
++                state: "idle",
++                detail: event.data,
++              },
++            },
++          ];
++        }
++        case "session.title_changed":
++          return [
++            {
++              ...base(),
++              type: "thread.metadata.updated",
++              payload: {
++                name: event.data.title,
++                metadata: event.data,
++              },
++            },
++          ];
++        case "session.model_change":
++          return [
++            {
++              ...base(),
++              type: "model.rerouted",
++              payload: {
++                fromModel: event.data.previousModel ?? "unknown",
++                toModel: event.data.newModel,
++                reason: "session.model_change",
++              },
++            },
++          ];
++        case "session.plan_changed":
++          return [
++            {
++              ...base(),
++              type: "turn.plan.updated",
++              payload: {
++                explanation: `Plan ${event.data.operation}d`,
++                plan: [],
++              },
++            },
++          ];
++        case "session.workspace_file_changed":
++          return [
++            {
++              ...base(),
++              type: "files.persisted",
++              payload: {
++                files: [
++                  {
++                    filename: event.data.path,
++                    fileId: event.data.path,
++                  },
++                ],
++              },
++            },
++          ];
++        case "session.context_changed":
++          return [
++            {
++              ...base(),
++              type: "thread.metadata.updated",
++              payload: {
++                metadata: event.data,
++              },
++            },
++          ];
++        case "session.usage_info":
++          return [
++            {
++              ...base(),
++              type: "thread.token-usage.updated",
++              payload: {
++                usage: mapSessionUsageInfo(event.data),
++              },
++            },
++          ];
++        case "session.task_complete":
++          return [
++            {
++              ...base(),
++              type: "task.completed",
++              payload: {
++                taskId: toRuntimeTaskId(record.threadId) ?? RuntimeTaskId.make(record.threadId),
++                status: "completed",
++                ...(trimToUndefined(event.data.summary) ? { summary: event.data.summary } : {}),
++              },
++            },
++          ];
++        case "assistant.turn_start":
++          return [
++            {
++              ...base({ providerTurnId: toTurnId(event.data.turnId) }),
++              type: "turn.started",
++              payload: record.model ? { model: record.model } : {},
++            },
++            {
++              ...base({ providerTurnId: toTurnId(event.data.turnId) }),
++              type: "session.state.changed",
++              payload: {
++                state: "running",
++                reason: "assistant.turn_start",
++              },
++            },
++          ];
++        case "assistant.reasoning":
++          return [
++            {
++              ...base({ itemId: event.data.reasoningId }),
++              type: "item.completed",
++              payload: {
++                itemType: "reasoning",
++                status: "completed",
++                title: "Reasoning",
++                detail: trimToUndefined(event.data.content),
++                data: event.data,
++              },
++            },
++          ];
++        case "assistant.reasoning_delta":
++          return [
++            {
++              ...base({ itemId: event.data.reasoningId }),
++              type: "content.delta",
++              payload: {
++                streamKind: "reasoning_text",
++                delta: event.data.deltaContent,
++              },
++            },
++          ];
++        case "assistant.message":
++          return [
++            {
++              ...base({ itemId: event.data.messageId }),
++              type: "item.completed",
++              payload: {
++                itemType: "assistant_message",
++                status: "completed",
++                title: "Assistant message",
++                detail: trimToUndefined(event.data.content),
++                data: event.data,
++              },
++            },
++          ];
++        case "assistant.message_delta":
++          return [
++            {
++              ...base({ itemId: event.data.messageId }),
++              type: "content.delta",
++              payload: {
++                streamKind: "assistant_text",
++                delta: event.data.deltaContent,
++              },
++            },
++          ];
++        case "assistant.turn_end":
++          return [];
++        case "assistant.usage": {
++          const completionRefs = completionTurnRefs(record);
++          const completionBase =
++            completionRefs.turnId || completionRefs.providerTurnId ? base(completionRefs) : base();
++          return [
++            {
++              ...completionBase,
++              type: "thread.token-usage.updated",
++              payload: {
++                usage: mapAssistantUsage(event.data),
++              },
++            },
++          ];
++        }
++        case "abort": {
++          const abortedTurnRefs = completionTurnRefs(record);
++          const abortedBase =
++            abortedTurnRefs.turnId || abortedTurnRefs.providerTurnId
++              ? base(abortedTurnRefs)
++              : base();
++          return [
++            {
++              ...abortedBase,
++              type: "turn.aborted",
++              payload: {
++                reason: event.data.reason,
++              },
++            },
++          ];
++        }
++        case "tool.execution_start":
++          return [
++            {
++              ...base({ itemId: event.data.toolCallId }),
++              type: "item.started",
++              payload: {
++                itemType: itemTypeFromToolEvent(event),
++                status: "inProgress",
++                title: event.data.toolName ?? "Tool call",
++                ...(toolDetailFromEvent(event.data)
++                  ? { detail: toolDetailFromEvent(event.data) }
++                  : {}),
++                data: event.data,
++              },
++            },
++          ];
++        case "tool.execution_progress":
++          return [
++            {
++              ...base({ itemId: event.data.toolCallId }),
++              type: "tool.progress",
++              payload: {
++                toolUseId: event.data.toolCallId,
++                summary: event.data.progressMessage,
++              },
++            },
++          ];
++        case "tool.execution_partial_result":
++          return [
++            {
++              ...base({ itemId: event.data.toolCallId }),
++              type: "tool.progress",
++              payload: {
++                toolUseId: event.data.toolCallId,
++                summary: event.data.partialOutput,
++              },
++            },
++          ];
++        case "tool.execution_complete":
++          return [
++            {
++              ...base({ itemId: event.data.toolCallId }),
++              type: "item.completed",
++              payload: {
++                itemType: event.data.result?.contents?.some(
++                  (content) => content.type === "terminal",
++                )
++                  ? "command_execution"
++                  : "dynamic_tool_call",
++                status: event.data.success ? "completed" : "failed",
++                title: record.toolTitlesByCallId.get(event.data.toolCallId) ?? "Tool call",
++                ...(trimToUndefined(event.data.result?.content)
++                  ? { detail: event.data.result?.content }
++                  : {}),
++                data: event.data,
++              },
++            },
++            ...(trimToUndefined(event.data.result?.content)
++              ? [
++                  {
++                    ...base({ itemId: event.data.toolCallId }),
++                    type: "tool.summary" as const,
++                    payload: {
++                      summary: event.data.result?.content ?? "",
++                      precedingToolUseIds: [event.data.toolCallId],
++                    },
++                  },
++                ]
++              : []),
++          ];
++        case "skill.invoked":
++          return [
++            {
++              ...base(),
++              type: "task.progress",
++              payload: {
++                taskId: toRuntimeTaskId(event.data.name) ?? RuntimeTaskId.make(event.data.name),
++                description: `Invoked skill ${event.data.name}`,
++              },
++            },
++          ];
++        case "subagent.started":
++          return [
++            {
++              ...base(),
++              type: "task.started",
++              payload: {
++                taskId:
++                  toRuntimeTaskId(event.data.toolCallId) ??
++                  RuntimeTaskId.make(event.data.toolCallId),
++                description: trimToUndefined(event.data.agentDescription),
++                taskType: "subagent",
++              },
++            },
++          ];
++        case "subagent.completed":
++          return [
++            {
++              ...base(),
++              type: "task.completed",
++              payload: {
++                taskId:
++                  toRuntimeTaskId(event.data.toolCallId) ??
++                  RuntimeTaskId.make(event.data.toolCallId),
++                status: "completed",
++                ...(trimToUndefined(event.data.agentDisplayName)
++                  ? { summary: event.data.agentDisplayName }
++                  : {}),
++              },
++            },
++          ];
++        case "subagent.failed":
++          return [
++            {
++              ...base(),
++              type: "task.completed",
++              payload: {
++                taskId:
++                  toRuntimeTaskId(event.data.toolCallId) ??
++                  RuntimeTaskId.make(event.data.toolCallId),
++                status: "failed",
++                ...(trimToUndefined(event.data.error) ? { summary: event.data.error } : {}),
++              },
++            },
++          ];
++        default:
++          return [];
++      }
++    };
++
++    const createInteractionHandlers = (
++      threadId: ThreadId,
++      getCurrentTurnId: () => TurnId | undefined,
++      getRuntimeMode: () => ProviderSession["runtimeMode"],
++      pendingApprovalResolvers: Map<string, PendingApprovalRequest>,
++      pendingUserInputResolvers: Map<string, PendingUserInputRequest>,
++    ) => {
++      const onPermissionRequest = (request: PermissionRequest) =>
++        getRuntimeMode() === "full-access"
++          ? Promise.resolve<PermissionRequestResult>({ kind: "approved" })
++          : new Promise<PermissionRequestResult>((resolve) => {
++              const requestId = `copilot-approval-${randomUUID()}`;
++              const turnId = getCurrentTurnId();
++              pendingApprovalResolvers.set(requestId, {
++                requestType: requestTypeFromPermissionRequest(request),
++                turnId,
++                resolve,
++              });
++              void emitRuntimeEvents([
++                makeSyntheticEvent(
++                  threadId,
++                  "request.opened",
++                  {
++                    requestType: requestTypeFromPermissionRequest(request),
++                    ...(requestDetailFromPermissionRequest(request)
++                      ? { detail: requestDetailFromPermissionRequest(request) }
++                      : {}),
++                    args: request,
++                  },
++                  { requestId, turnId },
++                ),
++              ]);
++            });
++
++      const onUserInputRequest = (request: CopilotUserInputRequest) =>
++        new Promise<CopilotUserInputResponse>((resolve) => {
++          const requestId = `copilot-user-input-${randomUUID()}`;
++          const turnId = getCurrentTurnId();
++          pendingUserInputResolvers.set(requestId, {
++            request,
++            turnId,
++            resolve,
++          });
++          void emitRuntimeEvents([
++            makeSyntheticEvent(
++              threadId,
++              "user-input.requested",
++              {
++                questions: [
++                  {
++                    id: USER_INPUT_QUESTION_ID,
++                    header: USER_INPUT_QUESTION_HEADER,
++                    question: request.question,
++                    options: (request.choices ?? []).map((choice: string) => ({
++                      label: choice,
++                      description: choice,
++                    })),
++                  },
++                ],
++              },
++              { requestId, turnId },
++            ),
++          ]);
++        });
++
++      return {
++        onPermissionRequest,
++        onUserInputRequest,
++      };
++    };
++
++    const validateSessionConfiguration = (input: {
++      readonly client: CopilotClientHandle;
++      readonly threadId: ThreadId;
++      readonly model: string | undefined;
++      readonly reasoningEffort: CodexReasoningEffort | undefined;
++    }) =>
++      Effect.gen(function* () {
++        if (!input.model && !input.reasoningEffort) {
++          return;
++        }
++
++        yield* Effect.tryPromise({
++          try: () => input.client.start(),
++          catch: (cause) =>
++            new ProviderAdapterProcessError({
++              provider: PROVIDER,
++              threadId: input.threadId,
++              detail: toMessage(cause, "Failed to start GitHub Copilot client."),
++              cause,
++            }),
++        });
++
++        const supportedModels = mapSupportedModelsById(
++          yield* Effect.tryPromise({
++            try: () => input.client.listModels(),
++            catch: (cause) =>
++              new ProviderAdapterProcessError({
++                provider: PROVIDER,
++                threadId: input.threadId,
++                detail: toMessage(cause, "Failed to load GitHub Copilot model metadata."),
++                cause,
++              }),
++          }),
++        );
++        const selectedModel = input.model ? supportedModels.get(input.model) : undefined;
++
++        if (input.model && !selectedModel) {
++          return yield* new ProviderAdapterValidationError({
++            provider: PROVIDER,
++            operation: "session.model",
++            issue: `GitHub Copilot model '${input.model}' is not available in the current Copilot runtime.`,
++          });
++        }
++
++        if (!input.reasoningEffort) {
++          return;
++        }
++
++        if (!selectedModel) {
++          return yield* new ProviderAdapterValidationError({
++            provider: PROVIDER,
++            operation: "session.reasoningEffort",
++            issue:
++              "GitHub Copilot reasoning effort requires an explicit supported model selection.",
++          });
++        }
++
++        const supportedReasoningEfforts = selectedModel.supportedReasoningEfforts ?? [];
++        if (supportedReasoningEfforts.length === 0) {
++          return yield* new ProviderAdapterValidationError({
++            provider: PROVIDER,
++            operation: "session.reasoningEffort",
++            issue: `GitHub Copilot model '${selectedModel.id}' does not support reasoning effort configuration.`,
++          });
++        }
++
++        if (!supportedReasoningEfforts.includes(input.reasoningEffort)) {
++          return yield* new ProviderAdapterValidationError({
++            provider: PROVIDER,
++            operation: "session.reasoningEffort",
++            issue: `GitHub Copilot model '${selectedModel.id}' does not support reasoning effort '${input.reasoningEffort}'.`,
++          });
++        }
++      });
++
++    const reconfigureSession = (
++      record: ActiveCopilotSession,
++      input: {
++        readonly model: string | undefined;
++        readonly reasoningEffort: CodexReasoningEffort | undefined;
++      },
++    ) =>
++      Effect.tryPromise({
++        try: async () => {
++          const sessionId = record.session.sessionId;
++          const previousSession = record.session;
++          const previousUnsubscribe = record.unsubscribe;
++          previousUnsubscribe();
++          await previousSession.destroy();
++
++          const handlers = createInteractionHandlers(
++            record.threadId,
++            () => record.currentTurnId,
++            () => record.runtimeMode,
++            record.pendingApprovalResolvers,
++            record.pendingUserInputResolvers,
++          );
++          const nextSession = await record.client.resumeSession(sessionId, {
++            ...handlers,
++            ...(input.model ? { model: input.model } : {}),
++            ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
++            ...(record.cwd ? { workingDirectory: record.cwd } : {}),
++            ...(record.configDir ? { configDir: record.configDir } : {}),
++            enableConfigDiscovery: true,
++            streaming: true,
++          });
++
++          record.session = nextSession;
++          record.model = input.model;
++          record.reasoningEffort = input.reasoningEffort;
++          record.interactionMode = undefined;
++          record.updatedAt = new Date().toISOString();
++          record.unsubscribe = nextSession.on((event) => {
++            handleSessionEvent(record, event);
++          });
++        },
++        catch: (cause) =>
++          new ProviderAdapterRequestError({
++            provider: PROVIDER,
++            method: "session.reconfigure",
++            detail: toMessage(cause, "Failed to reconfigure GitHub Copilot session."),
++            cause,
++          }),
++      });
++
++    const handleSessionEvent = (record: ActiveCopilotSession, event: SessionEvent) => {
++      record.updatedAt = event.timestamp;
++      if (event.type === "assistant.turn_start") {
++        beginCopilotTurn(record, TurnId.make(event.data.turnId));
++      }
++      if (event.type === "assistant.usage") {
++        recordTurnUsage(record, event.data);
++      }
++      if (event.type === "session.error") {
++        record.lastError = event.data.message;
++      }
++      if (event.type === "session.model_change") {
++        record.model = event.data.newModel;
++      }
++      if (event.type === "session.mode_changed") {
++        record.interactionMode = toInteractionMode(event.data.newMode);
++      }
++      if (event.type === "tool.execution_start" && trimToUndefined(event.data.toolName)) {
++        record.toolTitlesByCallId.set(event.data.toolCallId, trimToUndefined(event.data.toolName)!);
++      }
++
++      void writeNativeEvent(record.threadId, event);
++      const runtimeEvents = mapSessionEvent(record, event);
++      if (runtimeEvents.length > 0) {
++        void emitRuntimeEvents(runtimeEvents);
++      }
++      if (event.type === "session.plan_changed" && event.data.operation !== "delete") {
++        void runPromise(emitLatestProposedPlan(record)).catch((cause) => {
++          void emitRuntimeEvents([
++            makeSyntheticEvent(
++              record.threadId,
++              "runtime.warning",
++              {
++                message: "Failed to read GitHub Copilot plan.",
++                detail: toMessage(cause, "Failed to read GitHub Copilot plan."),
++              },
++              { turnId: currentSyntheticTurnId(record) },
++            ),
++          ]);
++        });
++      }
++      if (event.type === "tool.execution_complete") {
++        record.toolTitlesByCallId.delete(event.data.toolCallId);
++      }
++      if (event.type === "assistant.turn_end") {
++        markTurnAwaitingCompletion(record);
++      }
++      if (event.type === "abort" || event.type === "session.idle") {
++        clearTurnTracking(record);
++      }
++    };
++
++    const getSessionRecord = (threadId: ThreadId) => {
++      const record = sessions.get(threadId);
++      if (!record) {
++        return Effect.fail(
++          new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId }),
++        );
++      }
++      return Effect.succeed(record);
++    };
++
++    const stopRecord = async (record: ActiveCopilotSession) => {
++      record.unsubscribe();
++      try {
++        await record.session.destroy();
++      } catch {
++        // best effort
++      }
++      try {
++        await record.client.stop();
++      } catch {
++        // best effort
++      }
++      for (const pending of record.pendingApprovalResolvers.values()) {
++        pending.resolve({ kind: "denied-interactively-by-user" });
++      }
++      for (const pending of record.pendingUserInputResolvers.values()) {
++        pending.resolve({ answer: "", wasFreeform: true });
++      }
++      sessions.delete(record.threadId);
++    };
++
++    const startSession: CopilotAdapterShape["startSession"] = (input) =>
++      Effect.gen(function* () {
++        const copilotSettings = yield* serverSettings.getSettings.pipe(
++          Effect.map((settings) => settings.providers.copilot),
++          Effect.mapError(
++            (cause) =>
++              new ProviderAdapterProcessError({
++                provider: PROVIDER,
++                threadId: input.threadId,
++                detail: toMessage(cause, "Failed to load GitHub Copilot settings."),
++                cause,
++              }),
++          ),
++        );
++        const requestedModelSelection =
++          input.modelSelection?.provider === PROVIDER ? input.modelSelection : undefined;
++        const sessionConfiguration: CopilotSessionConfiguration = {
++          model: requestedModelSelection?.model,
++          reasoningEffort: getCopilotReasoningEffortFromSelection(requestedModelSelection),
++        };
++        if (input.provider !== undefined && input.provider !== PROVIDER) {
++          return yield* new ProviderAdapterValidationError({
++            provider: PROVIDER,
++            operation: "startSession",
++            issue: `Expected provider '${PROVIDER}', received '${input.provider}'.`,
++          });
++        }
++
++        const existing = sessions.get(input.threadId);
++        if (existing) {
++          return {
++            provider: PROVIDER,
++            status: "ready",
++            runtimeMode: existing.runtimeMode,
++            ...(existing.cwd ? { cwd: existing.cwd } : {}),
++            ...(existing.model ? { model: existing.model } : {}),
++            threadId: input.threadId,
++            resumeCursor: existing.session.sessionId,
++            createdAt: existing.createdAt,
++            updatedAt: existing.updatedAt,
++            ...(existing.lastError ? { lastError: existing.lastError } : {}),
++          } satisfies ProviderSession;
++        }
++
++        const cliPath =
++          normalizeCopilotCliPathOverride(copilotSettings.binaryPath) ??
++          resolveBundledCopilotCliPath();
++        const configDir = trimToUndefined(copilotSettings.homePath);
++        const mcpServers = yield* Effect.tryPromise({
++          try: () => loadCopilotMcpServers(configDir),
++          catch: (cause) =>
++            new ProviderAdapterProcessError({
++              provider: PROVIDER,
++              threadId: input.threadId,
++              detail: toMessage(cause, "Failed to load GitHub Copilot MCP configuration."),
++              cause,
++            }),
++        });
++        const resumeSessionId = extractResumeSessionId(input.resumeCursor);
++        const clientOptions: CopilotClientOptions = {
++          ...(cliPath ? { cliPath } : {}),
++          ...(input.cwd ? { cwd: input.cwd } : {}),
++          logLevel: "error",
++        };
++        const client = options?.clientFactory?.(clientOptions) ?? new CopilotClient(clientOptions);
++        const pendingApprovalResolvers = new Map<string, PendingApprovalRequest>();
++        const pendingUserInputResolvers = new Map<string, PendingUserInputRequest>();
++        let sessionRecord: ActiveCopilotSession | undefined;
++        const handlers = createInteractionHandlers(
++          input.threadId,
++          () => sessionRecord?.currentTurnId,
++          () => sessionRecord?.runtimeMode ?? input.runtimeMode,
++          pendingApprovalResolvers,
++          pendingUserInputResolvers,
++        );
++
++        yield* validateSessionConfiguration({
++          client,
++          threadId: input.threadId,
++          ...sessionConfiguration,
++        });
++
++        const session = yield* Effect.tryPromise({
++          try: async () => {
++            if (resumeSessionId) {
++              return client.resumeSession(resumeSessionId, {
++                ...handlers,
++                ...(sessionConfiguration.model ? { model: sessionConfiguration.model } : {}),
++                ...(sessionConfiguration.reasoningEffort
++                  ? { reasoningEffort: sessionConfiguration.reasoningEffort }
++                  : {}),
++                ...(input.cwd ? { workingDirectory: input.cwd } : {}),
++                ...(configDir ? { configDir } : {}),
++                ...(mcpServers ? { mcpServers } : {}),
++                enableConfigDiscovery: true,
++                streaming: true,
++              });
++            }
++            return client.createSession({
++              ...handlers,
++              ...(sessionConfiguration.model ? { model: sessionConfiguration.model } : {}),
++              ...(sessionConfiguration.reasoningEffort
++                ? { reasoningEffort: sessionConfiguration.reasoningEffort }
++                : {}),
++              ...(input.cwd ? { workingDirectory: input.cwd } : {}),
++              ...(configDir ? { configDir } : {}),
++              ...(mcpServers ? { mcpServers } : {}),
++              enableConfigDiscovery: true,
++              streaming: true,
++            });
++          },
++          catch: (cause) =>
++            new ProviderAdapterProcessError({
++              provider: PROVIDER,
++              threadId: input.threadId,
++              detail: toMessage(cause, "Failed to start GitHub Copilot session."),
++              cause,
++            }),
++        });
++
++        const record = createSessionRecord({
++          threadId: input.threadId,
++          client,
++          session,
++          runtimeMode: input.runtimeMode,
++          pendingApprovalResolvers,
++          pendingUserInputResolvers,
++          cwd: input.cwd,
++          configDir,
++          ...sessionConfiguration,
++        });
++        const unsubscribe = session.on((event) => {
++          handleSessionEvent(record, event);
++        });
++        record.unsubscribe = unsubscribe;
++        sessionRecord = record;
++        sessions.set(input.threadId, record);
++
++        yield* Queue.offerAll(runtimeEventQueue, [
++          makeSyntheticEvent(input.threadId, "session.started", {
++            message: resumeSessionId
++              ? "Resumed GitHub Copilot session"
++              : "Started GitHub Copilot session",
++            resume: { sessionId: session.sessionId },
++          }),
++          makeSyntheticEvent(input.threadId, "session.configured", {
++            config: {
++              ...(input.cwd ? { cwd: input.cwd } : {}),
++              ...(sessionConfiguration.model ? { model: sessionConfiguration.model } : {}),
++              ...(sessionConfiguration.reasoningEffort
++                ? { reasoningEffort: sessionConfiguration.reasoningEffort }
++                : {}),
++              ...(configDir ? { configDir } : {}),
++              streaming: true,
++            },
++          }),
++          makeSyntheticEvent(input.threadId, "thread.started", {
++            providerThreadId: session.sessionId,
++          }),
++          makeSyntheticEvent(input.threadId, "session.state.changed", {
++            state: "ready",
++            reason: "session.started",
++          }),
++        ]);
++
++        return {
++          provider: PROVIDER,
++          status: "ready",
++          runtimeMode: input.runtimeMode,
++          ...(input.cwd ? { cwd: input.cwd } : {}),
++          ...(sessionConfiguration.model ? { model: sessionConfiguration.model } : {}),
++          threadId: input.threadId,
++          resumeCursor: session.sessionId,
++          createdAt: record.createdAt,
++          updatedAt: record.updatedAt,
++        } satisfies ProviderSession;
++      });
++
++    const sendTurn: CopilotAdapterShape["sendTurn"] = (input) =>
++      Effect.gen(function* () {
++        const record = yield* getSessionRecord(input.threadId);
++        const requestedModelSelection =
++          input.modelSelection?.provider === PROVIDER ? input.modelSelection : undefined;
++        const explicitReasoningEffort =
++          getCopilotReasoningEffortFromSelection(requestedModelSelection);
++        const nextModel = requestedModelSelection?.model ?? record.model;
++        const nextReasoningEffort =
++          explicitReasoningEffort !== undefined
++            ? explicitReasoningEffort
++            : requestedModelSelection?.model !== undefined &&
++                requestedModelSelection.model !== record.model
++              ? undefined
++              : record.reasoningEffort;
++        const attachments = (input.attachments ?? []).map((attachment) => {
++          const attachmentPath = resolveAttachmentPath({
++            attachmentsDir: serverConfig.attachmentsDir,
++            attachment,
++          });
++          if (!attachmentPath) {
++            throw new ProviderAdapterRequestError({
++              provider: PROVIDER,
++              method: "session.send",
++              detail: `Invalid attachment id '${attachment.id}'.`,
++            });
++          }
++          return {
++            type: "file" as const,
++            path: attachmentPath,
++            displayName: attachment.name,
++          };
++        });
++
++        yield* validateSessionConfiguration({
++          client: record.client,
++          threadId: input.threadId,
++          model: nextModel,
++          reasoningEffort: nextReasoningEffort,
++        });
++
++        if (nextModel !== record.model || nextReasoningEffort !== record.reasoningEffort) {
++          yield* reconfigureSession(record, {
++            model: nextModel,
++            reasoningEffort: nextReasoningEffort,
++          });
++        }
++
++        const interactionMode = input.interactionMode ?? record.interactionMode ?? "default";
++        yield* syncInteractionMode(record, interactionMode);
++
++        const turnId = TurnId.make(`copilot-turn-${randomUUID()}`);
++        record.pendingTurnIds.push(turnId);
++        record.currentTurnId = turnId;
++        record.currentProviderTurnId = undefined;
++
++        yield* Effect.tryPromise({
++          try: () =>
++            record.session.send({
++              prompt: input.input ?? "",
++              ...(attachments.length > 0 ? { attachments } : {}),
++              mode: "immediate",
++            }),
++          catch: (cause) =>
++            new ProviderAdapterRequestError({
++              provider: PROVIDER,
++              method: "session.send",
++              detail: toMessage(cause, "Failed to send GitHub Copilot turn."),
++              cause,
++            }),
++        }).pipe(
++          Effect.tapError(() =>
++            Effect.sync(() => {
++              record.pendingTurnIds = record.pendingTurnIds.filter(
++                (candidate) => candidate !== turnId,
++              );
++              if (record.currentTurnId === turnId) {
++                record.currentTurnId = undefined;
++              }
++            }),
++          ),
++        );
++
++        record.updatedAt = new Date().toISOString();
++
++        return {
++          threadId: input.threadId,
++          turnId,
++          resumeCursor: record.session.sessionId,
++        } satisfies ProviderTurnStartResult;
++      });
++
++    const interruptTurn: CopilotAdapterShape["interruptTurn"] = (threadId) =>
++      Effect.gen(function* () {
++        const record = yield* getSessionRecord(threadId);
++        yield* Effect.tryPromise({
++          try: () => record.session.abort(),
++          catch: (cause) =>
++            new ProviderAdapterRequestError({
++              provider: PROVIDER,
++              method: "session.abort",
++              detail: toMessage(cause, "Failed to interrupt GitHub Copilot turn."),
++              cause,
++            }),
++        });
++      });
++
++    const respondToRequest: CopilotAdapterShape["respondToRequest"] = (
++      threadId,
++      requestId,
++      decision,
++    ) =>
++      Effect.gen(function* () {
++        const record = yield* getSessionRecord(threadId);
++        const pending = record.pendingApprovalResolvers.get(requestId);
++        if (!pending) {
++          return yield* new ProviderAdapterRequestError({
++            provider: PROVIDER,
++            method: "session.permission.respond",
++            detail: `Unknown pending GitHub Copilot approval request '${requestId}'.`,
++          });
++        }
++        record.pendingApprovalResolvers.delete(requestId);
++        pending.resolve(approvalDecisionToPermissionResult(decision));
++        yield* Queue.offer(
++          runtimeEventQueue,
++          makeSyntheticEvent(
++            threadId,
++            "request.resolved",
++            {
++              requestType: pending.requestType,
++              decision,
++              resolution: approvalDecisionToPermissionResult(decision),
++            },
++            { requestId, turnId: pending.turnId },
++          ),
++        );
++      });
++
++    const respondToUserInput: CopilotAdapterShape["respondToUserInput"] = (
++      threadId,
++      requestId,
++      answers,
++    ) =>
++      Effect.gen(function* () {
++        const record = yield* getSessionRecord(threadId);
++        const pending = record.pendingUserInputResolvers.get(requestId);
++        if (!pending) {
++          return yield* new ProviderAdapterRequestError({
++            provider: PROVIDER,
++            method: "session.userInput.respond",
++            detail: `Unknown pending GitHub Copilot user-input request '${requestId}'.`,
++          });
++        }
++        record.pendingUserInputResolvers.delete(requestId);
++        pending.resolve(resolveUserInputAnswer(pending, answers));
++        yield* Queue.offer(
++          runtimeEventQueue,
++          makeSyntheticEvent(
++            threadId,
++            "user-input.resolved",
++            {
++              answers,
++            },
++            { requestId, turnId: pending.turnId },
++          ),
++        );
++      });
++
++    const stopSession: CopilotAdapterShape["stopSession"] = (threadId) =>
++      Effect.gen(function* () {
++        const record = yield* getSessionRecord(threadId);
++        yield* Effect.tryPromise({
++          try: async () => {
++            await stopRecord(record);
++          },
++          catch: (cause) =>
++            new ProviderAdapterProcessError({
++              provider: PROVIDER,
++              threadId,
++              detail: toMessage(cause, "Failed to stop GitHub Copilot session."),
++              cause,
++            }),
++        });
++      });
++
++    const listSessions: CopilotAdapterShape["listSessions"] = () =>
++      Effect.sync(() =>
++        Array.from(sessions.values()).map((record) => {
++          const session: ProviderSession = {
++            provider: PROVIDER,
++            status: record.currentTurnId ? "running" : "ready",
++            runtimeMode: record.runtimeMode,
++            threadId: record.threadId,
++            resumeCursor: record.session.sessionId,
++            createdAt: record.createdAt,
++            updatedAt: record.updatedAt,
++          };
++          if (record.cwd) {
++            Object.assign(session, { cwd: record.cwd });
++          }
++          if (record.model) {
++            Object.assign(session, { model: record.model });
++          }
++          if (record.currentTurnId) {
++            Object.assign(session, { activeTurnId: record.currentTurnId });
++          }
++          if (record.lastError) {
++            Object.assign(session, { lastError: record.lastError });
++          }
++          return session;
++        }),
++      );
++
++    const hasSession: CopilotAdapterShape["hasSession"] = (threadId) =>
++      Effect.sync(() => sessions.has(threadId));
++
++    const readThread: CopilotAdapterShape["readThread"] = (threadId) =>
++      Effect.gen(function* () {
++        const record = yield* getSessionRecord(threadId);
++        return yield* Effect.tryPromise({
++          try: async () => {
++            const messages = await record.session.getMessages();
++            return mapHistoryToTurns(threadId, messages);
++          },
++          catch: (cause) =>
++            new ProviderAdapterRequestError({
++              provider: PROVIDER,
++              method: "session.getMessages",
++              detail: toMessage(cause, "Failed to read GitHub Copilot thread history."),
++              cause,
++            }),
++        });
++      });
++
++    const rollbackThread: CopilotAdapterShape["rollbackThread"] = (_threadId) =>
++      Effect.fail(
++        new ProviderAdapterRequestError({
++          provider: PROVIDER,
++          method: "thread.rollback",
++          detail:
++            "GitHub Copilot SDK does not expose a supported conversation rollback API for existing sessions.",
++        }),
++      );
++
++    const stopAll: CopilotAdapterShape["stopAll"] = () =>
++      Effect.tryPromise({
++        try: async () => {
++          await Promise.all(Array.from(sessions.values()).map((record) => stopRecord(record)));
++        },
++        catch: (cause) =>
++          new ProviderAdapterProcessError({
++            provider: PROVIDER,
++            threadId: ThreadId.make("_all"),
++            detail: toMessage(cause, "Failed to stop GitHub Copilot sessions."),
++            cause,
++          }),
++      });
++
++    return {
++      provider: PROVIDER,
++      capabilities: {
++        sessionModelSwitch: "in-session",
++      },
++      startSession,
++      sendTurn,
++      interruptTurn,
++      respondToRequest,
++      respondToUserInput,
++      stopSession,
++      listSessions,
++      hasSession,
++      readThread,
++      rollbackThread,
++      stopAll,
++      streamEvents: Stream.fromQueue(runtimeEventQueue),
++    } satisfies CopilotAdapterShape;
++  });
++
++export const CopilotAdapterLive = Layer.effect(CopilotAdapter, makeCopilotAdapter());
++
++export function makeCopilotAdapterLive(options?: CopilotAdapterLiveOptions) {
++  return Layer.effect(CopilotAdapter, makeCopilotAdapter(options));
++}
+diff --git a/apps/server/src/provider/Layers/CopilotProvider.ts b/apps/server/src/provider/Layers/CopilotProvider.ts
+new file mode 100644
+index 00000000..27499e5e
+--- /dev/null
++++ b/apps/server/src/provider/Layers/CopilotProvider.ts
+@@ -0,0 +1,363 @@
++/**
++ * CopilotProviderLive - Provider snapshot for GitHub Copilot.
++ *
++ * Uses @github/copilot-sdk to detect installation, authentication, and
++ * available models. Produces a ServerProvider snapshot with runtime models.
++ *
++ * @module CopilotProviderLive
++ */
++import { normalizeCopilotCliPathOverride, resolveBundledCopilotCliPath } from "./copilotCliPath.ts";
++import type {
++  ModelCapabilities,
++  ServerProvider,
++  ServerProviderModel,
++  CopilotSettings,
++} from "@t3tools/contracts";
++import { Effect, Equal, Layer, Stream } from "effect";
++
++import { buildServerProvider } from "../providerSnapshot.ts";
++import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
++import { CopilotProvider } from "../Services/CopilotProvider.ts";
++import { ServerSettingsService } from "../../serverSettings.ts";
++
++const PROVIDER = "copilot" as const;
++
++const DEFAULT_COPILOT_MODEL_CAPABILITIES: ModelCapabilities = {
++  reasoningEffortLevels: [],
++  supportsFastMode: false,
++  supportsThinkingToggle: false,
++  contextWindowOptions: [],
++  promptInjectedEffortLevels: [],
++};
++
++const GPT_MODEL_CAPABILITIES: ModelCapabilities = {
++  reasoningEffortLevels: [
++    { value: "xhigh", label: "Extra High" },
++    { value: "high", label: "High", isDefault: true },
++    { value: "medium", label: "Medium" },
++    { value: "low", label: "Low" },
++  ],
++  supportsFastMode: false,
++  supportsThinkingToggle: false,
++  contextWindowOptions: [],
++  promptInjectedEffortLevels: [],
++};
++
++const EFFORT_LABEL_MAP: Record<string, string> = {
++  xhigh: "Extra High",
++  high: "High",
++  medium: "Medium",
++  low: "Low",
++};
++
++const DEFAULT_EFFORT = "high";
++
++/**
++ * Build ModelCapabilities dynamically from SDK model info.
++ * Uses `supportedReasoningEfforts` from the SDK response to populate
++ * effort levels, instead of hardcoding per model family.
++ */
++function buildCapabilitiesFromSdkModel(info: any): ModelCapabilities {
++  const efforts: string[] = info.supportedReasoningEfforts ?? [];
++  const defaultEffort: string | undefined = info.defaultReasoningEffort;
++
++  if (efforts.length === 0) {
++    return DEFAULT_COPILOT_MODEL_CAPABILITIES;
++  }
++
++  return {
++    reasoningEffortLevels: efforts.map((value: string) => ({
++      value,
++      label: EFFORT_LABEL_MAP[value] ?? value.charAt(0).toUpperCase() + value.slice(1),
++      ...(value === (defaultEffort ?? DEFAULT_EFFORT) ? { isDefault: true } : {}),
++    })),
++    supportsFastMode: false,
++    supportsThinkingToggle: false,
++    contextWindowOptions: [],
++    promptInjectedEffortLevels: [],
++  };
++}
++
++const CLAUDE_EFFORT_CAPABILITIES: ModelCapabilities = {
++  reasoningEffortLevels: [
++    { value: "high", label: "High", isDefault: true },
++    { value: "medium", label: "Medium" },
++    { value: "low", label: "Low" },
++  ],
++  supportsFastMode: false,
++  supportsThinkingToggle: false,
++  contextWindowOptions: [],
++  promptInjectedEffortLevels: [],
++};
++
++const CLAUDE_OPUS_47_CAPABILITIES: ModelCapabilities = {
++  reasoningEffortLevels: [
++    { value: "medium", label: "Medium", isDefault: true },
++  ],
++  supportsFastMode: false,
++  supportsThinkingToggle: false,
++  contextWindowOptions: [],
++  promptInjectedEffortLevels: [],
++};
++
++const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
++  {
++    slug: "gpt-5.4",
++    name: "GPT-5.4",
++    isCustom: false,
++    capabilities: GPT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "gpt-5.4-mini",
++    name: "GPT-5.4 Mini",
++    isCustom: false,
++    capabilities: GPT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "gpt-5.3-codex",
++    name: "GPT-5.3 Codex",
++    isCustom: false,
++    capabilities: GPT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "gpt-5.2-codex",
++    name: "GPT-5.2 Codex",
++    isCustom: false,
++    capabilities: GPT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "gpt-5.2",
++    name: "GPT-5.2",
++    isCustom: false,
++    capabilities: GPT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "gpt-5-mini",
++    name: "GPT-5 Mini",
++    isCustom: false,
++    capabilities: GPT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "gpt-4.1",
++    name: "GPT-4.1",
++    isCustom: false,
++    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "claude-sonnet-4.6",
++    name: "Claude Sonnet 4.6",
++    isCustom: false,
++    capabilities: CLAUDE_EFFORT_CAPABILITIES,
++  },
++  {
++    slug: "claude-opus-4.7",
++    name: "Claude Opus 4.7",
++    isCustom: false,
++    capabilities: CLAUDE_OPUS_47_CAPABILITIES,
++  },
++  {
++    slug: "claude-opus-4.6",
++    name: "Claude Opus 4.6",
++    isCustom: false,
++    capabilities: CLAUDE_EFFORT_CAPABILITIES,
++  },
++  {
++    slug: "claude-opus-4.6-1m",
++    name: "Claude Opus 4.6 (1M context)",
++    isCustom: false,
++    capabilities: CLAUDE_EFFORT_CAPABILITIES,
++  },
++  {
++    slug: "claude-opus-4.5",
++    name: "Claude Opus 4.5",
++    isCustom: false,
++    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "claude-sonnet-4.5",
++    name: "Claude Sonnet 4.5",
++    isCustom: false,
++    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "claude-haiku-4.5",
++    name: "Claude Haiku 4.5",
++    isCustom: false,
++    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "claude-sonnet-4",
++    name: "Claude Sonnet 4",
++    isCustom: false,
++    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
++  },
++  {
++    slug: "gemini-3.1-pro",
++    name: "Gemini 3.1 Pro",
++    isCustom: false,
++    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,
++  },
++];
++
++const makePendingCopilotProvider = (): ServerProvider =>
++  buildServerProvider({
++    provider: PROVIDER,
++    enabled: false,
++    checkedAt: new Date().toISOString(),
++    models: BUILT_IN_MODELS,
++    probe: {
++      installed: false,
++      version: null,
++      status: "error",
++      auth: { status: "unknown" },
++      message: "Checking GitHub Copilot availability...",
++    },
++  });
++
++const makeErrorProvider = (message: string): ServerProvider =>
++  buildServerProvider({
++    provider: PROVIDER,
++    enabled: false,
++    checkedAt: new Date().toISOString(),
++    models: BUILT_IN_MODELS,
++    probe: {
++      installed: false,
++      version: null,
++      status: "error",
++      auth: { status: "unknown" },
++      message,
++    },
++  });
++
++/**
++ * Check Copilot provider status using the SDK.
++ */
++const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus")(
++  function* (settings: CopilotSettings) {
++    const now = new Date().toISOString();
++
++    if (!settings.enabled) {
++      return buildServerProvider({
++        provider: PROVIDER,
++        enabled: false,
++        checkedAt: now,
++        models: BUILT_IN_MODELS,
++        probe: {
++          installed: false,
++          version: null,
++          status: "error",
++          auth: { status: "unknown" },
++          message: "GitHub Copilot provider is disabled.",
++        },
++      });
++    }
++
++    // Attempt SDK-based detection
++    const sdkResult = yield* Effect.tryPromise({
++      try: async () => {
++        const { CopilotClient } = await import("@github/copilot-sdk");
++        const cliPath = normalizeCopilotCliPathOverride(settings.binaryPath)
++          ?? resolveBundledCopilotCliPath();
++        const clientOptions: Record<string, unknown> = { logLevel: "error" };
++        if (cliPath) {
++          clientOptions.cliPath = cliPath;
++        }
++        const client = new CopilotClient(clientOptions as any);
++        await client.start();
++        try {
++          const [models, quota] = await Promise.all([
++            client.listModels().catch(() => [] as any[]),
++            client.rpc?.account?.getQuota?.().catch(() => null),
++          ]);
++          return { started: true, models, quota, error: null as string | null };
++        } finally {
++          await client.stop().catch(() => {});
++        }
++      },
++      catch: (error: unknown) => ({
++        _tag: "CopilotSdkError" as const,
++        message: error instanceof Error ? error.message : String(error),
++      }),
++    }).pipe(
++      Effect.orElseSucceed(() => ({
++        started: false,
++        models: [] as any[],
++        quota: null,
++        error: "Failed to start GitHub Copilot SDK" as string | null,
++      })),
++    );
++
++    if (!sdkResult.started) {
++      const errorMsg = sdkResult.error ?? "Unknown error";
++      const isAuthError = errorMsg.toLowerCase().includes("unauthenticated") ||
++        errorMsg.toLowerCase().includes("unauthorized");
++
++      return buildServerProvider({
++        provider: PROVIDER,
++        enabled: false,
++        checkedAt: now,
++        models: BUILT_IN_MODELS,
++        probe: {
++          installed: !errorMsg.includes("Cannot find module"),
++          version: null,
++          status: "error",
++          auth: { status: isAuthError ? "unauthenticated" : "unknown" },
++          message: isAuthError
++            ? "GitHub Copilot is not authenticated. Sign in via your IDE or GitHub CLI."
++            : `GitHub Copilot SDK error: ${errorMsg}`,
++        },
++      });
++    }
++
++    // Build models from SDK response, fall back to built-in
++    const runtimeModels: ServerProviderModel[] = sdkResult.models.length > 0
++      ? sdkResult.models.map((info: any) => ({
++          slug: info.id ?? info.slug ?? info.name,
++          name: info.name ?? info.id ?? info.slug,
++          isCustom: false,
++          capabilities: buildCapabilitiesFromSdkModel(info),
++        }))
++      : [...BUILT_IN_MODELS];
++
++    return buildServerProvider({
++      provider: PROVIDER,
++      enabled: true,
++      checkedAt: now,
++      models: runtimeModels,
++      probe: {
++        installed: true,
++        version: null,
++        status: "ready",
++        auth: { status: "authenticated" },
++      },
++    });
++  },
++);
++
++export const CopilotProviderLive = Layer.effect(
++  CopilotProvider,
++  Effect.gen(function* () {
++    const serverSettings = yield* ServerSettingsService;
++
++    const checkProvider = Effect.gen(function* () {
++      const settings = yield* serverSettings.getSettings;
++      return yield* checkCopilotProviderStatus(settings.providers.copilot);
++    }).pipe(
++      Effect.orElseSucceed(() => makeErrorProvider("Failed to check Copilot status")),
++    );
++
++    return yield* makeManagedServerProvider<CopilotSettings>({
++      getSettings: serverSettings.getSettings.pipe(
++        Effect.map((settings) => settings.providers.copilot),
++        Effect.orDie,
++      ),
++      streamSettings: serverSettings.streamChanges.pipe(
++        Stream.map((settings) => settings.providers.copilot),
++      ),
++      haveSettingsChanged: (previous, next) => !Equal.equals(previous, next),
++      initialSnapshot: makePendingCopilotProvider,
++      checkProvider,
++      refreshInterval: "120 seconds",
++    });
++  }),
++);
+diff --git a/apps/server/src/provider/Layers/ProviderAdapterRegistry.test.ts b/apps/server/src/provider/Layers/ProviderAdapterRegistry.test.ts
+index e0a68f68..042edb26 100644
+--- a/apps/server/src/provider/Layers/ProviderAdapterRegistry.test.ts
++++ b/apps/server/src/provider/Layers/ProviderAdapterRegistry.test.ts
+@@ -8,6 +8,8 @@ import { ClaudeAdapter } from "../Services/ClaudeAdapter.ts";
+ import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
+ import { CodexAdapter } from "../Services/CodexAdapter.ts";
+ import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
++import { CopilotAdapter } from "../Services/CopilotAdapter.ts";
++import type { CopilotAdapterShape } from "../Services/CopilotAdapter.ts";
+ import { CursorAdapter } from "../Services/CursorAdapter.ts";
+ import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
+ import { OpenCodeAdapter } from "../Services/OpenCodeAdapter.ts";
+@@ -68,6 +70,23 @@ const fakeOpenCodeAdapter: OpenCodeAdapterShape = {
+   streamEvents: Stream.empty,
+ };
+ 
++const fakeCopilotAdapter: CopilotAdapterShape = {
++  provider: "copilot",
++  capabilities: { sessionModelSwitch: "in-session" },
++  startSession: vi.fn(),
++  sendTurn: vi.fn(),
++  interruptTurn: vi.fn(),
++  respondToRequest: vi.fn(),
++  respondToUserInput: vi.fn(),
++  stopSession: vi.fn(),
++  listSessions: vi.fn(),
++  hasSession: vi.fn(),
++  readThread: vi.fn(),
++  rollbackThread: vi.fn(),
++  stopAll: vi.fn(),
++  streamEvents: Stream.empty,
++};
++
+ const fakeCursorAdapter: CursorAdapterShape = {
+   provider: "cursor",
+   capabilities: { sessionModelSwitch: "in-session" },
+@@ -91,6 +110,7 @@ const layer = it.layer(
+       ProviderAdapterRegistryLive,
+       Layer.mergeAll(
+         Layer.succeed(CodexAdapter, fakeCodexAdapter),
++        Layer.succeed(CopilotAdapter, fakeCopilotAdapter),
+         Layer.succeed(ClaudeAdapter, fakeClaudeAdapter),
+         Layer.succeed(OpenCodeAdapter, fakeOpenCodeAdapter),
+         Layer.succeed(CursorAdapter, fakeCursorAdapter),
+@@ -105,16 +125,18 @@ layer("ProviderAdapterRegistryLive", (it) => {
+     Effect.gen(function* () {
+       const registry = yield* ProviderAdapterRegistry;
+       const codex = yield* registry.getByProvider("codex");
++      const copilot = yield* registry.getByProvider("copilot");
+       const claude = yield* registry.getByProvider("claudeAgent");
+       const openCode = yield* registry.getByProvider("opencode");
+       const cursor = yield* registry.getByProvider("cursor");
+       assert.equal(codex, fakeCodexAdapter);
++      assert.equal(copilot, fakeCopilotAdapter);
+       assert.equal(claude, fakeClaudeAdapter);
+       assert.equal(openCode, fakeOpenCodeAdapter);
+       assert.equal(cursor, fakeCursorAdapter);
+ 
+       const providers = yield* registry.listProviders();
+-      assert.deepEqual(providers, ["codex", "claudeAgent", "opencode", "cursor"]);
++      assert.deepEqual(providers, ["codex", "copilot", "claudeAgent", "opencode", "cursor"]);
+     }),
+   );
+ 
+diff --git a/apps/server/src/provider/Layers/ProviderAdapterRegistry.ts b/apps/server/src/provider/Layers/ProviderAdapterRegistry.ts
+index 22fc0b7f..3202b102 100644
+--- a/apps/server/src/provider/Layers/ProviderAdapterRegistry.ts
++++ b/apps/server/src/provider/Layers/ProviderAdapterRegistry.ts
+@@ -16,6 +16,7 @@ import {
+   type ProviderAdapterRegistryShape,
+ } from "../Services/ProviderAdapterRegistry.ts";
+ import { ClaudeAdapter } from "../Services/ClaudeAdapter.ts";
++import { CopilotAdapter } from "../Services/CopilotAdapter.ts";
+ import { CodexAdapter } from "../Services/CodexAdapter.ts";
+ import { CursorAdapter } from "../Services/CursorAdapter.ts";
+ import { OpenCodeAdapter } from "../Services/OpenCodeAdapter.ts";
+@@ -33,6 +34,7 @@ const makeProviderAdapterRegistry = Effect.fn("makeProviderAdapterRegistry")(fun
+       ? options.adapters
+       : [
+           yield* CodexAdapter,
++          yield* CopilotAdapter,
+           yield* ClaudeAdapter,
+           yield* OpenCodeAdapter,
+           ...(cursorAdapterOption._tag === "Some" ? [cursorAdapterOption.value] : []),
+diff --git a/apps/server/src/provider/Layers/ProviderRegistry.ts b/apps/server/src/provider/Layers/ProviderRegistry.ts
+index d0683353..96102448 100644
+--- a/apps/server/src/provider/Layers/ProviderRegistry.ts
++++ b/apps/server/src/provider/Layers/ProviderRegistry.ts
+@@ -9,10 +9,12 @@ import { Effect, Equal, FileSystem, Layer, Path, PubSub, Ref, Stream } from "eff
+ import { ServerConfig } from "../../config.ts";
+ import { ClaudeProviderLive } from "./ClaudeProvider.ts";
+ import { CodexProviderLive } from "./CodexProvider.ts";
++import { CopilotProviderLive } from "./CopilotProvider.ts";
+ import { CursorProviderLive } from "./CursorProvider.ts";
+ import { OpenCodeProviderLive } from "./OpenCodeProvider.ts";
+ import { ClaudeProvider } from "../Services/ClaudeProvider.ts";
+ import { CodexProvider } from "../Services/CodexProvider.ts";
++import { CopilotProvider } from "../Services/CopilotProvider.ts";
+ import { CursorProvider } from "../Services/CursorProvider.ts";
+ import { OpenCodeProvider } from "../Services/OpenCodeProvider.ts";
+ import { ProviderRegistry, type ProviderRegistryShape } from "../Services/ProviderRegistry.ts";
+@@ -90,6 +92,7 @@ const ProviderRegistryLiveBase = Layer.effect(
+   Effect.gen(function* () {
+     const codexProvider = yield* CodexProvider;
+     const claudeProvider = yield* ClaudeProvider;
++    const copilotProvider = yield* CopilotProvider;
+     const openCodeProvider = yield* OpenCodeProvider;
+     const config = yield* ServerConfig;
+     const fileSystem = yield* FileSystem.FileSystem;
+@@ -110,6 +113,12 @@ const ProviderRegistryLiveBase = Layer.effect(
+         refresh: claudeProvider.refresh,
+         streamChanges: claudeProvider.streamChanges,
+       },
++      {
++        provider: "copilot",
++        getSnapshot: copilotProvider.getSnapshot,
++        refresh: copilotProvider.refresh,
++        streamChanges: copilotProvider.streamChanges,
++      },
+       {
+         provider: "opencode",
+         getSnapshot: openCodeProvider.getSnapshot,
+@@ -284,6 +293,7 @@ export const ProviderRegistryLive = Layer.unwrap(
+   Effect.sync(() =>
+     ProviderRegistryLiveBase.pipe(
+       Layer.provideMerge(CursorProviderLive),
++      Layer.provideMerge(CopilotProviderLive),
+       Layer.provideMerge(CodexProviderLive),
+       Layer.provideMerge(ClaudeProviderLive),
+       Layer.provideMerge(OpenCodeProviderLive),
+diff --git a/apps/server/src/provider/Layers/copilotCliPath.ts b/apps/server/src/provider/Layers/copilotCliPath.ts
+new file mode 100644
+index 00000000..1f7fd079
+--- /dev/null
++++ b/apps/server/src/provider/Layers/copilotCliPath.ts
+@@ -0,0 +1,168 @@
++import { existsSync } from "node:fs";
++import { fileURLToPath } from "node:url";
++import { dirname, join } from "node:path";
++import { createRequire } from "node:module";
++
++const require = createRequire(import.meta.url);
++const CURRENT_DIR = dirname(fileURLToPath(import.meta.url));
++const GITHUB_SCOPE_DIR = "@github";
++const COPILOT_PATHLESS_COMMAND_PATTERN = /^copilot(?:\.(?:exe|cmd|bat))?$/i;
++const COPILOT_NPM_LOADER = "npm-loader.js";
++
++function dedupePaths(paths: ReadonlyArray<string | undefined>): string[] {
++  const resolved: string[] = [];
++  const seen = new Set<string>();
++
++  for (const candidate of paths) {
++    if (!candidate || seen.has(candidate)) continue;
++    seen.add(candidate);
++    resolved.push(candidate);
++  }
++
++  return resolved;
++}
++
++function resolveSdkEntrypoint(): string | undefined {
++  try {
++    return require.resolve("@github/copilot-sdk");
++  } catch {
++    return undefined;
++  }
++}
++
++function resolveProcessResourcesPath(): string | undefined {
++  const processWithResourcesPath = process as NodeJS.Process & {
++    readonly resourcesPath?: string;
++  };
++  return processWithResourcesPath.resourcesPath;
++}
++
++export function normalizeCopilotCliPathOverride(
++  value: string | null | undefined,
++): string | undefined {
++  if (value == null) return undefined;
++
++  const trimmed = value.trim();
++  if (!trimmed) return undefined;
++
++  if (
++    !trimmed.includes("/") &&
++    !trimmed.includes("\\") &&
++    COPILOT_PATHLESS_COMMAND_PATTERN.test(trimmed)
++  ) {
++    return undefined;
++  }
++
++  return trimmed;
++}
++
++function resolveGithubScopeDirFromSdkEntrypoint(
++  sdkEntrypoint: string | undefined,
++): string | undefined {
++  if (!sdkEntrypoint) return undefined;
++  return join(dirname(dirname(sdkEntrypoint)), "..");
++}
++
++function resolveNodeModulesRoots(input: {
++  currentDir: string;
++  resourcesPath?: string;
++  sdkEntrypoint?: string;
++}): string[] {
++  const githubScopeDir = resolveGithubScopeDirFromSdkEntrypoint(input.sdkEntrypoint);
++  return dedupePaths([
++    input.resourcesPath ? join(input.resourcesPath, "app.asar.unpacked/node_modules") : undefined,
++    input.resourcesPath ? join(input.resourcesPath, "node_modules") : undefined,
++    join(input.currentDir, "../../../node_modules"),
++    join(input.currentDir, "../../../../../node_modules"),
++    githubScopeDir ? join(githubScopeDir, "..") : undefined,
++  ]);
++}
++
++function getCopilotPlatformBinaryName(platform: string): string {
++  return platform === "win32" ? "copilot.exe" : "copilot";
++}
++
++export function getBundledCopilotPlatformPackages(
++  platform: string = process.platform,
++  arch: string = process.arch,
++): ReadonlyArray<string> {
++  if (platform === "darwin" && arch === "arm64") {
++    return ["copilot-darwin-arm64"];
++  }
++  if (platform === "darwin" && arch === "x64") {
++    return ["copilot-darwin-x64"];
++  }
++  if (platform === "linux" && arch === "arm64") {
++    return ["copilot-linux-arm64"];
++  }
++  if (platform === "linux" && arch === "x64") {
++    return ["copilot-linux-x64"];
++  }
++  if (platform === "win32" && arch === "arm64") {
++    return ["copilot-win32-arm64"];
++  }
++  if (platform === "win32" && arch === "x64") {
++    return ["copilot-win32-x64"];
++  }
++
++  return [];
++}
++
++export function resolveBundledCopilotCliPathFrom(input: {
++  currentDir: string;
++  resourcesPath?: string;
++  sdkEntrypoint?: string;
++  platform?: string;
++  arch?: string;
++  exists?: (path: string) => boolean;
++}): string | undefined {
++  const platform = input.platform ?? process.platform;
++  const arch = input.arch ?? process.arch;
++  const exists = input.exists ?? existsSync;
++  const sdkEntrypoint = input.sdkEntrypoint;
++  const nodeModulesRoots = resolveNodeModulesRoots({
++    currentDir: input.currentDir,
++    ...(input.resourcesPath ? { resourcesPath: input.resourcesPath } : {}),
++    ...(sdkEntrypoint ? { sdkEntrypoint } : {}),
++  });
++  const binaryName = getCopilotPlatformBinaryName(platform);
++  const platformPackages = getBundledCopilotPlatformPackages(platform, arch);
++
++  const binaryCandidates = nodeModulesRoots.flatMap((root) =>
++    platformPackages.map((packageName) => join(root, GITHUB_SCOPE_DIR, packageName, binaryName)),
++  );
++  const npmLoaderCandidates = nodeModulesRoots.map((root) =>
++    join(root, GITHUB_SCOPE_DIR, "copilot", COPILOT_NPM_LOADER),
++  );
++  for (const candidate of dedupePaths([...binaryCandidates, ...npmLoaderCandidates])) {
++    if (exists(candidate)) {
++      return candidate;
++    }
++  }
++
++  const githubScopeDir = resolveGithubScopeDirFromSdkEntrypoint(sdkEntrypoint);
++  if (!githubScopeDir) {
++    return undefined;
++  }
++
++  const sdkSiblingBinaryCandidates = platformPackages.map((packageName) =>
++    join(githubScopeDir, packageName, binaryName),
++  );
++  const sdkSiblingLoaderPath = join(githubScopeDir, "copilot", COPILOT_NPM_LOADER);
++  for (const candidate of dedupePaths([...sdkSiblingBinaryCandidates, sdkSiblingLoaderPath])) {
++    if (exists(candidate)) {
++      return candidate;
++    }
++  }
++  return undefined;
++}
++
++export function resolveBundledCopilotCliPath(): string | undefined {
++  const sdkEntrypoint = resolveSdkEntrypoint();
++  const resourcesPath = resolveProcessResourcesPath();
++  return resolveBundledCopilotCliPathFrom({
++    currentDir: CURRENT_DIR,
++    ...(resourcesPath ? { resourcesPath } : {}),
++    ...(sdkEntrypoint ? { sdkEntrypoint } : {}),
++  });
++}
+diff --git a/apps/server/src/provider/Layers/copilotMcpServers.ts b/apps/server/src/provider/Layers/copilotMcpServers.ts
+new file mode 100644
+index 00000000..b1db057b
+--- /dev/null
++++ b/apps/server/src/provider/Layers/copilotMcpServers.ts
+@@ -0,0 +1,124 @@
++import fsp from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++
++import type { MCPServerConfig } from "@github/copilot-sdk";
++
++function asRecord(value: unknown): Record<string, unknown> | undefined {
++  if (!value || typeof value !== "object" || Array.isArray(value)) {
++    return undefined;
++  }
++  return value as Record<string, unknown>;
++}
++
++function asNonEmptyString(value: unknown): string | undefined {
++  if (typeof value !== "string") {
++    return undefined;
++  }
++  const trimmed = value.trim();
++  return trimmed.length > 0 ? trimmed : undefined;
++}
++
++function asStringArray(value: unknown): string[] | undefined {
++  if (!Array.isArray(value)) {
++    return undefined;
++  }
++  return value.flatMap((item) => {
++    const normalized = asNonEmptyString(item);
++    return normalized ? [normalized] : [];
++  });
++}
++
++function asStringRecord(value: unknown): Record<string, string> | undefined {
++  const record = asRecord(value);
++  if (!record) {
++    return undefined;
++  }
++
++  const entries = Object.entries(record).flatMap(([key, item]) => {
++    const normalized = asNonEmptyString(item);
++    return normalized ? [[key, normalized] as const] : [];
++  });
++
++  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
++}
++
++function asTimeout(value: unknown): number | undefined {
++  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
++}
++
++function normalizeTools(value: unknown): string[] {
++  const tools = asStringArray(value);
++  return tools ?? ["*"];
++}
++
++function toMcpServerConfig(entry: unknown): MCPServerConfig | undefined {
++  const record = asRecord(entry);
++  if (!record) {
++    return undefined;
++  }
++
++  const type = asNonEmptyString(record.type);
++  const command = asNonEmptyString(record.command);
++  const args = asStringArray(record.args) ?? [];
++  const url = asNonEmptyString(record.url);
++  const tools = normalizeTools(record.tools);
++  const timeout = asTimeout(record.timeout);
++  const env = asStringRecord(record.env);
++  const cwd = asNonEmptyString(record.cwd);
++  const headers = asStringRecord(record.headers);
++
++  if (command && (type === undefined || type === "local" || type === "stdio")) {
++    return {
++      type: "local",
++      command,
++      args,
++      tools,
++      ...(env ? { env } : {}),
++      ...(cwd ? { cwd } : {}),
++      ...(timeout !== undefined ? { timeout } : {}),
++    };
++  }
++
++  if (url && (type === undefined || type === "http" || type === "sse")) {
++    return {
++      type: type === "sse" ? "sse" : "http",
++      url,
++      tools,
++      ...(headers ? { headers } : {}),
++      ...(timeout !== undefined ? { timeout } : {}),
++    };
++  }
++
++  return undefined;
++}
++
++export async function loadCopilotMcpServers(
++  configDir: string | undefined,
++): Promise<Record<string, MCPServerConfig> | undefined> {
++  const baseDir = asNonEmptyString(configDir) ?? path.join(os.homedir(), ".copilot");
++  const configPath = path.join(baseDir, "mcp-config.json");
++
++  let raw: string;
++  try {
++    raw = await fsp.readFile(configPath, "utf-8");
++  } catch (error) {
++    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
++      return undefined;
++    }
++    throw error;
++  }
++
++  const parsed = asRecord(JSON.parse(raw));
++  const servers = asRecord(parsed?.mcpServers);
++  if (!servers) {
++    return undefined;
++  }
++
++  const normalizedEntries = Object.entries(servers).flatMap(([name, value]) => {
++    const normalized = toMcpServerConfig(value);
++    return normalized ? [[name, normalized] as const] : [];
++  });
++
++  return normalizedEntries.length > 0 ? Object.fromEntries(normalizedEntries) : undefined;
++}
+diff --git a/apps/server/src/provider/Layers/copilotTurnTracking.ts b/apps/server/src/provider/Layers/copilotTurnTracking.ts
+new file mode 100644
+index 00000000..1b831e51
+--- /dev/null
++++ b/apps/server/src/provider/Layers/copilotTurnTracking.ts
+@@ -0,0 +1,69 @@
++import { TurnId } from "@t3tools/contracts";
++import type { SessionEvent } from "@github/copilot-sdk";
++
++export type CopilotAssistantUsage = Extract<SessionEvent, { type: "assistant.usage" }>["data"];
++
++export interface CopilotTurnTrackingState {
++  currentTurnId: TurnId | undefined;
++  currentProviderTurnId: TurnId | undefined;
++  pendingCompletionTurnId: TurnId | undefined;
++  pendingCompletionProviderTurnId: TurnId | undefined;
++  pendingTurnIds: Array<TurnId>;
++  pendingTurnUsage: CopilotAssistantUsage | undefined;
++}
++
++export function completionTurnRefs(state: CopilotTurnTrackingState) {
++  return {
++    turnId: state.pendingCompletionTurnId ?? state.currentTurnId,
++    providerTurnId: state.pendingCompletionProviderTurnId ?? state.currentProviderTurnId,
++  };
++}
++
++export function beginCopilotTurn(state: CopilotTurnTrackingState, providerTurnId: TurnId): void {
++  state.pendingCompletionTurnId = undefined;
++  state.pendingCompletionProviderTurnId = undefined;
++  state.pendingTurnUsage = undefined;
++  state.currentProviderTurnId = providerTurnId;
++  state.currentTurnId = state.pendingTurnIds.shift() ?? state.currentTurnId ?? providerTurnId;
++}
++
++export function markTurnAwaitingCompletion(state: CopilotTurnTrackingState): void {
++  state.pendingCompletionTurnId = state.currentTurnId ?? state.pendingCompletionTurnId;
++  state.pendingCompletionProviderTurnId =
++    state.currentProviderTurnId ?? state.pendingCompletionProviderTurnId;
++}
++
++export function recordTurnUsage(
++  state: CopilotTurnTrackingState,
++  usage: CopilotAssistantUsage,
++): void {
++  state.pendingTurnUsage = usage;
++}
++
++export function clearTurnTracking(state: CopilotTurnTrackingState): void {
++  state.currentTurnId = undefined;
++  state.currentProviderTurnId = undefined;
++  state.pendingCompletionTurnId = undefined;
++  state.pendingCompletionProviderTurnId = undefined;
++  state.pendingTurnUsage = undefined;
++}
++
++export function assistantUsageFields(usage: CopilotAssistantUsage | undefined): {
++  usage?: CopilotAssistantUsage;
++  modelUsage?: { model: string };
++  totalCostUsd?: number;
++} {
++  if (!usage) {
++    return {};
++  }
++
++  return {
++    usage,
++    ...(usage.cost !== undefined ? { totalCostUsd: usage.cost } : {}),
++    ...(usage.model ? { modelUsage: { model: usage.model } } : {}),
++  };
++}
++
++export function isCopilotTurnTerminalEvent(event: SessionEvent): boolean {
++  return event.type === "abort" || event.type === "session.idle";
++}
+diff --git a/apps/server/src/provider/Services/CopilotAdapter.ts b/apps/server/src/provider/Services/CopilotAdapter.ts
+new file mode 100644
+index 00000000..a9d1d825
+--- /dev/null
++++ b/apps/server/src/provider/Services/CopilotAdapter.ts
+@@ -0,0 +1,30 @@
++/**
++ * CopilotAdapter - GitHub Copilot implementation of the generic provider adapter contract.
++ *
++ * This service owns Copilot SDK session semantics and emits canonical
++ * provider runtime events. It does not perform cross-provider routing, shared
++ * event fan-out, or checkpoint orchestration.
++ *
++ * Uses Effect `Context.Service` for dependency injection and returns the
++ * shared provider-adapter error channel with `provider: "copilot"` context.
++ *
++ * @module CopilotAdapter
++ */
++import { Context } from "effect";
++
++import type { ProviderAdapterError } from "../Errors.ts";
++import type { ProviderAdapterShape } from "./ProviderAdapter.ts";
++
++/**
++ * CopilotAdapterShape - Service API for the GitHub Copilot provider adapter.
++ */
++export interface CopilotAdapterShape extends ProviderAdapterShape<ProviderAdapterError> {
++  readonly provider: "copilot";
++}
++
++/**
++ * CopilotAdapter - Service tag for GitHub Copilot provider adapter operations.
++ */
++export class CopilotAdapter extends Context.Service<CopilotAdapter, CopilotAdapterShape>()(
++  "t3/provider/Services/CopilotAdapter",
++) {}
+diff --git a/apps/server/src/provider/Services/CopilotProvider.ts b/apps/server/src/provider/Services/CopilotProvider.ts
+new file mode 100644
+index 00000000..2dddc77a
+--- /dev/null
++++ b/apps/server/src/provider/Services/CopilotProvider.ts
+@@ -0,0 +1,9 @@
++import { Context } from "effect";
++
++import type { ServerProviderShape } from "./ServerProvider.ts";
++
++export interface CopilotProviderShape extends ServerProviderShape {}
++
++export class CopilotProvider extends Context.Service<CopilotProvider, CopilotProviderShape>()(
++  "t3/provider/Services/CopilotProvider",
++) {}
+diff --git a/apps/server/src/provider/providerStatusCache.ts b/apps/server/src/provider/providerStatusCache.ts
+index 369fca62..b1d0e4d0 100644
+--- a/apps/server/src/provider/providerStatusCache.ts
++++ b/apps/server/src/provider/providerStatusCache.ts
+@@ -4,6 +4,7 @@ import { Cause, Effect, FileSystem, Path, Schema } from "effect";
+ 
+ export const PROVIDER_CACHE_IDS = [
+   "codex",
++  "copilot",
+   "claudeAgent",
+   "opencode",
+   "cursor",
+diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
+index 9aee0b98..5b6ea623 100644
+--- a/apps/server/src/server.ts
++++ b/apps/server/src/server.ts
+@@ -21,6 +21,7 @@ import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionD
+ import { ProviderSessionRuntimeRepositoryLive } from "./persistence/Layers/ProviderSessionRuntime.ts";
+ import { makeCodexAdapterLive } from "./provider/Layers/CodexAdapter.ts";
+ import { makeClaudeAdapterLive } from "./provider/Layers/ClaudeAdapter.ts";
++import { CopilotAdapterLive } from "./provider/Layers/CopilotAdapter.ts";
+ import { makeCursorAdapterLive } from "./provider/Layers/CursorAdapter.ts";
+ import { makeOpenCodeAdapterLive } from "./provider/Layers/OpenCodeAdapter.ts";
+ import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry.ts";
+@@ -167,6 +168,7 @@ const ProviderLayerLive = Layer.unwrap(
+     const adapterRegistryLayer = ProviderAdapterRegistryLive.pipe(
+       Layer.provide(codexAdapterLayer),
+       Layer.provide(claudeAdapterLayer),
++      Layer.provide(CopilotAdapterLive),
+       Layer.provide(openCodeAdapterLayer),
+       Layer.provide(cursorAdapterLayer),
+       Layer.provideMerge(ProviderSessionDirectoryLayerLive),
+diff --git a/apps/web/src/components/KeybindingsToast.browser.tsx b/apps/web/src/components/KeybindingsToast.browser.tsx
+index 7eadd4e4..f6b150b0 100644
+--- a/apps/web/src/components/KeybindingsToast.browser.tsx
++++ b/apps/web/src/components/KeybindingsToast.browser.tsx
+@@ -98,6 +98,7 @@ function createBaseServerConfig(): ServerConfig {
+       textGenerationModelSelection: { provider: "codex" as const, model: "gpt-5.4-mini" },
+       providers: {
+         codex: { enabled: true, binaryPath: "", homePath: "", customModels: [] },
++        copilot: { enabled: true, binaryPath: "", homePath: "", customModels: [] },
+         claudeAgent: { enabled: true, binaryPath: "", customModels: [], launchArgs: "" },
+         cursor: { enabled: true, binaryPath: "", apiEndpoint: "", customModels: [] },
+         opencode: {
+diff --git a/apps/web/src/components/chat/ChatComposer.tsx b/apps/web/src/components/chat/ChatComposer.tsx
+index 4cc2c85c..60c0dcc7 100644
+--- a/apps/web/src/components/chat/ChatComposer.tsx
++++ b/apps/web/src/components/chat/ChatComposer.tsx
+@@ -608,6 +608,7 @@ export const ChatComposer = memo(
+     >(
+       () => ({
+         codex: providerStatuses.find((provider) => provider.provider === "codex")?.models ?? [],
++        copilot: providerStatuses.find((provider) => provider.provider === "copilot")?.models ?? [],
+         claudeAgent:
+           providerStatuses.find((provider) => provider.provider === "claudeAgent")?.models ?? [],
+         opencode:
+diff --git a/apps/web/src/components/chat/ProviderModelPicker.tsx b/apps/web/src/components/chat/ProviderModelPicker.tsx
+index 8b20237a..30dc5dce 100644
+--- a/apps/web/src/components/chat/ProviderModelPicker.tsx
++++ b/apps/web/src/components/chat/ProviderModelPicker.tsx
+@@ -18,7 +18,7 @@ import {
+   MenuSubTrigger,
+   MenuTrigger,
+ } from "../ui/menu";
+-import { ClaudeAI, CursorIcon, Gemini, Icon, OpenAI, OpenCodeIcon } from "../Icons";
++import { ClaudeAI, CursorIcon, Gemini, GitHubIcon, Icon, OpenAI, OpenCodeIcon } from "../Icons";
+ import { cn } from "~/lib/utils";
+ import { getProviderSnapshot } from "../../providerModels";
+ 
+@@ -32,6 +32,7 @@ function isAvailableProviderOption(option: (typeof PROVIDER_OPTIONS)[number]): o
+ 
+ const PROVIDER_ICON_BY_PROVIDER: Record<ProviderPickerKind, Icon> = {
+   codex: OpenAI,
++  copilot: GitHubIcon,
+   claudeAgent: ClaudeAI,
+   opencode: OpenCodeIcon,
+   cursor: CursorIcon,
+diff --git a/apps/web/src/components/chat/TraitsPicker.tsx b/apps/web/src/components/chat/TraitsPicker.tsx
+index 77cb1b9a..f3ceafdb 100644
+--- a/apps/web/src/components/chat/TraitsPicker.tsx
++++ b/apps/web/src/components/chat/TraitsPicker.tsx
+@@ -58,7 +58,7 @@ function getRawEffort(
+   provider: ProviderKind,
+   modelOptions: ProviderOptions | null | undefined,
+ ): string | null {
+-  if (provider === "codex") {
++  if (provider === "codex" || provider === "copilot") {
+     return trimOrNull((modelOptions as CodexModelOptions | undefined)?.reasoningEffort);
+   }
+   if (provider === "cursor") {
+@@ -71,7 +71,7 @@ function getRawEffort(
+ }
+ 
+ function getEffortKey(provider: ProviderKind): string {
+-  if (provider === "codex") return "reasoningEffort";
++  if (provider === "codex" || provider === "copilot") return "reasoningEffort";
+   if (provider === "cursor") return "reasoning";
+   if (provider === "opencode") return "variant";
+   return "effort";
+diff --git a/apps/web/src/components/chat/composerProviderRegistry.tsx b/apps/web/src/components/chat/composerProviderRegistry.tsx
+index af03c99a..50c93aed 100644
+--- a/apps/web/src/components/chat/composerProviderRegistry.tsx
++++ b/apps/web/src/components/chat/composerProviderRegistry.tsx
+@@ -124,6 +124,10 @@ function getProviderStateFromCapabilities(
+       : (resolveEffort(caps, rawEffort) ?? null);
+   const ultrathinkActive =
+     caps.promptInjectedEffortLevels.length > 0 && isClaudeUltrathinkPrompt(prompt);
++  const xhighActive =
++    !ultrathinkActive &&
++    promptEffort === "xhigh" &&
++    (provider === "codex" || provider === "copilot");
+ 
+   return {
+     provider,
+@@ -134,6 +138,11 @@ function getProviderStateFromCapabilities(
+       ? { composerSurfaceClassName: "shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset]" }
+       : {}),
+     ...(ultrathinkActive ? { modelPickerIconClassName: "ultrathink-chroma" } : {}),
++    ...(xhighActive ? { composerFrameClassName: "xhigh-frame" } : {}),
++    ...(xhighActive
++      ? { composerSurfaceClassName: "shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset]" }
++      : {}),
++    ...(xhighActive ? { modelPickerIconClassName: "xhigh-chroma" } : {}),
+   };
+ }
+ 
+@@ -158,6 +167,7 @@ function createProviderRegistryEntry(
+ 
+ const composerProviderRegistry: Record<ProviderKind, ProviderRegistryEntry> = {
+   codex: createProviderRegistryEntry("codex"),
++  copilot: createProviderRegistryEntry("copilot"),
+   claudeAgent: createProviderRegistryEntry("claudeAgent"),
+   cursor: createProviderRegistryEntry("cursor"),
+   opencode: createProviderRegistryEntry("opencode", {
+diff --git a/apps/web/src/components/settings/SettingsPanels.tsx b/apps/web/src/components/settings/SettingsPanels.tsx
+index 230b0a99..4ce132aa 100644
+--- a/apps/web/src/components/settings/SettingsPanels.tsx
++++ b/apps/web/src/components/settings/SettingsPanels.tsx
+@@ -126,6 +126,12 @@ const PROVIDER_SETTINGS: readonly InstallProviderSettings[] = [
+     homePlaceholder: "CODEX_HOME",
+     homeDescription: "Optional custom Codex home and config directory.",
+   },
++  {
++    provider: "copilot",
++    title: "GitHub Copilot",
++    binaryPlaceholder: "Copilot SDK binary path",
++    binaryDescription: "Path to the Copilot SDK binary (optional, auto-detected)",
++  },
+   {
+     provider: "claudeAgent",
+     title: "Claude",
+@@ -533,6 +539,11 @@ export function GeneralSettingsPanel() {
+       settings.providers.codex.homePath !== DEFAULT_UNIFIED_SETTINGS.providers.codex.homePath ||
+       settings.providers.codex.customModels.length > 0,
+     ),
++    copilot: Boolean(
++      settings.providers.copilot.binaryPath !==
++        DEFAULT_UNIFIED_SETTINGS.providers.copilot.binaryPath ||
++      settings.providers.copilot.customModels.length > 0,
++    ),
+     claudeAgent: Boolean(
+       settings.providers.claudeAgent.binaryPath !==
+         DEFAULT_UNIFIED_SETTINGS.providers.claudeAgent.binaryPath ||
+@@ -558,6 +569,7 @@ export function GeneralSettingsPanel() {
+     Record<ProviderKind, string>
+   >({
+     codex: "",
++    copilot: "",
+     claudeAgent: "",
+     cursor: "",
+     opencode: "",
+diff --git a/apps/web/src/composerDraftStore.ts b/apps/web/src/composerDraftStore.ts
+index 36304fc0..f9a9ca57 100644
+--- a/apps/web/src/composerDraftStore.ts
++++ b/apps/web/src/composerDraftStore.ts
+@@ -531,7 +531,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
+ }
+ 
+ function normalizeProviderKind(value: unknown): ProviderKind | null {
+-  return value === "codex" || value === "claudeAgent" || value === "cursor" || value === "opencode"
++  return value === "codex" || value === "copilot" || value === "claudeAgent" || value === "cursor" || value === "opencode"
+     ? value
+     : null;
+ }
+@@ -554,6 +554,10 @@ function normalizeProviderModelOptions(
+     candidate?.cursor && typeof candidate.cursor === "object"
+       ? (candidate.cursor as Record<string, unknown>)
+       : null;
++  const copilotCandidate =
++    candidate?.copilot && typeof candidate.copilot === "object"
++      ? (candidate.copilot as Record<string, unknown>)
++      : null;
+   const openCodeCandidate =
+     candidate?.opencode && typeof candidate.opencode === "object"
+       ? (candidate.opencode as Record<string, unknown>)
+@@ -670,11 +674,20 @@ function normalizeProviderModelOptions(
+         }
+       : undefined;
+ 
+-  if (!codex && !claude && cursor === undefined && !opencode) {
++  const copilotReasoningEffort = isCodexReasoningEffort(copilotCandidate?.reasoningEffort)
++    ? copilotCandidate.reasoningEffort
++    : undefined;
++  const copilot =
++    copilotReasoningEffort !== undefined
++      ? { reasoningEffort: copilotReasoningEffort }
++      : undefined;
++
++  if (!codex && !claude && !copilot && cursor === undefined && !opencode) {
+     return null;
+   }
+   return {
+     ...(codex ? { codex } : {}),
++    ...(copilot ? { copilot } : {}),
+     ...(claude ? { claudeAgent: claude } : {}),
+     ...(cursor !== undefined ? { cursor } : {}),
+     ...(opencode ? { opencode } : {}),
+diff --git a/apps/web/src/index.css b/apps/web/src/index.css
+index 6a4db398..fcc39ebb 100644
+--- a/apps/web/src/index.css
++++ b/apps/web/src/index.css
+@@ -534,3 +534,45 @@ label:has(> select#reasoning-effort) select {
+   -webkit-background-clip: text;
+   animation: ultrathink-rainbow 10s linear infinite;
+ }
++
++/* ── xhigh effort theming (GPT/Copilot Extra High) ─────────────── */
++
++@keyframes xhigh-pulse {
++  0% {
++    background-position: 0% 50%;
++  }
++  100% {
++    background-position: 200% 50%;
++  }
++}
++
++@keyframes xhigh-glow {
++  0% {
++    filter: hue-rotate(140deg) saturate(1.4) brightness(1.1);
++  }
++  50% {
++    filter: hue-rotate(180deg) saturate(1.6) brightness(1.3);
++  }
++  100% {
++    filter: hue-rotate(140deg) saturate(1.4) brightness(1.1);
++  }
++}
++
++.xhigh-frame {
++  --xhigh-spectrum: linear-gradient(
++    120deg,
++    #0ea5e9 0%,
++    #06b6d4 20%,
++    #14b8a6 40%,
++    #10b981 60%,
++    #06b6d4 80%,
++    #0ea5e9 100%
++  );
++  background-image: var(--xhigh-spectrum);
++  background-size: 220% 220%;
++  animation: xhigh-pulse 8s linear infinite;
++}
++
++.xhigh-chroma {
++  animation: xhigh-glow 4s ease-in-out infinite;
++}
+diff --git a/apps/web/src/modelSelection.ts b/apps/web/src/modelSelection.ts
+index 60ab386b..49421638 100644
+--- a/apps/web/src/modelSelection.ts
++++ b/apps/web/src/modelSelection.ts
+@@ -42,6 +42,13 @@ const PROVIDER_CUSTOM_MODEL_CONFIG: Record<ProviderKind, ProviderCustomModelConf
+     placeholder: "your-codex-model-slug",
+     example: "gpt-6.7-codex-ultra-preview",
+   },
++  copilot: {
++    provider: "copilot",
++    title: "GitHub Copilot",
++    description: "Save additional Copilot model slugs for the picker and `/model` command.",
++    placeholder: "your-copilot-model-slug",
++    example: "gpt-5",
++  },
+   claudeAgent: {
+     provider: "claudeAgent",
+     title: "Claude",
+@@ -177,6 +184,12 @@ export function getCustomModelOptionsByProvider(
+       "codex",
+       selectedProvider === "codex" ? selectedModel : undefined,
+     ),
++    copilot: getAppModelOptions(
++      settings,
++      providers,
++      "copilot",
++      selectedProvider === "copilot" ? selectedModel : undefined,
++    ),
+     claudeAgent: getAppModelOptions(
+       settings,
+       providers,
+diff --git a/apps/web/src/session-logic.ts b/apps/web/src/session-logic.ts
+index 477bc57b..2a71e087 100644
+--- a/apps/web/src/session-logic.ts
++++ b/apps/web/src/session-logic.ts
+@@ -30,6 +30,7 @@ export const PROVIDER_OPTIONS: Array<{
+   available: boolean;
+ }> = [
+   { value: "codex", label: "Codex", available: true },
++  { value: "copilot", label: "GitHub Copilot", available: true },
+   { value: "claudeAgent", label: "Claude", available: true },
+   { value: "opencode", label: "OpenCode", available: true },
+   { value: "cursor", label: "Cursor", available: true },
+diff --git a/bun.lock b/bun.lock
+index 35d9915b..5770e502 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -52,6 +52,7 @@
+         "@effect/platform-bun": "catalog:",
+         "@effect/platform-node": "catalog:",
+         "@effect/sql-sqlite-bun": "catalog:",
++        "@github/copilot-sdk": "^0.2.2",
+         "@opencode-ai/sdk": "^1.3.15",
+         "@pierre/diffs": "^1.1.0-beta.16",
+         "effect": "catalog:",
+@@ -413,6 +414,22 @@
+ 
+     "@formkit/auto-animate": ["@formkit/auto-animate@0.9.0", "", {}, "sha512-VhP4zEAacXS3dfTpJpJ88QdLqMTcabMg0jwpOSxZ/VzfQVfl3GkZSCZThhGC5uhq/TxPHPzW0dzr4H9Bb1OgKA=="],
+ 
++    "@github/copilot": ["@github/copilot@1.0.32", "", { "optionalDependencies": { "@github/copilot-darwin-arm64": "1.0.32", "@github/copilot-darwin-x64": "1.0.32", "@github/copilot-linux-arm64": "1.0.32", "@github/copilot-linux-x64": "1.0.32", "@github/copilot-win32-arm64": "1.0.32", "@github/copilot-win32-x64": "1.0.32" }, "bin": { "copilot": "npm-loader.js" } }, "sha512-ydEYAztJQa1sLQw+WPmnkkt3Sf/k2Smn/7szzYvt1feUOdNIak1gHpQhKcgPr2w252gjVLRWjOiynoeLVW0Fbw=="],
++
++    "@github/copilot-darwin-arm64": ["@github/copilot-darwin-arm64@1.0.32", "", { "os": "darwin", "cpu": "arm64", "bin": { "copilot-darwin-arm64": "copilot" } }, "sha512-RtGHpnrbP1eVtpzitLqC0jkBlo63PJiByv6W/NTtLw4ZAllumb5kMk8JaTtydKl9DCOHA0wfXbG5/JkGXuQ81g=="],
++
++    "@github/copilot-darwin-x64": ["@github/copilot-darwin-x64@1.0.32", "", { "os": "darwin", "cpu": "x64", "bin": { "copilot-darwin-x64": "copilot" } }, "sha512-eyF6uy8gcZ4m/0UdM9UoykMDotZ8hZPJ1xIg0iHy4wrNtkYOaAspAoVpOkm50ODOQAHJ5PVV+9LuT6IoeL+wHQ=="],
++
++    "@github/copilot-linux-arm64": ["@github/copilot-linux-arm64@1.0.32", "", { "os": "linux", "cpu": "arm64", "bin": { "copilot-linux-arm64": "copilot" } }, "sha512-acRAu5ehFPnw3hQSIxcmi7wzv8PAYd+nqdxZXizOi++en3QWgez7VEXiKLe9Ukf50iiGReg19yvWV4iDOGC0HQ=="],
++
++    "@github/copilot-linux-x64": ["@github/copilot-linux-x64@1.0.32", "", { "os": "linux", "cpu": "x64", "bin": { "copilot-linux-x64": "copilot" } }, "sha512-lw86YDwkTKwmeVpfnPErDe9DhemrOHN+l92xOU9wQSH5/d+HguXwRb3e4cQjlxsGLS+/fWRGtwf+u2fbQ37avw=="],
++
++    "@github/copilot-sdk": ["@github/copilot-sdk@0.2.2", "", { "dependencies": { "@github/copilot": "^1.0.21", "vscode-jsonrpc": "^8.2.1", "zod": "^4.3.6" } }, "sha512-VZCqS08YlUM90bUKJ7VLeIxgTTEHtfXBo84T1IUMNvXRREX2csjPH6Z+CPw3S2468RcCLvzBXcc9LtJJTLIWFw=="],
++
++    "@github/copilot-win32-arm64": ["@github/copilot-win32-arm64@1.0.32", "", { "os": "win32", "cpu": "arm64", "bin": { "copilot-win32-arm64": "copilot.exe" } }, "sha512-+eZpuzgBbLHMIzltH541wfbbMy0HEdG91ISzRae3qPCssf3Ad85sat6k7FWTRBSZBFrN7z4yMQm5gROqDJYGSA=="],
++
++    "@github/copilot-win32-x64": ["@github/copilot-win32-x64@1.0.32", "", { "os": "win32", "cpu": "x64", "bin": { "copilot-win32-x64": "copilot.exe" } }, "sha512-R6SW1dsEVmPMhrN/WRTetS4gVxcuYcxi2zfDPOfcjW3W0iD0Vwpt3MlqwBaU2UL36j+rnTnmiOA+g82FIBCYVg=="],
++
+     "@hono/node-server": ["@hono/node-server@1.19.14", "", { "peerDependencies": { "hono": "^4" } }, "sha512-GwtvgtXxnWsucXvbQXkRgqksiH2Qed37H9xHZocE5sA3N8O8O8/8FA3uclQXxXVzc9XBZuEOMK7+r02FmSpHtw=="],
+ 
+     "@img/colour": ["@img/colour@1.1.0", "", {}, "sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ=="],
+@@ -1969,7 +1986,7 @@
+ 
+     "vscode-json-languageservice": ["vscode-json-languageservice@4.1.8", "", { "dependencies": { "jsonc-parser": "^3.0.0", "vscode-languageserver-textdocument": "^1.0.1", "vscode-languageserver-types": "^3.16.0", "vscode-nls": "^5.0.0", "vscode-uri": "^3.0.2" } }, "sha512-0vSpg6Xd9hfV+eZAaYN63xVVMOTmJ4GgHxXnkLCh+9RsQBkWKIghzLhW2B9ebfG+LQQg8uLtsQ2aUKjTgE+QOg=="],
+ 
+-    "vscode-jsonrpc": ["vscode-jsonrpc@8.2.0", "", {}, "sha512-C+r0eKJUIfiDIfwJhria30+TYWPtuHJXHtI7J0YlOmKAo7ogxP20T0zxB7HZQIFhIyvoBPwWskjxrvAtfjyZfA=="],
++    "vscode-jsonrpc": ["vscode-jsonrpc@8.2.1", "", {}, "sha512-kdjOSJ2lLIn7r1rtrMbbNCHjyMPfRnowdKjBQ+mGq6NAW5QY2bEZC/khaC5OR8svbbjvLEaIXkOq45e2X9BIbQ=="],
+ 
+     "vscode-languageserver": ["vscode-languageserver@9.0.1", "", { "dependencies": { "vscode-languageserver-protocol": "3.17.5" }, "bin": { "installServerIntoExtension": "bin/installServerIntoExtension" } }, "sha512-woByF3PDpkHFUreUa7Hos7+pUWdeWMXRd26+ZX2A8cFx6v/JPTtd4/uN0/jB6XQHYaOlHbio03NTHCqrgG5n7g=="],
+ 
+@@ -2139,6 +2156,8 @@
+ 
+     "vscode-json-languageservice/jsonc-parser": ["jsonc-parser@3.3.1", "", {}, "sha512-HUgH65KyejrUFPvHFPbqOY0rsFip3Bo5wb4ngvdi1EpCYWUQDC5V+Y7mZws+DLkr4M//zQJoanu1SP+87Dv1oQ=="],
+ 
++    "vscode-languageserver-protocol/vscode-jsonrpc": ["vscode-jsonrpc@8.2.0", "", {}, "sha512-C+r0eKJUIfiDIfwJhria30+TYWPtuHJXHtI7J0YlOmKAo7ogxP20T0zxB7HZQIFhIyvoBPwWskjxrvAtfjyZfA=="],
++
+     "yaml-language-server/request-light": ["request-light@0.5.8", "", {}, "sha512-3Zjgh+8b5fhRJBQZoy+zbVKpAQGLyka0MPgW3zruTF4dFFJ8Fqcfu9YsAvi/rvdcaTeWG3MkbZv4WKxAn/84Lg=="],
+ 
+     "yaml-language-server/yaml": ["yaml@2.7.1", "", { "bin": { "yaml": "bin.mjs" } }, "sha512-10ULxpnOCQXxJvBgxsn9ptjq6uviG/htZKk9veJGhlqn3w/DxQ631zFF+nlQXLwmImeS5amR2dl2U8sg6U9jsQ=="],
+diff --git a/packages/contracts/src/model.ts b/packages/contracts/src/model.ts
+index 5bb82caf..8b38f6f7 100644
+--- a/packages/contracts/src/model.ts
++++ b/packages/contracts/src/model.ts
+@@ -52,8 +52,14 @@ export const OpenCodeModelOptions = Schema.Struct({
+ });
+ export type OpenCodeModelOptions = typeof OpenCodeModelOptions.Type;
+ 
++export const CopilotModelOptions = Schema.Struct({
++  reasoningEffort: Schema.optional(CodexReasoningEffort),
++});
++export type CopilotModelOptions = typeof CopilotModelOptions.Type;
++
+ export const ProviderModelOptions = Schema.Struct({
+   codex: Schema.optional(CodexModelOptions),
++  copilot: Schema.optional(CopilotModelOptions),
+   claudeAgent: Schema.optional(ClaudeModelOptions),
+   cursor: Schema.optional(CursorModelOptions),
+   opencode: Schema.optional(OpenCodeModelOptions),
+@@ -87,6 +93,7 @@ export type ModelCapabilities = typeof ModelCapabilities.Type;
+ 
+ export const DEFAULT_MODEL_BY_PROVIDER: Record<ProviderKind, string> = {
+   codex: "gpt-5.4",
++  copilot: "gpt-5.4",
+   claudeAgent: "claude-sonnet-4-6",
+   cursor: "auto",
+   opencode: "openai/gpt-5",
+@@ -97,6 +104,7 @@ export const DEFAULT_MODEL = DEFAULT_MODEL_BY_PROVIDER.codex;
+ /** Per-provider text generation model defaults. */
+ export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER: Record<ProviderKind, string> = {
+   codex: "gpt-5.4-mini",
++  copilot: "gpt-5.4-mini",
+   claudeAgent: "claude-haiku-4-5",
+   cursor: "composer-2",
+   opencode: "openai/gpt-5",
+@@ -111,6 +119,17 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Record<ProviderKind, Record<string,
+     "5.3-spark": "gpt-5.3-codex-spark",
+     "gpt-5.3-spark": "gpt-5.3-codex-spark",
+   },
++  copilot: {
++    "5": "gpt-5",
++    "5-mini": "gpt-5-mini",
++    "5.4": "gpt-5.4",
++    "5.4-mini": "gpt-5.4-mini",
++    "4.1": "gpt-4.1",
++    haiku: "claude-haiku-4.5",
++    sonnet: "claude-sonnet-4.6",
++    opus: "claude-opus-4.7",
++    gemini: "gemini-3-pro-preview",
++  },
+   claudeAgent: {
+     opus: "claude-opus-4-7",
+     "opus-4.7": "claude-opus-4-7",
+@@ -145,6 +164,7 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Record<ProviderKind, Record<string,
+ 
+ export const PROVIDER_DISPLAY_NAMES: Record<ProviderKind, string> = {
+   codex: "Codex",
++  copilot: "GitHub Copilot",
+   claudeAgent: "Claude",
+   cursor: "Cursor",
+   opencode: "OpenCode",
+diff --git a/packages/contracts/src/orchestration.ts b/packages/contracts/src/orchestration.ts
+index 087a6670..ba81a63c 100644
+--- a/packages/contracts/src/orchestration.ts
++++ b/packages/contracts/src/orchestration.ts
+@@ -2,6 +2,7 @@ import { Effect, Option, Schema, SchemaIssue, Struct } from "effect";
+ import {
+   ClaudeModelOptions,
+   CodexModelOptions,
++  CopilotModelOptions,
+   CursorModelOptions,
+   OpenCodeModelOptions,
+ } from "./model.ts";
+@@ -30,7 +31,7 @@ export const ORCHESTRATION_WS_METHODS = {
+   subscribeThread: "orchestration.subscribeThread",
+ } as const;
+ 
+-export const ProviderKind = Schema.Literals(["codex", "claudeAgent", "cursor", "opencode"]);
++export const ProviderKind = Schema.Literals(["codex", "copilot", "claudeAgent", "cursor", "opencode"]);
+ export type ProviderKind = typeof ProviderKind.Type;
+ export const ProviderApprovalPolicy = Schema.Literals([
+   "untrusted",
+@@ -62,6 +63,13 @@ export const ClaudeModelSelection = Schema.Struct({
+ });
+ export type ClaudeModelSelection = typeof ClaudeModelSelection.Type;
+ 
++export const CopilotModelSelection = Schema.Struct({
++  provider: Schema.Literal("copilot"),
++  model: TrimmedNonEmptyString,
++  options: Schema.optionalKey(CopilotModelOptions),
++});
++export type CopilotModelSelection = typeof CopilotModelSelection.Type;
++
+ export const CursorModelSelection = Schema.Struct({
+   provider: Schema.Literal("cursor"),
+   model: TrimmedNonEmptyString,
+@@ -77,6 +85,7 @@ export type OpenCodeModelSelection = typeof OpenCodeModelSelection.Type;
+ 
+ export const ModelSelection = Schema.Union([
+   CodexModelSelection,
++  CopilotModelSelection,
+   ClaudeModelSelection,
+   CursorModelSelection,
+   OpenCodeModelSelection,
+diff --git a/packages/contracts/src/providerRuntime.ts b/packages/contracts/src/providerRuntime.ts
+index 8387880e..d20571f5 100644
+--- a/packages/contracts/src/providerRuntime.ts
++++ b/packages/contracts/src/providerRuntime.ts
+@@ -24,6 +24,8 @@ const RuntimeEventRawSource = Schema.Union([
+   Schema.Literal("claude.sdk.message"),
+   Schema.Literal("claude.sdk.permission"),
+   Schema.Literal("codex.sdk.thread-event"),
++  Schema.Literal("copilot.sdk.session-event"),
++  Schema.Literal("copilot.sdk.synthetic"),
+   Schema.Literal("opencode.sdk.event"),
+   Schema.Literal("acp.jsonrpc"),
+   Schema.TemplateLiteral(["acp.", Schema.String, ".extension"]),
+diff --git a/packages/contracts/src/settings.ts b/packages/contracts/src/settings.ts
+index 6c45dde5..f6f41c8d 100644
+--- a/packages/contracts/src/settings.ts
++++ b/packages/contracts/src/settings.ts
+@@ -91,6 +91,14 @@ export const ClaudeSettings = Schema.Struct({
+ });
+ export type ClaudeSettings = typeof ClaudeSettings.Type;
+ 
++export const CopilotSettings = Schema.Struct({
++  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
++  binaryPath: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
++  homePath: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
++  customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
++});
++export type CopilotSettings = typeof CopilotSettings.Type;
++
+ export const CursorSettings = Schema.Struct({
+   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+   binaryPath: makeBinaryPathSetting("agent"),
+@@ -131,6 +139,7 @@ export const ServerSettings = Schema.Struct({
+   // Provider specific settings
+   providers: Schema.Struct({
+     codex: CodexSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
++    copilot: CopilotSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+     claudeAgent: ClaudeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+     cursor: CursorSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+@@ -188,12 +197,21 @@ const OpenCodeModelOptionsPatch = Schema.Struct({
+   agent: Schema.optionalKey(OpenCodeModelOptions.fields.agent),
+ });
+ 
++const CopilotModelOptionsPatch = Schema.Struct({
++  reasoningEffort: Schema.optionalKey(CodexModelOptions.fields.reasoningEffort),
++});
++
+ const ModelSelectionPatch = Schema.Union([
+   Schema.Struct({
+     provider: Schema.optionalKey(Schema.Literal("codex")),
+     model: Schema.optionalKey(TrimmedNonEmptyString),
+     options: Schema.optionalKey(CodexModelOptionsPatch),
+   }),
++  Schema.Struct({
++    provider: Schema.optionalKey(Schema.Literal("copilot")),
++    model: Schema.optionalKey(TrimmedNonEmptyString),
++    options: Schema.optionalKey(CopilotModelOptionsPatch),
++  }),
+   Schema.Struct({
+     provider: Schema.optionalKey(Schema.Literal("claudeAgent")),
+     model: Schema.optionalKey(TrimmedNonEmptyString),
+@@ -225,6 +243,13 @@ const ClaudeSettingsPatch = Schema.Struct({
+   launchArgs: Schema.optionalKey(Schema.String),
+ });
+ 
++const CopilotSettingsPatch = Schema.Struct({
++  enabled: Schema.optionalKey(Schema.Boolean),
++  binaryPath: Schema.optionalKey(Schema.String),
++  homePath: Schema.optionalKey(Schema.String),
++  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
++});
++
+ const CursorSettingsPatch = Schema.Struct({
+   enabled: Schema.optionalKey(Schema.Boolean),
+   binaryPath: Schema.optionalKey(Schema.String),
+@@ -254,6 +279,7 @@ export const ServerSettingsPatch = Schema.Struct({
+   providers: Schema.optionalKey(
+     Schema.Struct({
+       codex: Schema.optionalKey(CodexSettingsPatch),
++      copilot: Schema.optionalKey(CopilotSettingsPatch),
+       claudeAgent: Schema.optionalKey(ClaudeSettingsPatch),
+       cursor: Schema.optionalKey(CursorSettingsPatch),
+       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
+diff --git a/packages/shared/src/model.ts b/packages/shared/src/model.ts
+index d15a3a6c..2978c4d9 100644
+--- a/packages/shared/src/model.ts
++++ b/packages/shared/src/model.ts
+@@ -4,6 +4,7 @@ import {
+   type ClaudeAgentEffort,
+   type ClaudeModelOptions,
+   type CodexModelOptions,
++  type CopilotModelOptions,
+   type CursorModelOptions,
+   type ModelCapabilities,
+   type ModelSelection,
+@@ -158,6 +159,8 @@ export function normalizeProviderModelOptionsWithCapabilities(
+   switch (provider) {
+     case "codex":
+       return normalizeCodexModelOptionsWithCapabilities(caps, modelOptions as CodexModelOptions);
++    case "copilot":
++      return normalizeCodexModelOptionsWithCapabilities(caps, modelOptions as CodexModelOptions);
+     case "claudeAgent":
+       return normalizeClaudeModelOptionsWithCapabilities(caps, modelOptions as ClaudeModelOptions);
+     case "cursor":
+@@ -261,6 +264,12 @@ export function createModelSelection(
+         model,
+         ...(options ? { options: options as CodexModelOptions } : {}),
+       };
++    case "copilot":
++      return {
++        provider,
++        model,
++        ...(options ? { options: options as CopilotModelOptions } : {}),
++      };
+     case "claudeAgent":
+       return {
+         provider,
+diff --git a/packages/shared/src/serverSettings.ts b/packages/shared/src/serverSettings.ts
+index cb9d9373..162ed7ac 100644
+--- a/packages/shared/src/serverSettings.ts
++++ b/packages/shared/src/serverSettings.ts
+@@ -2,6 +2,7 @@ import {
+   ServerSettings,
+   type ClaudeModelOptions,
+   type CodexModelOptions,
++  type CopilotModelOptions,
+   type CursorModelOptions,
+   type OpenCodeModelOptions,
+   type ServerSettingsPatch,
+@@ -83,28 +84,36 @@ export function applyServerSettingsPatch(
+             model,
+             ...withModelSelectionOptions(selectionPatch.options as CodexModelOptions | undefined),
+           }
+-        : provider === "claudeAgent"
++        : provider === "copilot"
+           ? {
+               provider,
+               model,
+               ...withModelSelectionOptions(
+-                selectionPatch.options as ClaudeModelOptions | undefined,
++                selectionPatch.options as CopilotModelOptions | undefined,
+               ),
+             }
+-          : provider === "cursor"
++          : provider === "claudeAgent"
+             ? {
+                 provider,
+                 model,
+                 ...withModelSelectionOptions(
+-                  selectionPatch.options as CursorModelOptions | undefined,
++                  selectionPatch.options as ClaudeModelOptions | undefined,
+                 ),
+               }
+-            : {
+-                provider,
+-                model,
+-                ...withModelSelectionOptions(
+-                  selectionPatch.options as OpenCodeModelOptions | undefined,
+-                ),
+-              },
++            : provider === "cursor"
++              ? {
++                  provider,
++                  model,
++                  ...withModelSelectionOptions(
++                    selectionPatch.options as CursorModelOptions | undefined,
++                  ),
++                }
++              : {
++                  provider,
++                  model,
++                  ...withModelSelectionOptions(
++                    selectionPatch.options as OpenCodeModelOptions | undefined,
++                  ),
++                },
+   };
+ }
+diff --git a/scripts/build-desktop-artifact.ts b/scripts/build-desktop-artifact.ts
+index 74e8bed0..59820bbf 100644
+--- a/scripts/build-desktop-artifact.ts
++++ b/scripts/build-desktop-artifact.ts
+@@ -573,6 +573,7 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
+     directories: {
+       buildResources: "apps/desktop/resources",
+     },
++    asarUnpack: ["node_modules/@github/copilot-*/**"],
+   };
+   const updateChannel = resolveDesktopUpdateChannel(version);
+   const publishConfig = resolveGitHubPublishConfig(updateChannel);
+@@ -814,7 +815,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
+       ...commandOutputOptions(options.verbose),
+       // Windows needs shell mode to resolve .cmd shims (e.g. bun.cmd).
+       shell: process.platform === "win32",
+-    })`bun install --production --omit optional`,
++    })`bun install --production`,
+   );
+ 
+   const buildEnv: NodeJS.ProcessEnv = {

@@ -1,0 +1,111 @@
+diff --git a/apps/web/src/components/chat/ModelPickerSidebar.tsx b/apps/web/src/components/chat/ModelPickerSidebar.tsx
+index b4f23cac..3a5db000 100644
+--- a/apps/web/src/components/chat/ModelPickerSidebar.tsx
++++ b/apps/web/src/components/chat/ModelPickerSidebar.tsx
+@@ -179,32 +179,6 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
+           Gemini — Coming soon
+         </TooltipPopup>
+       </Tooltip>
+-      {/* Github Copilot button (coming soon) */}
+-      <Tooltip>
+-        <TooltipTrigger
+-          render={
+-            <span className="relative block w-full">
+-              <button
+-                className={cn(
+-                  "relative isolate flex w-full aspect-square items-center justify-center rounded opacity-50 cursor-not-allowed transition-colors hover:bg-transparent",
+-                )}
+-                disabled
+-                type="button"
+-                data-model-picker-provider="github-copilot-coming-soon"
+-                aria-label="Github Copilot — coming soon"
+-              >
+-                <GithubCopilotIcon className="size-5 text-muted-foreground/85" aria-hidden />
+-                <span className={SOON_BADGE_CLASS} aria-hidden>
+-                  <Clock3Icon className="size-2" />
+-                </span>
+-              </button>
+-            </span>
+-          }
+-        />
+-        <TooltipPopup side={PICKER_TOOLTIP_SIDE} align="center" className={PICKER_TOOLTIP_CLASS}>
+-          Github Copilot — Coming soon
+-        </TooltipPopup>
+-      </Tooltip>
+     </div>
+   );
+ });
+diff --git a/apps/web/src/components/chat/providerIconUtils.ts b/apps/web/src/components/chat/providerIconUtils.ts
+index c6cf1fb3..97cf986a 100644
+--- a/apps/web/src/components/chat/providerIconUtils.ts
++++ b/apps/web/src/components/chat/providerIconUtils.ts
+@@ -1,10 +1,10 @@
+ import { type ProviderKind, PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
+-import { ClaudeAI, CursorIcon, Icon, OpenAI, OpenCodeIcon } from "../Icons";
++import { ClaudeAI, CursorIcon, GithubCopilotIcon, Icon, OpenAI, OpenCodeIcon } from "../Icons";
+ import { PROVIDER_OPTIONS } from "../../session-logic";
+ 
+ export const PROVIDER_ICON_BY_PROVIDER: Record<ProviderKind, Icon> = {
+   codex: OpenAI,
+-  copilot: OpenAI,
++  copilot: GithubCopilotIcon,
+   claudeAgent: ClaudeAI,
+   opencode: OpenCodeIcon,
+   cursor: CursorIcon,
+diff --git a/scripts/build-desktop-artifact.ts b/scripts/build-desktop-artifact.ts
+index 74e8bed0..2ef1ecfc 100644
+--- a/scripts/build-desktop-artifact.ts
++++ b/scripts/build-desktop-artifact.ts
+@@ -573,6 +573,7 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
+     directories: {
+       buildResources: "apps/desktop/resources",
+     },
++    asarUnpack: ["node_modules/@github/copilot-*/**", "node_modules/@github/copilot/**"],
+   };
+   const updateChannel = resolveDesktopUpdateChannel(version);
+   const publishConfig = resolveGitHubPublishConfig(updateChannel);
+@@ -814,9 +815,43 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
+       ...commandOutputOptions(options.verbose),
+       // Windows needs shell mode to resolve .cmd shims (e.g. bun.cmd).
+       shell: process.platform === "win32",
+-    })`bun install --production --omit optional`,
++    })`bun install --production`,
+   );
+ 
++  // Force-install Copilot platform binaries for the target platform.
++  // bun skips packages with os/cpu restrictions that don't match the host,
++  // so cross-compilation needs npm --force to bypass the os check.
++  const copilotPlatformMap: Record<string, Record<string, string[]>> = {
++    mac: {
++      arm64: ["@github/copilot-darwin-arm64"],
++      x64: ["@github/copilot-darwin-x64"],
++      universal: ["@github/copilot-darwin-arm64", "@github/copilot-darwin-x64"],
++    },
++    linux: {
++      arm64: ["@github/copilot-linux-arm64"],
++      x64: ["@github/copilot-linux-x64"],
++    },
++    win: {
++      arm64: ["@github/copilot-win32-arm64"],
++      x64: ["@github/copilot-win32-x64"],
++    },
++  };
++  const copilotPlatformPackages = copilotPlatformMap[options.platform]?.[options.arch] ?? [];
++  if (copilotPlatformPackages.length > 0) {
++    yield* Effect.log(
++      `[desktop-artifact] Force-installing Copilot platform binaries: ${copilotPlatformPackages.join(", ")}`,
++    );
++    for (const pkg of copilotPlatformPackages) {
++      yield* runCommand(
++        ChildProcess.make({
++          cwd: stageAppDir,
++          ...commandOutputOptions(options.verbose),
++          shell: process.platform === "win32",
++        })`npm install ${pkg}@latest --no-save --force`,
++      );
++    }
++  }
++
+   const buildEnv: NodeJS.ProcessEnv = {
+     ...process.env,
+   };

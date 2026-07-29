@@ -1,0 +1,33 @@
+{
+  "study_id": "t3code-upstream-v0.0.23-2026-05",
+  "created_at": "2026-05-14T06:00:00Z",
+  "repo_url": "https://github.com/tesseracode/t3code",
+  "repo_kind": "private-fork-of-public",
+  "upstream_url": "https://github.com/pingdotgg/t3code",
+  "old_base_commit": "9df3c640210fecccb58f7fbc735f81ca0ee011bd",
+  "old_base_version": "v0.0.21",
+  "new_upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+  "new_upstream_version": "v0.0.23",
+  "upstream_commits_between": 62,
+  "fork_commit_before_reconcile": "2245ccfd",
+  "fork_tag": "pre-reconcile-v0.0.23",
+  "reconcile_branch": "reconcile/v0.0.23",
+  "feature_count": 25,
+  "features_applied": 15,
+  "features_upstreamed": 1,
+  "features_upstreamed_false_positive": 2,
+  "features_skipped_requested": 5,
+  "features_skipped_blocked": 2,
+  "test_command": "bun run typecheck",
+  "test_result": "13/13 passed",
+  "languages": ["typescript", "css"],
+  "reconcile_strategy": "fresh-branch-option-a",
+  "tpatch_version": "0.6.1",
+  "excluded_paths": [
+    "node_modules/",
+    ".git/",
+    "dist/",
+    "*.lock",
+    ".env*"
+  ]
+}

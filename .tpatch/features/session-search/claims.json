@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "feature": "session-search",
+  "claims": [
+    {
+      "claim_id": "14bf257aec0d",
+      "kind": "path",
+      "value": "packages/contracts/src/keybindings.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "1d6b4b7b4f48",
+      "kind": "path",
+      "value": "packages/shared/src/keybindings.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "342782be944d",
+      "kind": "path",
+      "value": "apps/web/src/components/chat/SessionSearchBar.tsx",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "38b7c494f239",
+      "kind": "path",
+      "value": "apps/web/src/components/ChatView.tsx",
+      "mode": "advisory",
+      "source": "manual"
+    }
+  ]
+}

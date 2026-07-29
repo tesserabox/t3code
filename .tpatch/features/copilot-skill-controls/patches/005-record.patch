@@ -1,0 +1,196 @@
+diff --git a/apps/server/src/provider/Layers/CopilotAdapter.ts b/apps/server/src/provider/Layers/CopilotAdapter.ts
+index 3a2f1ddd..c6b23348 100644
+--- a/apps/server/src/provider/Layers/CopilotAdapter.ts
++++ b/apps/server/src/provider/Layers/CopilotAdapter.ts
+@@ -2247,6 +2247,46 @@ export const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+           }),
+       });
+ 
++    const setSkillEnabled: CopilotAdapterShape["setSkillEnabled"] = (skillName, enabled) =>
++      Effect.tryPromise({
++        try: async () => {
++          // Find any active session to use its RPC interface
++          const record = Array.from(sessions.values()).find((r) => r.session);
++          if (!record?.session) {
++            throw new Error("No active Copilot session — cannot toggle skill.");
++          }
++          const rpc = record.session as unknown as CopilotSkillsRpc;
++          if (enabled) {
++            if (!rpc.skills?.enable) {
++              throw new Error("Copilot SDK does not support rpc.skills.enable()");
++            }
++            await rpc.skills.enable({ name: skillName });
++          } else {
++            if (!rpc.skills?.disable) {
++              throw new Error("Copilot SDK does not support rpc.skills.disable()");
++            }
++            await rpc.skills.disable({ name: skillName });
++          }
++          // Update local skill state
++          for (const skill of discoveredCopilotSkills) {
++            if (skill.name === skillName) {
++              (skill as { enabled: boolean }).enabled = enabled;
++            }
++          }
++          // Reload skills list to get fresh state from SDK
++          if (rpc.skills?.reload) {
++            await rpc.skills.reload();
++          }
++        },
++        catch: (cause) =>
++          new ProviderAdapterProcessError({
++            provider: PROVIDER,
++            threadId: ThreadId.make("_skill-toggle"),
++            detail: toMessage(cause, `Failed to ${enabled ? "enable" : "disable"} skill "${skillName}".`),
++            cause,
++          }),
++      });
++
+     return {
+       provider: PROVIDER,
+       capabilities: {
+@@ -2263,6 +2303,7 @@ export const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+       readThread,
+       rollbackThread,
+       stopAll,
++      setSkillEnabled,
+       streamEvents: Stream.fromQueue(runtimeEventQueue),
+     } satisfies CopilotAdapterShape;
+   });
+diff --git a/apps/server/src/provider/Layers/ProviderRegistry.ts b/apps/server/src/provider/Layers/ProviderRegistry.ts
+index 22a120f0..82d2d071 100644
+--- a/apps/server/src/provider/Layers/ProviderRegistry.ts
++++ b/apps/server/src/provider/Layers/ProviderRegistry.ts
+@@ -687,6 +687,14 @@ export const ProviderRegistryLive = Layer.effect(
+         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
+       getProviderMaintenanceCapabilitiesForInstance,
+       setProviderMaintenanceActionState,
++      setSkillEnabled: (instanceId, skillName, enabled) =>
++        Effect.gen(function* () {
++          const instances = yield* instanceRegistry.listInstances;
++          const instance = instances.find((i) => i.instanceId === instanceId);
++          if (instance?.adapter.setSkillEnabled) {
++            yield* instance.adapter.setSkillEnabled(skillName, enabled).pipe(Effect.ignore);
++          }
++        }).pipe(Effect.ignore),
+       get streamChanges() {
+         return Stream.fromPubSub(changesPubSub);
+       },
+diff --git a/apps/server/src/provider/Services/ProviderAdapter.ts b/apps/server/src/provider/Services/ProviderAdapter.ts
+index 01eeae7b..d0146c6f 100644
+--- a/apps/server/src/provider/Services/ProviderAdapter.ts
++++ b/apps/server/src/provider/Services/ProviderAdapter.ts
+@@ -119,6 +119,15 @@ export interface ProviderAdapterShape<TError> {
+    */
+   readonly stopAll: () => Effect.Effect<void, TError>;
+ 
++  /**
++   * Enable or disable a skill by name. Optional — only supported by adapters
++   * that expose skill management (e.g., Copilot SDK).
++   */
++  readonly setSkillEnabled?: (
++    skillName: string,
++    enabled: boolean,
++  ) => Effect.Effect<void, TError>;
++
+   /**
+    * Canonical runtime event stream emitted by this adapter.
+    */
+diff --git a/apps/server/src/provider/Services/ProviderRegistry.ts b/apps/server/src/provider/Services/ProviderRegistry.ts
+index b7426b30..9a710ca1 100644
+--- a/apps/server/src/provider/Services/ProviderRegistry.ts
++++ b/apps/server/src/provider/Services/ProviderRegistry.ts
+@@ -74,6 +74,16 @@ export interface ProviderRegistryShape {
+    * change. The array contains the full current state.
+    */
+   readonly streamChanges: Stream.Stream<ReadonlyArray<ServerProvider>>;
++
++  /**
++   * Toggle a skill on a provider instance. Routes through the adapter's
++   * `setSkillEnabled` if supported. No-op if the adapter doesn't support it.
++   */
++  readonly setSkillEnabled: (
++    instanceId: ProviderInstanceId,
++    skillName: string,
++    enabled: boolean,
++  ) => Effect.Effect<void>;
+ }
+ 
+ export class ProviderRegistry extends Context.Service<ProviderRegistry, ProviderRegistryShape>()(
+diff --git a/apps/server/src/provider/providerMaintenanceRunner.test.ts b/apps/server/src/provider/providerMaintenanceRunner.test.ts
+index 5f5f975a..91ccd3e2 100644
+--- a/apps/server/src/provider/providerMaintenanceRunner.test.ts
++++ b/apps/server/src/provider/providerMaintenanceRunner.test.ts
+@@ -188,6 +188,7 @@ function makeRegistry(
+       getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
+         Effect.succeed(lifecycleFor(provider)),
+       setProviderMaintenanceActionState,
++      setSkillEnabled: () => Effect.void,
+       streamChanges: Stream.empty,
+     };
+ 
+diff --git a/apps/server/src/ws.ts b/apps/server/src/ws.ts
+index f87bff7b..250291b0 100644
+--- a/apps/server/src/ws.ts
++++ b/apps/server/src/ws.ts
+@@ -28,6 +28,7 @@ import {
+   ProjectWriteFileError,
+   OrchestrationReplayEventsError,
+   FilesystemBrowseError,
++  type ProviderInstanceId,
+   ThreadId,
+   type TerminalEvent,
+   WS_METHODS,
+@@ -852,6 +853,16 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
+               "rpc.aggregate": "server",
+             },
+           ),
++        [WS_METHODS.serverSetSkillEnabled]: (input: { instanceId: ProviderInstanceId; skillName: string; enabled: boolean }) =>
++          observeRpcEffect(
++            WS_METHODS.serverSetSkillEnabled,
++            Effect.gen(function* () {
++              yield* providerRegistry.setSkillEnabled(input.instanceId, input.skillName, input.enabled);
++              const providers = yield* providerRegistry.refreshInstance(input.instanceId);
++              return { providers };
++            }),
++            { "rpc.aggregate": "server" },
++          ),
+         [WS_METHODS.serverUpsertKeybinding]: (rule) =>
+           observeRpcEffect(
+             WS_METHODS.serverUpsertKeybinding,
+diff --git a/packages/contracts/src/rpc.ts b/packages/contracts/src/rpc.ts
+index eb0c82be..5d1f0ac5 100644
+--- a/packages/contracts/src/rpc.ts
++++ b/packages/contracts/src/rpc.ts
+@@ -3,6 +3,7 @@ import * as Rpc from "effect/unstable/rpc/Rpc";
+ import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
+ 
+ import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
++import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+ import { AuthAccessStreamEvent } from "./auth.ts";
+ import {
+   FilesystemBrowseInput,
+@@ -142,6 +143,7 @@ export const WS_METHODS = {
+   serverRemoveKeybinding: "server.removeKeybinding",
+   serverGetSettings: "server.getSettings",
+   serverUpdateSettings: "server.updateSettings",
++  serverSetSkillEnabled: "server.setSkillEnabled",
+   serverDiscoverSourceControl: "server.discoverSourceControl",
+   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
+   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
+@@ -209,6 +211,15 @@ export const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSetting
+   error: ServerSettingsError,
+ });
+ 
++export const WsServerSetSkillEnabledRpc = Rpc.make(WS_METHODS.serverSetSkillEnabled, {
++  payload: Schema.Struct({
++    instanceId: ProviderInstanceId,
++    skillName: TrimmedNonEmptyString,
++    enabled: Schema.Boolean,
++  }),
++  success: ServerProviderUpdatedPayload,
++});
++
+ export const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
+   payload: Schema.Struct({}),
+   success: SourceControlDiscoveryResult,

@@ -1,0 +1,22 @@
+{
+  "id": "copilot-skill-controls-ui",
+  "slug": "copilot-skill-controls-ui",
+  "title": "Add UI toggle for enabling/disabling individual Copilot skills mid-session. Extend the skill autocomplete dropdown or add a skill management panel where each discovered skill shows an enable/disable toggle. Toggling calls the server.setSkillEnabled WS RPC endpoint and refreshes the provider snapshot to reflect the new state.",
+  "state": "requested",
+  "compatibility": "unknown",
+  "requested_at": "2026-05-20T01:06:33Z",
+  "updated_at": "2026-05-20T01:06:33Z",
+  "last_command": "add",
+  "apply": {},
+  "reconcile": {},
+  "depends_on": [
+    {
+      "slug": "copilot-skill-controls-ws-rpc",
+      "kind": "hard"
+    },
+    {
+      "slug": "copilot-skill-discovery",
+      "kind": "soft"
+    }
+  ]
+}

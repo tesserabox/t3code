@@ -1,0 +1,48 @@
+{
+  "feature": "system-generated-turns",
+  "description": "Add system-event message role and system-generated turn support to the orchestration layer, with per-adapter mapping for each provider.",
+  "operations": [
+    {
+      "kind": "replace-in-file",
+      "path": "packages/contracts/src/orchestration.ts",
+      "search": "export const OrchestrationMessageRole = Schema.Literals([\"user\", \"assistant\", \"system\"]);",
+      "replace": "export const OrchestrationMessageRole = Schema.Literals([\"user\", \"assistant\", \"system\", \"system-event\"]);"
+    },
+    {
+      "kind": "replace-in-file",
+      "path": "packages/contracts/src/orchestration.ts",
+      "search": "export const OrchestrationMessage = Schema.Struct({\n  id: MessageId,\n  role: OrchestrationMessageRole,\n  text: Schema.String,\n  attachments: Schema.optional(Schema.Array(ChatAttachment)),\n  turnId: Schema.NullOr(TurnId),\n  streaming: Schema.Boolean,\n  createdAt: IsoDateTime,\n  updatedAt: IsoDateTime,\n});",
+      "replace": "export const OrchestrationMessageSource = Schema.Literals([\"user\", \"system\", \"trigger\"]);\nexport type OrchestrationMessageSource = typeof OrchestrationMessageSource.Type;\n\nexport const OrchestrationMessage = Schema.Struct({\n  id: MessageId,\n  role: OrchestrationMessageRole,\n  text: Schema.String,\n  attachments: Schema.optional(Schema.Array(ChatAttachment)),\n  turnId: Schema.NullOr(TurnId),\n  source: Schema.optional(OrchestrationMessageSource),\n  triggerRef: Schema.optional(Schema.String),\n  streaming: Schema.Boolean,\n  createdAt: IsoDateTime,\n  updatedAt: IsoDateTime,\n});"
+    },
+    {
+      "kind": "replace-in-file",
+      "path": "packages/contracts/src/orchestration.ts",
+      "search": "const InternalOrchestrationCommand = Schema.Union([\n  ThreadSessionSetCommand,",
+      "replace": "export const ThreadTurnStartSystemCommand = Schema.Struct({\n  type: Schema.Literal(\"thread.turn.start-system\"),\n  commandId: CommandId,\n  threadId: ThreadId,\n  message: Schema.Struct({\n    messageId: MessageId,\n    role: Schema.Literal(\"system-event\"),\n    text: Schema.String,\n  }),\n  triggerRef: Schema.optional(Schema.String),\n  createdAt: IsoDateTime,\n});\n\nconst InternalOrchestrationCommand = Schema.Union([\n  ThreadTurnStartSystemCommand,\n  ThreadSessionSetCommand,"
+    },
+    {
+      "kind": "replace-in-file",
+      "path": "apps/server/src/orchestration/decider.ts",
+      "search": "    case \"thread.turn.interrupt\": {",
+      "replace": "    case \"thread.turn.start-system\": {\n      const targetThread = yield* requireThread({\n        readModel,\n        command,\n        threadId: command.threadId,\n      });\n      const userMessageEvent: Omit<OrchestrationEvent, \"sequence\"> = {\n        ...withEventBase({\n          aggregateKind: \"thread\",\n          aggregateId: command.threadId,\n          occurredAt: command.createdAt,\n          commandId: command.commandId,\n        }),\n        type: \"thread.message-sent\",\n        payload: {\n          threadId: command.threadId,\n          messageId: command.message.messageId,\n          role: \"system-event\",\n          text: command.message.text,\n          attachments: [],\n          turnId: null,\n          source: \"system\",\n          triggerRef: command.triggerRef ?? null,\n          streaming: false,\n          createdAt: command.createdAt,\n          updatedAt: command.createdAt,\n        },\n      };\n      const turnStartRequestedEvent: Omit<OrchestrationEvent, \"sequence\"> = {\n        ...withEventBase({\n          aggregateKind: \"thread\",\n          aggregateId: command.threadId,\n          occurredAt: command.createdAt,\n          commandId: command.commandId,\n        }),\n        causationEventId: userMessageEvent.eventId,\n        type: \"thread.turn-start-requested\",\n        payload: {\n          threadId: command.threadId,\n          messageId: command.message.messageId,\n          runtimeMode: targetThread.runtimeMode,\n          interactionMode: targetThread.interactionMode,\n          createdAt: command.createdAt,\n        },\n      };\n      return [userMessageEvent, turnStartRequestedEvent];\n    }\n\n    case \"thread.turn.interrupt\": {"
+    },
+    {
+      "kind": "replace-in-file",
+      "path": "apps/server/src/orchestration/projector.ts",
+      "search": "    if (message.role === \"system\") {\n      retainedMessageIds.add(message.id);\n      continue;\n    }",
+      "replace": "    if (message.role === \"system\" || message.role === \"system-event\") {\n      retainedMessageIds.add(message.id);\n      continue;\n    }"
+    },
+    {
+      "kind": "replace-in-file",
+      "path": "apps/server/src/orchestration/Layers/ProviderCommandReactor.ts",
+      "search": "    if (!message || message.role !== \"user\") {",
+      "replace": "    if (!message || (message.role !== \"user\" && message.role !== \"system-event\")) {"
+    },
+    {
+      "kind": "replace-in-file",
+      "path": "apps/server/src/orchestration/Layers/ProviderCommandReactor.ts",
+      "search": "    const isFirstUserMessageTurn =\n      thread.messages.filter((entry) => entry.role === \"user\").length === 1;\n    if (isFirstUserMessageTurn) {",
+      "replace": "    const isSystemEventTurn = message.role === \"system-event\";\n    const isFirstUserMessageTurn =\n      !isSystemEventTurn && thread.messages.filter((entry) => entry.role === \"user\").length === 1;\n    if (isFirstUserMessageTurn) {"
+    }
+  ]
+}

@@ -1,0 +1,1837 @@
+diff --git a/apps/desktop/package.json b/apps/desktop/package.json
+index 2a4ced70..39675c2c 100644
+--- a/apps/desktop/package.json
++++ b/apps/desktop/package.json
+@@ -12,6 +12,7 @@
+     "start": "node scripts/start-electron.mjs",
+     "typecheck": "tsc --noEmit",
+     "test": "vitest run --passWithNoTests",
++    "test:wsl-support": "vitest run --passWithNoTests src/backendEnvironment.test.ts src/wslBackendTarget.test.ts src/wslServerBundle.test.ts",
+     "smoke-test": "node scripts/smoke-test.mjs"
+   },
+   "dependencies": {
+diff --git a/apps/desktop/src/backendEnvironment.test.ts b/apps/desktop/src/backendEnvironment.test.ts
+new file mode 100644
+index 00000000..f480554f
+--- /dev/null
++++ b/apps/desktop/src/backendEnvironment.test.ts
+@@ -0,0 +1,218 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++const { localTargetInstances, wslTargetInstances } = vi.hoisted(() => ({
++  localTargetInstances: [] as Array<{ readonly displayLabel: string; readonly type: "local" }>,
++  wslTargetInstances: [] as Array<{
++    readonly displayLabel: string;
++    readonly type: "wsl";
++    readonly distro: string | undefined;
++    readonly installSourceRoot: string | undefined;
++    readonly installFingerprint: string | undefined;
++  }>,
++}));
++
++const {
++  extractWslDistroFromPathMock,
++  getDefaultWslDistroMock,
++  isNodeAvailableInWslMock,
++  isWslAvailableMock,
++  isWslPathMock,
++  listWslDistrosMock,
++  prepareWslServerBundleMock,
++} = vi.hoisted(() => ({
++  extractWslDistroFromPathMock: vi.fn(),
++  getDefaultWslDistroMock: vi.fn(),
++  isNodeAvailableInWslMock: vi.fn(),
++  isWslAvailableMock: vi.fn(),
++  isWslPathMock: vi.fn(),
++  listWslDistrosMock: vi.fn(),
++  prepareWslServerBundleMock: vi.fn(),
++}));
++
++vi.mock("./backendTarget.ts", () => ({
++  LocalBackendTarget: class LocalBackendTarget {
++    readonly type = "local" as const;
++    readonly displayLabel = "Local";
++
++    constructor() {
++      localTargetInstances.push({
++        displayLabel: this.displayLabel,
++        type: this.type,
++      });
++    }
++
++    ensureReady(): boolean {
++      return true;
++    }
++
++    spawn(): never {
++      throw new Error("not implemented in test");
++    }
++
++    translatePath(hostPath: string): string {
++      return hostPath;
++    }
++
++    isAvailable(): boolean {
++      return true;
++    }
++  },
++}));
++
++vi.mock("./wslBackendTarget.ts", () => ({
++  WslBackendTarget: class WslBackendTarget {
++    readonly type = "wsl" as const;
++    readonly distro: string | undefined;
++    readonly installSourceRoot: string | undefined;
++    readonly installFingerprint: string | undefined;
++
++    constructor(options?: {
++      readonly distro?: string;
++      readonly installSourceRoot?: string;
++      readonly installFingerprint?: string;
++    }) {
++      this.distro = options?.distro;
++      this.installSourceRoot = options?.installSourceRoot;
++      this.installFingerprint = options?.installFingerprint;
++      wslTargetInstances.push({
++        displayLabel: this.displayLabel,
++        type: this.type,
++        distro: this.distro,
++        installSourceRoot: this.installSourceRoot,
++        installFingerprint: this.installFingerprint,
++      });
++    }
++
++    get displayLabel(): string {
++      return this.distro ? `WSL (${this.distro})` : "WSL";
++    }
++
++    ensureReady(): boolean {
++      return true;
++    }
++
++    spawn(): never {
++      throw new Error("not implemented in test");
++    }
++
++    translatePath(hostPath: string): string {
++      return hostPath;
++    }
++
++    isAvailable(): boolean {
++      return true;
++    }
++  },
++  extractWslDistroFromPath: extractWslDistroFromPathMock,
++  getDefaultWslDistro: getDefaultWslDistroMock,
++  isNodeAvailableInWsl: isNodeAvailableInWslMock,
++  isWslAvailable: isWslAvailableMock,
++  isWslPath: isWslPathMock,
++  listWslDistros: listWslDistrosMock,
++}));
++
++vi.mock("./wslServerBundle.ts", () => ({
++  prepareWslServerBundle: prepareWslServerBundleMock,
++}));
++
++import { createDefaultBackendEnvironmentManager } from "./backendEnvironment.ts";
++
++const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
++
++function setPlatform(platform: NodeJS.Platform): void {
++  Object.defineProperty(process, "platform", {
++    configurable: true,
++    value: platform,
++  });
++}
++
++describe("backendEnvironment", () => {
++  beforeEach(() => {
++    localTargetInstances.length = 0;
++    wslTargetInstances.length = 0;
++    extractWslDistroFromPathMock.mockReset();
++    getDefaultWslDistroMock.mockReset();
++    isNodeAvailableInWslMock.mockReset();
++    isWslAvailableMock.mockReset();
++    isWslPathMock.mockReset();
++    listWslDistrosMock.mockReset();
++    prepareWslServerBundleMock.mockReset();
++    setPlatform("win32");
++  });
++
++  afterEach(() => {
++    if (platformDescriptor) {
++      Object.defineProperty(process, "platform", platformDescriptor);
++    }
++  });
++
++  it("creates isolated base directories for local and per-distro WSL environments", () => {
++    isWslAvailableMock.mockReturnValue(true);
++    listWslDistrosMock.mockReturnValue([
++      { name: "Ubuntu-24.04", isDefault: true },
++      { name: "Debian", isDefault: false },
++    ]);
++    isNodeAvailableInWslMock.mockReturnValue(true);
++    getDefaultWslDistroMock.mockReturnValue("Ubuntu-24.04");
++    prepareWslServerBundleMock.mockReturnValue({
++      hostPath: "C:\\bundle",
++      fingerprint: "bundle-fingerprint",
++    });
++    isWslPathMock.mockImplementation((folderPath: string) => folderPath.startsWith("\\\\wsl"));
++    extractWslDistroFromPathMock.mockReturnValue("Debian");
++
++    const manager = createDefaultBackendEnvironmentManager({
++      rootBaseDir: "C:\\Users\\test\\.t3",
++      appRoot: "D:\\Development\\TesseraCode\\t3code",
++    });
++
++    expect(manager.primaryEnvironment.key).toBe("wsl:Ubuntu-24.04");
++    expect(manager.listEnvironments()).toEqual([
++      expect.objectContaining({
++        key: "local",
++        baseDir: "C:\\Users\\test\\.t3",
++      }),
++      expect.objectContaining({
++        key: "wsl:Ubuntu-24.04",
++        baseDir: "C:\\Users\\test\\.t3\\environments\\wsl\\ubuntu-24-04",
++      }),
++      expect.objectContaining({
++        key: "wsl:Debian",
++        baseDir: "C:\\Users\\test\\.t3\\environments\\wsl\\debian",
++      }),
++    ]);
++    expect(manager.resolveEnvironmentForPath("C:\\code").key).toBe("local");
++    expect(manager.resolveEnvironmentForPath("\\\\wsl.localhost\\Debian\\home\\test").key).toBe(
++      "wsl:Debian",
++    );
++    expect(wslTargetInstances).toEqual([
++      expect.objectContaining({
++        distro: "Ubuntu-24.04",
++        installSourceRoot: "C:\\bundle",
++        installFingerprint: "bundle-fingerprint",
++      }),
++      expect.objectContaining({
++        distro: "Debian",
++        installSourceRoot: "C:\\bundle",
++        installFingerprint: "bundle-fingerprint",
++      }),
++    ]);
++  });
++
++  it("falls back to the local environment when WSL environments are unavailable", () => {
++    isWslAvailableMock.mockReturnValue(false);
++    getDefaultWslDistroMock.mockReturnValue(undefined);
++    isWslPathMock.mockReturnValue(false);
++
++    const manager = createDefaultBackendEnvironmentManager({
++      rootBaseDir: "C:\\Users\\test\\.t3",
++      appRoot: "D:\\Development\\TesseraCode\\t3code",
++    });
++
++    expect(manager.primaryEnvironment.key).toBe("local");
++    expect(manager.listEnvironments()).toHaveLength(1);
++    expect(manager.resolveEnvironmentForPath("\\\\wsl.localhost\\Ubuntu\\home\\test").key).toBe(
++      "local",
++    );
++  });
++});
+diff --git a/apps/desktop/src/backendEnvironment.ts b/apps/desktop/src/backendEnvironment.ts
+new file mode 100644
+index 00000000..ed485b4d
+--- /dev/null
++++ b/apps/desktop/src/backendEnvironment.ts
+@@ -0,0 +1,132 @@
++import * as OS from "node:os";
++import * as Path from "node:path";
++
++import { LocalBackendTarget, type BackendTarget } from "./backendTarget.ts";
++import {
++  extractWslDistroFromPath,
++  getDefaultWslDistro,
++  isNodeAvailableInWsl,
++  isWslAvailable,
++  isWslPath,
++  listWslDistros,
++  WslBackendTarget,
++} from "./wslBackendTarget.ts";
++import { prepareWslServerBundle } from "./wslServerBundle.ts";
++
++export interface ManagedBackendEnvironment {
++  readonly key: string;
++  readonly displayLabel: string;
++  readonly kind: BackendTarget["type"];
++  readonly target: BackendTarget;
++  readonly baseDir: string;
++}
++
++export interface BackendEnvironmentManager {
++  readonly primaryEnvironment: ManagedBackendEnvironment;
++  listEnvironments(): readonly ManagedBackendEnvironment[];
++  getEnvironment(key: string): ManagedBackendEnvironment | undefined;
++  resolveEnvironmentForPath(folderPath: string): ManagedBackendEnvironment;
++}
++
++interface CreateDefaultBackendEnvironmentManagerOptions {
++  readonly rootBaseDir: string;
++  readonly appRoot: string;
++}
++
++function environmentPathFragment(value: string): string {
++  const normalized = value
++    .trim()
++    .toLowerCase()
++    .replace(/[^a-z0-9]+/g, "-")
++    .replace(/^-+|-+$/g, "");
++  return normalized.length > 0 ? normalized : "default";
++}
++
++function makeLocalEnvironment(rootBaseDir: string): ManagedBackendEnvironment {
++  const target = new LocalBackendTarget();
++  return {
++    key: "local",
++    displayLabel: target.displayLabel,
++    kind: target.type,
++    target,
++    baseDir: rootBaseDir,
++  };
++}
++
++function makeWslEnvironment(
++  rootBaseDir: string,
++  distro: string,
++  installSourceRoot: string,
++  installFingerprint: string,
++): ManagedBackendEnvironment {
++  const target = new WslBackendTarget({
++    distro,
++    installSourceRoot,
++    installFingerprint,
++  });
++  return {
++    key: `wsl:${distro}`,
++    displayLabel: target.displayLabel,
++    kind: target.type,
++    target,
++    baseDir: Path.join(rootBaseDir, "environments", "wsl", environmentPathFragment(distro)),
++  };
++}
++
++export function createDefaultBackendEnvironmentManager(
++  options: CreateDefaultBackendEnvironmentManagerOptions,
++): BackendEnvironmentManager {
++  const localEnvironment = makeLocalEnvironment(options.rootBaseDir);
++
++  const wslEnvironments =
++    process.platform === "win32" && isWslAvailable()
++      ? (() => {
++          const bundle = prepareWslServerBundle({
++            appRoot: options.appRoot,
++            cacheRoot: Path.join(OS.homedir(), ".t3", "wsl-server-bundles"),
++          });
++          if (!bundle) {
++            return [];
++          }
++
++          return listWslDistros()
++            .filter((distro) => isNodeAvailableInWsl(distro.name))
++            .map((distro) =>
++              makeWslEnvironment(
++                options.rootBaseDir,
++                distro.name,
++                bundle.hostPath,
++                bundle.fingerprint,
++              ),
++            );
++        })()
++      : [];
++
++  const allEnvironments = [localEnvironment, ...wslEnvironments];
++  const byKey = new Map(allEnvironments.map((environment) => [environment.key, environment]));
++  const defaultDistro = getDefaultWslDistro();
++  const primaryEnvironment =
++    (defaultDistro ? byKey.get(`wsl:${defaultDistro}`) : undefined) ?? localEnvironment;
++
++  return {
++    primaryEnvironment,
++    listEnvironments(): readonly ManagedBackendEnvironment[] {
++      return allEnvironments;
++    },
++    getEnvironment(key: string): ManagedBackendEnvironment | undefined {
++      return byKey.get(key);
++    },
++    resolveEnvironmentForPath(folderPath: string): ManagedBackendEnvironment {
++      if (!isWslPath(folderPath)) {
++        return localEnvironment;
++      }
++
++      const distro = extractWslDistroFromPath(folderPath);
++      if (!distro) {
++        return localEnvironment;
++      }
++
++      return byKey.get(`wsl:${distro}`) ?? localEnvironment;
++    },
++  };
++}
+diff --git a/apps/desktop/src/backendTarget.ts b/apps/desktop/src/backendTarget.ts
+index 2499b62b..a50391d6 100644
+--- a/apps/desktop/src/backendTarget.ts
++++ b/apps/desktop/src/backendTarget.ts
+@@ -44,6 +44,11 @@ export interface BackendTarget {
+   readonly type: "local" | "wsl";
+   /** Human-readable label for UI display */
+   readonly displayLabel: string;
++  /**
++   * Prepare the target for startup, performing any one-time setup required
++   * before the backend process can be spawned.
++   */
++  ensureReady(): boolean;
+   /**
+    * Spawn the backend server process.
+    * The caller is responsible for event handling (error, exit, readiness detection).
+@@ -99,6 +104,10 @@ export class LocalBackendTarget implements BackendTarget {
+   readonly type = "local" as const;
+   readonly displayLabel = "Local";
+ 
++  ensureReady(): boolean {
++    return this.isAvailable();
++  }
++
+   spawn(
+     config: BackendBootstrapConfig,
+     options: {
+@@ -147,6 +156,7 @@ import {
+   getDefaultWslDistro,
+   isNodeAvailableInWsl,
+ } from "./wslBackendTarget.ts";
++import { prepareWslServerBundle } from "./wslServerBundle.ts";
+ 
+ /**
+  * Create the default backend target.
+@@ -159,9 +169,16 @@ export function createDefaultBackendTarget(): BackendTarget {
+   if (process.platform === "win32" && isWslAvailable()) {
+     const distro = getDefaultWslDistro();
+     if (distro && isNodeAvailableInWsl(distro)) {
+-      const wsl = new WslBackendTarget({ distro });
+-      if (wsl.isAvailable()) {
+-        return wsl;
++      const bundle = prepareWslServerBundle({
++        appRoot: resolveAppRoot(),
++        cacheRoot: Path.join(OS.homedir(), ".t3", "wsl-server-bundles"),
++      });
++      if (bundle) {
++        return new WslBackendTarget({
++          distro,
++          installSourceRoot: bundle.hostPath,
++          installFingerprint: bundle.fingerprint,
++        });
+       }
+     }
+   }
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index 2f0434bd..9965f82d 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -75,7 +75,11 @@ import {
+ } from "./updateMachine.ts";
+ import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch.ts";
+ import { resolveDesktopAppBranding } from "./appBranding.ts";
+-import { createDefaultBackendTarget, type BackendTarget } from "./backendTarget.ts";
++import {
++  createDefaultBackendEnvironmentManager,
++  type ManagedBackendEnvironment,
++} from "./backendEnvironment.ts";
++import { type BackendTarget } from "./backendTarget.ts";
+ 
+ syncShellEnvironment();
+ 
+@@ -212,7 +216,13 @@ let backendEndpointUrl: string | null = null;
+ let backendAdvertisedHost: string | null = null;
+ let backendReadinessAbortController: AbortController | null = null;
+ let backendInitialWindowOpenInFlight: Promise<void> | null = null;
+-const backendTarget: BackendTarget = createDefaultBackendTarget();
++const primaryBackendEnvironment: ManagedBackendEnvironment = createDefaultBackendEnvironmentManager(
++  {
++    rootBaseDir: BASE_DIR,
++    appRoot: ROOT_DIR,
++  },
++).primaryEnvironment;
++const backendTarget: BackendTarget = primaryBackendEnvironment.target;
+ let backendListeningDetector: ServerListeningDetector | null = null;
+ let restartAttempt = 0;
+ let restartTimer: ReturnType<typeof setTimeout> | null = null;
+@@ -1366,7 +1376,7 @@ function startBackend(): void {
+ 
+   backendObservabilitySettings = readPersistedBackendObservabilitySettings();
+ 
+-  if (!backendTarget.isAvailable()) {
++  if (!backendTarget.ensureReady()) {
+     scheduleBackendRestart(`backend target '${backendTarget.displayLabel}' is not available`);
+     return;
+   }
+@@ -1377,7 +1387,7 @@ function startBackend(): void {
+       mode: "desktop",
+       noBrowser: true,
+       port: backendPort,
+-      t3Home: BASE_DIR,
++      t3Home: primaryBackendEnvironment.baseDir,
+       host: backendBindHost,
+       desktopBootstrapToken: backendBootstrapToken,
+       ...(backendObservabilitySettings.otlpTracesUrl
+@@ -1409,7 +1419,7 @@ function startBackend(): void {
+   };
+   writeBackendSessionBoundary(
+     "START",
+-    `pid=${child.pid ?? "unknown"} port=${backendPort} target=${backendTarget.displayLabel}`,
++    `pid=${child.pid ?? "unknown"} port=${backendPort} target=${backendTarget.displayLabel} baseDir=${primaryBackendEnvironment.baseDir}`,
+   );
+   captureBackendOutput(child);
+ 
+@@ -1542,7 +1552,7 @@ function registerIpcHandlers(): void {
+   ipcMain.removeAllListeners(GET_LOCAL_ENVIRONMENT_BOOTSTRAP_CHANNEL);
+   ipcMain.on(GET_LOCAL_ENVIRONMENT_BOOTSTRAP_CHANNEL, (event) => {
+     event.returnValue = {
+-      label: "Local environment",
++      label: primaryBackendEnvironment.displayLabel,
+       httpBaseUrl: backendHttpUrl || null,
+       wsBaseUrl: backendWsUrl || null,
+       bootstrapToken: backendBootstrapToken || undefined,
+diff --git a/apps/desktop/src/wslBackendTarget.test.ts b/apps/desktop/src/wslBackendTarget.test.ts
+new file mode 100644
+index 00000000..109f4736
+--- /dev/null
++++ b/apps/desktop/src/wslBackendTarget.test.ts
+@@ -0,0 +1,163 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++const { execFileSyncMock, spawnMock } = vi.hoisted(() => ({
++  execFileSyncMock: vi.fn(),
++  spawnMock: vi.fn(),
++}));
++
++vi.mock("node:child_process", () => ({
++  execFileSync: execFileSyncMock,
++  spawn: spawnMock,
++}));
++
++import {
++  canReachNpmRegistryInWsl,
++  installServerInWsl,
++  listWslDistros,
++  WslBackendTarget,
++} from "./wslBackendTarget.ts";
++
++const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
++
++function setPlatform(platform: NodeJS.Platform): void {
++  Object.defineProperty(process, "platform", {
++    configurable: true,
++    value: platform,
++  });
++}
++
++describe("wslBackendTarget", () => {
++  beforeEach(() => {
++    execFileSyncMock.mockReset();
++    spawnMock.mockReset();
++    setPlatform("win32");
++  });
++
++  afterEach(() => {
++    if (platformDescriptor) {
++      Object.defineProperty(process, "platform", platformDescriptor);
++    }
++  });
++
++  it("decodes UTF-16LE distro names from wsl.exe", () => {
++    execFileSyncMock.mockReturnValue(Buffer.from("\uFEFFUbuntu-24.04\nDebian\n", "utf16le"));
++
++    expect(listWslDistros()).toEqual([
++      { name: "Ubuntu-24.04", isDefault: true },
++      { name: "Debian", isDefault: false },
++    ]);
++    expect(execFileSyncMock).toHaveBeenCalledWith(
++      "wsl.exe",
++      ["--list", "--quiet"],
++      expect.objectContaining({ timeout: 10000 }),
++    );
++  });
++
++  it("installs the staged server bundle inside WSL using npm instead of copying Windows node_modules", () => {
++    execFileSyncMock
++      .mockReturnValueOnce(Buffer.from(""))
++      .mockReturnValueOnce("/mnt/c/Users/test/bundle\n")
++      .mockReturnValueOnce(Buffer.from(""))
++      .mockReturnValueOnce(Buffer.from(""));
++
++    const installed = installServerInWsl("C:\\Users\\test\\bundle", "Ubuntu-24.04");
++
++    expect(installed).toBe(true);
++    expect(execFileSyncMock).toHaveBeenNthCalledWith(
++      1,
++      "wsl.exe",
++      [
++        "-d",
++        "Ubuntu-24.04",
++        "--exec",
++        "bash",
++        "-c",
++        expect.stringContaining("npm ping --loglevel error >/dev/null"),
++      ],
++      expect.objectContaining({ timeout: 20000 }),
++    );
++    expect(execFileSyncMock).toHaveBeenNthCalledWith(
++      2,
++      "wsl.exe",
++      ["-d", "Ubuntu-24.04", "--exec", "wslpath", "-u", "C:\\Users\\test\\bundle"],
++      expect.objectContaining({ encoding: "utf-8", timeout: 5000 }),
++    );
++
++    const installArgs = execFileSyncMock.mock.calls[2]?.[1] as string[];
++    const installScript = installArgs[5];
++
++    expect(installArgs).toEqual([
++      "-d",
++      "Ubuntu-24.04",
++      "--exec",
++      "bash",
++      "-c",
++      expect.any(String),
++      "bash",
++      "/mnt/c/Users/test/bundle",
++    ]);
++    expect(installScript).toContain(
++      "npm install --omit=dev --no-package-lock --no-audit --no-fund",
++    );
++    expect(installScript).not.toContain("node_modules");
++  });
++
++  it("fails fast when the npm registry is unreachable from WSL", () => {
++    execFileSyncMock.mockImplementation(() => {
++      throw new Error("connect ETIMEDOUT");
++    });
++
++    expect(canReachNpmRegistryInWsl("Ubuntu-24.04")).toBe(false);
++    expect(installServerInWsl("C:\\Users\\test\\bundle", "Ubuntu-24.04")).toBe(false);
++    expect(execFileSyncMock).toHaveBeenCalledTimes(2);
++  });
++
++  it("reinstalls the bundle when the installed fingerprint is stale", () => {
++    execFileSyncMock.mockImplementation((file: string, args: string[]) => {
++      if (file !== "wsl.exe") {
++        throw new Error(`Unexpected command: ${file}`);
++      }
++
++      const command = args.join(" ");
++      if (command.includes("--status")) {
++        return Buffer.from("");
++      }
++      if (command.includes("node --version")) {
++        return Buffer.from("v24.13.1\n");
++      }
++      if (command.includes("npm ping --loglevel error >/dev/null")) {
++        return Buffer.from("");
++      }
++      if (command.includes('test -f "$HOME/.t3/server/apps/server/dist/bin.mjs"')) {
++        return Buffer.from("");
++      }
++      if (command.includes('cat "$HOME/.t3/server/.wsl-bundle-fingerprint"')) {
++        return "stale-fingerprint\n";
++      }
++      if (command.includes("wslpath -u C:\\Users\\test\\bundle")) {
++        return "/mnt/c/Users/test/bundle\n";
++      }
++      if (command.includes("npm install --omit=dev --no-package-lock --no-audit --no-fund")) {
++        return Buffer.from("");
++      }
++
++      throw new Error(`Unexpected wsl.exe args: ${command}`);
++    });
++
++    const target = new WslBackendTarget({
++      distro: "Ubuntu-24.04",
++      installSourceRoot: "C:\\Users\\test\\bundle",
++      installFingerprint: "expected-fingerprint",
++    });
++
++    expect(target.ensureReady()).toBe(true);
++    expect(
++      execFileSyncMock.mock.calls.some(
++        ([file, args]) =>
++          file === "wsl.exe" &&
++          Array.isArray(args) &&
++          args.some((value) => typeof value === "string" && value.includes("npm install")),
++      ),
++    ).toBe(true);
++  });
++});
+diff --git a/apps/desktop/src/wslBackendTarget.ts b/apps/desktop/src/wslBackendTarget.ts
+index bf7160fc..e8b914ee 100644
+--- a/apps/desktop/src/wslBackendTarget.ts
++++ b/apps/desktop/src/wslBackendTarget.ts
+@@ -68,6 +68,26 @@ function wslTest(
+   }
+ }
+ 
++function formatExecFileSyncError(error: unknown): string | undefined {
++  if (!(error instanceof Error)) {
++    return undefined;
++  }
++
++  const withStreams = error as Error & {
++    readonly stdout?: Buffer | string;
++    readonly stderr?: Buffer | string;
++  };
++  const stderr = withStreams.stderr?.toString().trim();
++  if (stderr && stderr.length > 0) {
++    return stderr;
++  }
++  const stdout = withStreams.stdout?.toString().trim();
++  if (stdout && stdout.length > 0) {
++    return stdout;
++  }
++  return error.message;
++}
++
+ // ── Node.js Resolution ─────────────────────────────────────────────────
+ 
+ /**
+@@ -129,7 +149,8 @@ export function listWslDistros(): WslDistro[] {
+     const output = raw
+       .toString("utf16le")
+       .replace(/^\uFEFF/, "")
+-      .replace(/\0/g, "");
++      .split("\0")
++      .join("");
+     const lines = output
+       .split(/\r?\n/)
+       .map((line) => line.trim())
+@@ -198,6 +219,7 @@ function manualWindowsToWslPath(windowsPath: string): string {
+ // ── Server Installation ────────────────────────────────────────────────
+ 
+ const WSL_SERVER_DIR = ".t3/server";
++const WSL_SERVER_FINGERPRINT_FILE = ".wsl-bundle-fingerprint";
+ 
+ /**
+  * Check if the server is installed inside a WSL distro.
+@@ -209,6 +231,13 @@ export function isServerInstalledInWsl(distro?: string): boolean {
+   });
+ }
+ 
++function readInstalledWslServerFingerprint(distro?: string): string | undefined {
++  return wslExec(["bash", "-c", `cat "$HOME/${WSL_SERVER_DIR}/${WSL_SERVER_FINGERPRINT_FILE}"`], {
++    distro,
++    timeout: 5000,
++  });
++}
++
+ /**
+  * Check if Node.js is available inside a WSL distro.
+  * Handles nvm / fnm managed installs by sourcing their init scripts.
+@@ -227,6 +256,35 @@ export function isNodeAvailableInWsl(distro?: string): boolean {
+   }
+ }
+ 
++export function canReachNpmRegistryInWsl(distro?: string): boolean {
++  if (process.platform !== "win32") return false;
++  try {
++    ChildProcess.execFileSync(
++      "wsl.exe",
++      [
++        ...distroArgs(distro),
++        "--exec",
++        "bash",
++        "-c",
++        `${NODE_RESOLVE_PREAMBLE}\nexport npm_config_fetch_retries=0 npm_config_fetch_timeout=15000\nnpm ping --loglevel error >/dev/null`,
++      ],
++      {
++        stdio: ["ignore", "pipe", "pipe"],
++        timeout: 20000,
++      },
++    );
++    return true;
++  } catch (error) {
++    const detail = formatExecFileSyncError(error);
++    if (detail) {
++      console.error(
++        `[desktop] WSL npm registry check failed${distro ? ` for ${distro}` : ""}: ${detail}`,
++      );
++    }
++    return false;
++  }
++}
++
+ /**
+  * Install the server bundle into a WSL distro's ~/.t3/server/ directory.
+  * Copies the built server dist from the Windows host into WSL.
+@@ -235,26 +293,61 @@ export function isNodeAvailableInWsl(distro?: string): boolean {
+ export function installServerInWsl(hostServerDir: string, distro?: string): boolean {
+   if (process.platform !== "win32") return false;
+ 
++  if (!canReachNpmRegistryInWsl(distro)) {
++    return false;
++  }
++
+   const wslServerDir = `$HOME/${WSL_SERVER_DIR}`;
+   const wslHostPath = windowsToWslPath(hostServerDir, distro);
+ 
+-  // Create target directory and copy server files
+   const script = [
+-    `mkdir -p "${wslServerDir}/apps/server"`,
+-    `cp -r "${wslHostPath}/apps/server/dist" "${wslServerDir}/apps/server/dist"`,
+-    // Copy package.json and node_modules if they exist
+-    `[ -f "${wslHostPath}/apps/server/package.json" ] && cp "${wslHostPath}/apps/server/package.json" "${wslServerDir}/apps/server/"`,
+-    `[ -d "${wslHostPath}/node_modules" ] && cp -r "${wslHostPath}/node_modules" "${wslServerDir}/node_modules"`,
+-    `[ -f "${wslHostPath}/package.json" ] && cp "${wslHostPath}/package.json" "${wslServerDir}/"`,
+-  ].join(" && ");
++    "set -euo pipefail",
++    NODE_RESOLVE_PREAMBLE,
++    'src="$1"',
++    `target="${wslServerDir}"`,
++    `fingerprint_file="${wslServerDir}/${WSL_SERVER_FINGERPRINT_FILE}"`,
++    'fingerprint="$(cat "$src/.wsl-bundle-fingerprint")"',
++    'installed_fingerprint=""',
++    'if [ -f "$fingerprint_file" ]; then',
++    '  installed_fingerprint="$(cat "$fingerprint_file")"',
++    "fi",
++    'if [ "$installed_fingerprint" = "$fingerprint" ] && [ -f "$target/apps/server/dist/bin.mjs" ]; then',
++    "  exit 0",
++    "fi",
++    'tmp="${target}.tmp.$$"',
++    'prev="${target}.prev"',
++    'rm -rf "$tmp" "$prev"',
++    'mkdir -p "$tmp/apps/server"',
++    'cp -R "$src/apps/server/dist" "$tmp/apps/server/"',
++    'cp "$src/apps/server/package.json" "$tmp/apps/server/package.json"',
++    'cd "$tmp/apps/server"',
++    "export npm_config_fetch_retries=1 npm_config_fetch_timeout=30000",
++    "npm install --omit=dev --no-package-lock --no-audit --no-fund",
++    `printf '%s\n' "$fingerprint" > "$tmp/${WSL_SERVER_FINGERPRINT_FILE}"`,
++    'if [ -d "$target" ]; then',
++    '  mv "$target" "$prev"',
++    "fi",
++    'mv "$tmp" "$target"',
++    'rm -rf "$prev"',
++  ].join("\n");
+ 
+   try {
+-    ChildProcess.execFileSync("wsl.exe", [...distroArgs(distro), "--exec", "bash", "-c", script], {
+-      stdio: "ignore",
+-      timeout: 120000,
+-    });
+-    return true;
+-  } catch {
++    ChildProcess.execFileSync(
++      "wsl.exe",
++      [...distroArgs(distro), "--exec", "bash", "-c", script, "bash", wslHostPath],
++      {
++        stdio: ["ignore", "pipe", "pipe"],
++        timeout: 180000,
++      },
++    );
++    return isServerInstalledInWsl(distro);
++  } catch (error) {
++    const detail = formatExecFileSyncError(error);
++    if (detail) {
++      console.error(
++        `[desktop] Failed to install WSL server bundle${distro ? ` for ${distro}` : ""}: ${detail}`,
++      );
++    }
+     return false;
+   }
+ }
+@@ -264,6 +357,10 @@ export function installServerInWsl(hostServerDir: string, distro?: string): bool
+ export interface WslBackendTargetOptions {
+   /** WSL distro name (defaults to the default distro) */
+   readonly distro?: string;
++  /** Staged Windows-side server bundle that can be copied into WSL */
++  readonly installSourceRoot?: string;
++  /** Fingerprint for the staged server bundle */
++  readonly installFingerprint?: string;
+ }
+ 
+ /**
+@@ -281,15 +378,44 @@ export interface WslBackendTargetOptions {
+ export class WslBackendTarget implements BackendTarget {
+   readonly type = "wsl" as const;
+   readonly distro: string | undefined;
++  readonly installSourceRoot: string | undefined;
++  readonly installFingerprint: string | undefined;
+ 
+   constructor(options?: WslBackendTargetOptions) {
+     this.distro = options?.distro;
++    this.installSourceRoot = options?.installSourceRoot;
++    this.installFingerprint = options?.installFingerprint;
+   }
+ 
+   get displayLabel(): string {
+     return this.distro ? `WSL (${this.distro})` : "WSL";
+   }
+ 
++  ensureReady(): boolean {
++    if (!isWslAvailable()) return false;
++
++    const distro = this.distro ?? getDefaultWslDistro();
++    if (!distro) return false;
++    if (!isNodeAvailableInWsl(distro)) return false;
++
++    const serverInstalled = isServerInstalledInWsl(distro);
++    if (serverInstalled) {
++      if (!this.installFingerprint) {
++        return true;
++      }
++      const installedFingerprint = readInstalledWslServerFingerprint(distro);
++      if (installedFingerprint === this.installFingerprint) {
++        return true;
++      }
++    }
++
++    if (!this.installSourceRoot) {
++      return false;
++    }
++
++    return installServerInWsl(this.installSourceRoot, distro);
++  }
++
+   spawn(
+     config: BackendBootstrapConfig,
+     options: {
+@@ -343,7 +469,12 @@ export class WslBackendTarget implements BackendTarget {
+     const distro = this.distro ?? getDefaultWslDistro();
+     if (!distro) return false;
+     if (!isNodeAvailableInWsl(distro)) return false;
+-    return isServerInstalledInWsl(distro);
++    if (!isServerInstalledInWsl(distro)) {
++      return false;
++    }
++    return this.installFingerprint
++      ? readInstalledWslServerFingerprint(distro) === this.installFingerprint
++      : true;
+   }
+ }
+ 
+diff --git a/apps/desktop/src/wslServerBundle.test.ts b/apps/desktop/src/wslServerBundle.test.ts
+new file mode 100644
+index 00000000..5f2707ac
+--- /dev/null
++++ b/apps/desktop/src/wslServerBundle.test.ts
+@@ -0,0 +1,55 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++
++import { describe, expect, it } from "vitest";
++
++import { createWslServerRuntimePackageJson, prepareWslServerBundle } from "./wslServerBundle.ts";
++
++describe("wslServerBundle", () => {
++  it("creates a runtime package manifest with resolved dependency versions", () => {
++    const runtimePackageJson = createWslServerRuntimePackageJson();
++
++    expect(runtimePackageJson.name).toBe("t3");
++    expect(runtimePackageJson.dependencies.effect).not.toContain("catalog:");
++    expect(runtimePackageJson.dependencies["@effect/platform-node"]).not.toContain("catalog:");
++    expect(Object.values(runtimePackageJson.dependencies)).not.toContain("workspace:*");
++  });
++
++  it("stages a portable server bundle and fingerprints dist changes", () => {
++    const appRoot = fs.mkdtempSync(path.join(os.tmpdir(), "t3-wsl-bundle-app-"));
++    const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "t3-wsl-bundle-cache-"));
++    const sourceDistDir = path.join(appRoot, "apps", "server", "dist", "nested");
++
++    try {
++      fs.mkdirSync(sourceDistDir, { recursive: true });
++      fs.writeFileSync(path.join(appRoot, "apps", "server", "dist", "bin.mjs"), "export {}\n");
++      fs.writeFileSync(path.join(sourceDistDir, "worker.mjs"), "export const worker = true\n");
++
++      const first = prepareWslServerBundle({ appRoot, cacheRoot });
++
++      expect(first).toBeDefined();
++      expect(fs.existsSync(path.join(first!.hostPath, "apps", "server", "dist", "bin.mjs"))).toBe(
++        true,
++      );
++      expect(fs.existsSync(path.join(first!.hostPath, "apps", "server", "package.json"))).toBe(
++        true,
++      );
++
++      const initialFingerprint = first!.fingerprint;
++      fs.writeFileSync(
++        path.join(appRoot, "apps", "server", "dist", "bin.mjs"),
++        "export const ready = true\n",
++      );
++
++      const second = prepareWslServerBundle({ appRoot, cacheRoot });
++
++      expect(second).toBeDefined();
++      expect(second!.fingerprint).not.toBe(initialFingerprint);
++      expect(second!.hostPath).not.toBe(first!.hostPath);
++    } finally {
++      fs.rmSync(appRoot, { recursive: true, force: true });
++      fs.rmSync(cacheRoot, { recursive: true, force: true });
++    }
++  });
++});
+diff --git a/apps/desktop/src/wslServerBundle.ts b/apps/desktop/src/wslServerBundle.ts
+new file mode 100644
+index 00000000..d655a978
+--- /dev/null
++++ b/apps/desktop/src/wslServerBundle.ts
+@@ -0,0 +1,136 @@
++import * as Crypto from "node:crypto";
++import * as FS from "node:fs";
++import * as OS from "node:os";
++import * as Path from "node:path";
++
++import rootPackageJson from "../../../package.json" with { type: "json" };
++import serverPackageJson from "../../server/package.json" with { type: "json" };
++
++interface WslServerRuntimePackageJson {
++  readonly name: string;
++  readonly version: string;
++  readonly repository: {
++    readonly type: string;
++    readonly url: string;
++    readonly directory: string;
++  };
++  readonly bin: Record<string, string>;
++  readonly type: string;
++  readonly engines: Record<string, string>;
++  readonly files: string[];
++  readonly dependencies: Record<string, string>;
++  readonly overrides: Record<string, string>;
++}
++
++export interface PreparedWslServerBundle {
++  readonly hostPath: string;
++  readonly fingerprint: string;
++}
++
++function resolveCatalogDependencies(
++  dependencies: Record<string, string>,
++  catalog: Record<string, string>,
++  label: string,
++): Record<string, string> {
++  return Object.fromEntries(
++    Object.entries(dependencies).map(([name, spec]) => {
++      if (typeof spec !== "string" || !spec.startsWith("catalog:")) {
++        return [name, spec];
++      }
++
++      const catalogKey = spec.slice("catalog:".length).trim();
++      const lookupKey = catalogKey.length > 0 ? catalogKey : name;
++      const resolved = catalog[lookupKey];
++
++      if (typeof resolved !== "string" || resolved.length === 0) {
++        throw new Error(
++          `Unable to resolve '${spec}' for ${label} dependency '${name}'. Expected key '${lookupKey}' in root workspace catalog.`,
++        );
++      }
++
++      return [name, resolved];
++    }),
++  );
++}
++
++export function createWslServerRuntimePackageJson(): WslServerRuntimePackageJson {
++  return {
++    name: serverPackageJson.name,
++    version: serverPackageJson.version,
++    repository: serverPackageJson.repository,
++    bin: serverPackageJson.bin,
++    type: serverPackageJson.type,
++    engines: serverPackageJson.engines,
++    files: serverPackageJson.files,
++    dependencies: resolveCatalogDependencies(
++      serverPackageJson.dependencies,
++      rootPackageJson.workspaces.catalog,
++      "apps/server",
++    ),
++    overrides: resolveCatalogDependencies(
++      rootPackageJson.overrides,
++      rootPackageJson.workspaces.catalog,
++      "apps/server",
++    ),
++  };
++}
++
++function updateHashFromDirectory(hash: Crypto.Hash, directory: string, relativeRoot = ""): void {
++  const entries = FS.readdirSync(directory, { withFileTypes: true }).toSorted((left, right) =>
++    left.name.localeCompare(right.name),
++  );
++
++  for (const entry of entries) {
++    const absolutePath = Path.join(directory, entry.name);
++    const relativePath = relativeRoot.length > 0 ? `${relativeRoot}/${entry.name}` : entry.name;
++    hash.update(relativePath);
++
++    if (entry.isDirectory()) {
++      hash.update("dir");
++      updateHashFromDirectory(hash, absolutePath, relativePath);
++      continue;
++    }
++
++    if (entry.isFile()) {
++      hash.update("file");
++      hash.update(FS.readFileSync(absolutePath));
++    }
++  }
++}
++
++function computeBundleFingerprint(sourceDistDir: string, runtimePackageJson: string): string {
++  const hash = Crypto.createHash("sha256");
++  hash.update(runtimePackageJson);
++  updateHashFromDirectory(hash, sourceDistDir);
++  return hash.digest("hex").slice(0, 16);
++}
++
++export function prepareWslServerBundle(input: {
++  readonly appRoot: string;
++  readonly cacheRoot?: string;
++}): PreparedWslServerBundle | undefined {
++  const sourceDistDir = Path.join(input.appRoot, "apps/server/dist");
++  const sourceEntry = Path.join(sourceDistDir, "bin.mjs");
++  if (!FS.existsSync(sourceEntry)) {
++    return undefined;
++  }
++
++  const runtimePackageJson = `${JSON.stringify(createWslServerRuntimePackageJson(), null, 2)}\n`;
++  const fingerprint = computeBundleFingerprint(sourceDistDir, runtimePackageJson);
++  const cacheRoot = input.cacheRoot ?? Path.join(OS.homedir(), ".t3", "wsl-server-bundles");
++  const bundleDir = Path.join(cacheRoot, fingerprint);
++  const fingerprintFile = Path.join(bundleDir, ".wsl-bundle-fingerprint");
++
++  if (!FS.existsSync(fingerprintFile)) {
++    FS.rmSync(bundleDir, { recursive: true, force: true });
++    FS.mkdirSync(Path.join(bundleDir, "apps/server"), { recursive: true });
++    FS.cpSync(sourceDistDir, Path.join(bundleDir, "apps/server/dist"), { recursive: true });
++    FS.writeFileSync(Path.join(bundleDir, "apps/server/package.json"), runtimePackageJson);
++    FS.writeFileSync(fingerprintFile, `${fingerprint}\n`);
++  }
++
++  return {
++    hostPath: bundleDir,
++    fingerprint,
++  };
++}
+diff --git a/apps/web/src/components/ChatView.tsx b/apps/web/src/components/ChatView.tsx
+index 47dad09e..6d772a4c 100644
+--- a/apps/web/src/components/ChatView.tsx
++++ b/apps/web/src/components/ChatView.tsx
+@@ -34,7 +34,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+ import { useNavigate, useSearch } from "@tanstack/react-router";
+ import { useShallow } from "zustand/react/shallow";
+ import { useGitStatus } from "~/lib/gitStatusState";
+-import { usePrimaryEnvironmentId } from "../environments/primary";
++import { readPrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
+ import { readEnvironmentApi } from "../environmentApi";
+ import { isElectron } from "../env";
+ import { readLocalApi } from "../localApi";
+@@ -132,6 +132,7 @@ import {
+   type TerminalContextDraft,
+   type TerminalContextSelection,
+ } from "../lib/terminalContext";
++import { isReusableDraftForProjectRef } from "../lib/projectDrafts";
+ import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
+ import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
+@@ -643,13 +644,11 @@ export default function ChatView(props: ChatViewProps) {
+   );
+   const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
+   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
+-  const getDraftSessionByLogicalProjectKey = useComposerDraftStore(
+-    (store) => store.getDraftSessionByLogicalProjectKey,
++  const getDraftSessionByProjectRef = useComposerDraftStore(
++    (store) => store.getDraftSessionByProjectRef,
+   );
+   const getDraftSession = useComposerDraftStore((store) => store.getDraftSession);
+-  const setLogicalProjectDraftThreadId = useComposerDraftStore(
+-    (store) => store.setLogicalProjectDraftThreadId,
+-  );
++  const setProjectDraftThreadId = useComposerDraftStore((store) => store.setProjectDraftThreadId);
+   const draftThread = useComposerDraftStore((store) =>
+     routeKind === "server"
+       ? store.getDraftSessionByRef(routeThreadRef)
+@@ -926,22 +925,13 @@ export default function ChatView(props: ChatViewProps) {
+         throw new Error("No active project is available for this pull request.");
+       }
+       const activeProjectRef = scopeProjectRef(activeProject.environmentId, activeProject.id);
+-      const logicalProjectKey = deriveLogicalProjectKeyFromSettings(
+-        activeProject,
+-        projectGroupingSettings,
+-      );
+-      const storedDraftSession = getDraftSessionByLogicalProjectKey(logicalProjectKey);
++      const storedDraftSession = getDraftSessionByProjectRef(activeProjectRef);
+       if (storedDraftSession) {
+         setDraftThreadContext(storedDraftSession.draftId, input);
+-        setLogicalProjectDraftThreadId(
+-          logicalProjectKey,
+-          activeProjectRef,
+-          storedDraftSession.draftId,
+-          {
+-            threadId: storedDraftSession.threadId,
+-            ...input,
+-          },
+-        );
++        setProjectDraftThreadId(activeProjectRef, storedDraftSession.draftId, {
++          threadId: storedDraftSession.threadId,
++          ...input,
++        });
+         if (routeKind !== "draft" || draftId !== storedDraftSession.draftId) {
+           await navigate({
+             to: "/draft/$draftId",
+@@ -954,11 +944,12 @@ export default function ChatView(props: ChatViewProps) {
+       const activeDraftSession = routeKind === "draft" && draftId ? getDraftSession(draftId) : null;
+       if (
+         !isServerThread &&
+-        activeDraftSession?.logicalProjectKey === logicalProjectKey &&
+-        draftId
++        draftId &&
++        activeDraftSession &&
++        isReusableDraftForProjectRef(activeProjectRef, activeDraftSession)
+       ) {
+         setDraftThreadContext(draftId, input);
+-        setLogicalProjectDraftThreadId(logicalProjectKey, activeProjectRef, draftId, {
++        setProjectDraftThreadId(activeProjectRef, draftId, {
+           threadId: activeDraftSession.threadId,
+           createdAt: activeDraftSession.createdAt,
+           runtimeMode: activeDraftSession.runtimeMode,
+@@ -970,7 +961,7 @@ export default function ChatView(props: ChatViewProps) {
+ 
+       const nextDraftId = newDraftId();
+       const nextThreadId = newThreadId();
+-      setLogicalProjectDraftThreadId(logicalProjectKey, activeProjectRef, nextDraftId, {
++      setProjectDraftThreadId(activeProjectRef, nextDraftId, {
+         threadId: nextThreadId,
+         createdAt: new Date().toISOString(),
+         runtimeMode: DEFAULT_RUNTIME_MODE,
+@@ -987,13 +978,12 @@ export default function ChatView(props: ChatViewProps) {
+       activeProject,
+       draftId,
+       getDraftSession,
+-      getDraftSessionByLogicalProjectKey,
++      getDraftSessionByProjectRef,
+       isServerThread,
+       navigate,
+-      projectGroupingSettings,
+       routeKind,
+       setDraftThreadContext,
+-      setLogicalProjectDraftThreadId,
++      setProjectDraftThreadId,
+     ],
+   );
+ 
+@@ -1047,6 +1037,32 @@ export default function ChatView(props: ChatViewProps) {
+       ? primaryServerConfig
+       : (activeEnvRuntimeState?.serverConfig ?? primaryServerConfig);
+   const providerStatuses = serverConfig?.providers ?? EMPTY_PROVIDERS;
++  const activeEnvironmentLabel = useMemo(() => {
++    if (!activeThread?.environmentId) {
++      return null;
++    }
++
++    const isPrimary =
++      primaryEnvironmentId !== null && activeThread.environmentId === primaryEnvironmentId;
++
++    return resolveEnvironmentOptionLabel({
++      isPrimary,
++      environmentId: activeThread.environmentId,
++      runtimeLabel: isPrimary
++        ? (readPrimaryEnvironmentDescriptor()?.label ?? null)
++        : (activeEnvRuntimeState?.descriptor?.label ?? null),
++      savedLabel: savedEnvironmentRegistry[activeThread.environmentId]?.label ?? null,
++    });
++  }, [
++    activeEnvRuntimeState?.descriptor?.label,
++    activeThread,
++    primaryEnvironmentId,
++    savedEnvironmentRegistry,
++  ]);
++  const activeEnvironmentIsPrimary =
++    activeThread?.environmentId !== undefined &&
++    primaryEnvironmentId !== null &&
++    activeThread.environmentId === primaryEnvironmentId;
+   const unlockedSelectedProvider = resolveSelectableProvider(
+     providerStatuses,
+     selectedProviderByThreadId ?? threadProvider ?? "codex",
+@@ -1420,6 +1436,7 @@ export default function ChatView(props: ChatViewProps) {
+         worktreePath: activeThread?.worktreePath ?? null,
+       })
+     : null;
++  const activeWorkspacePath = gitCwd ?? activeProject?.cwd ?? null;
+   const gitStatusQuery = useGitStatus({ environmentId, cwd: gitCwd });
+   const keybindings = useServerKeybindings();
+   const availableEditors = useServerAvailableEditors();
+@@ -3223,6 +3240,9 @@ export default function ChatView(props: ChatViewProps) {
+           {...(routeKind === "draft" && draftId ? { draftId } : {})}
+           activeThreadTitle={activeThread.title}
+           activeProjectName={activeProject?.name}
++          activeEnvironmentLabel={activeEnvironmentLabel}
++          activeEnvironmentIsPrimary={activeEnvironmentIsPrimary}
++          activeWorkspacePath={activeWorkspacePath}
+           isGitRepo={isGitRepo}
+           openInCwd={gitCwd}
+           activeProjectScripts={activeProject?.scripts}
+diff --git a/apps/web/src/components/CommandPalette.tsx b/apps/web/src/components/CommandPalette.tsx
+index 929a9f87..7c600e17 100644
+--- a/apps/web/src/components/CommandPalette.tsx
++++ b/apps/web/src/components/CommandPalette.tsx
+@@ -58,6 +58,7 @@ import {
+   isExplicitRelativeProjectPath,
+   isFilesystemBrowseQuery,
+   isUnsupportedWindowsProjectPath,
++  normalizeProjectPathForEnvironmentInput,
+   resolveProjectPathForDispatch,
+ } from "../lib/projectPaths";
+ import { isTerminalFocused } from "../lib/terminalFocus";
+@@ -132,6 +133,20 @@ function getEnvironmentBrowsePlatform(os: string | null | undefined): string {
+   return typeof navigator === "undefined" ? "" : navigator.platform;
+ }
+ 
++function getBrowsePathExample(platform: string): string {
++  return isWindowsPlatform(platform) ? "C:\\Projects\\my-app" : "~/projects/my-app";
++}
++
++function getBrowseInputPlaceholder(input: {
++  mode: "root-browse" | "submenu-browse";
++  platform: string;
++  environmentLabel: string | null;
++}): string {
++  const prefix = input.mode === "root-browse" ? "Enter project path" : "Enter path";
++  const environmentSuffix = input.environmentLabel ? ` in ${input.environmentLabel}` : "";
++  return `${prefix}${environmentSuffix} (e.g. ${getBrowsePathExample(input.platform)})`;
++}
++
+ interface AddProjectEnvironmentOption {
+   readonly environmentId: EnvironmentId;
+   readonly label: string;
+@@ -280,37 +295,53 @@ function OpenCommandPaletteDialog() {
+     savedEnvironmentRegistry,
+     savedEnvironmentRuntimeById,
+   ]);
++  const getBrowsePlatformForEnvironment = useCallback(
++    (environmentId: EnvironmentId | null): string => {
++      const os =
++        environmentId && primaryEnvironmentId && environmentId === primaryEnvironmentId
++          ? (readPrimaryEnvironmentDescriptor()?.platform.os ?? null)
++          : environmentId
++            ? (savedEnvironmentRuntimeById[environmentId]?.descriptor?.platform.os ??
++              savedEnvironmentRuntimeById[environmentId]?.serverConfig?.environment.platform.os ??
++              null)
++            : null;
++      return getEnvironmentBrowsePlatform(os);
++    },
++    [primaryEnvironmentId, savedEnvironmentRuntimeById],
++  );
+   const defaultAddProjectEnvironmentId = addProjectEnvironmentOptions[0]?.environmentId ?? null;
+   const browseEnvironmentId = addProjectEnvironmentId ?? defaultAddProjectEnvironmentId;
+-  const browseEnvironmentPlatform = useMemo(() => {
+-    const os =
+-      browseEnvironmentId && primaryEnvironmentId && browseEnvironmentId === primaryEnvironmentId
+-        ? (readPrimaryEnvironmentDescriptor()?.platform.os ?? null)
+-        : browseEnvironmentId
+-          ? (savedEnvironmentRuntimeById[browseEnvironmentId]?.descriptor?.platform.os ??
+-            savedEnvironmentRuntimeById[browseEnvironmentId]?.serverConfig?.environment.platform
+-              .os ??
+-            null)
+-          : null;
+-    return getEnvironmentBrowsePlatform(os);
+-  }, [browseEnvironmentId, primaryEnvironmentId, savedEnvironmentRuntimeById]);
++  const browseEnvironmentPlatform = useMemo(
++    () => getBrowsePlatformForEnvironment(browseEnvironmentId),
++    [browseEnvironmentId, getBrowsePlatformForEnvironment],
++  );
++  const browseEnvironmentLabel = useMemo(
++    () =>
++      addProjectEnvironmentOptions.find((option) => option.environmentId === browseEnvironmentId)
++        ?.label ?? null,
++    [addProjectEnvironmentOptions, browseEnvironmentId],
++  );
+   const isBrowsing = isFilesystemBrowseQuery(query, browseEnvironmentPlatform);
+   const paletteMode = getCommandPaletteMode({ currentView, isBrowsing });
+   const getAddProjectInitialQueryForEnvironment = useCallback(
+     (environmentId: EnvironmentId | null): string => {
++      const browsePlatform = getBrowsePlatformForEnvironment(environmentId);
+       const environmentSettings =
+         environmentId && primaryEnvironmentId && environmentId === primaryEnvironmentId
+           ? settings
+           : environmentId
+             ? savedEnvironmentRuntimeById[environmentId]?.serverConfig?.settings
+             : null;
+-      const baseDirectory = environmentSettings?.addProjectBaseDirectory?.trim() ?? "";
++      const baseDirectory = normalizeProjectPathForEnvironmentInput(
++        environmentSettings?.addProjectBaseDirectory?.trim() ?? "",
++        browsePlatform,
++      );
+       if (baseDirectory.length === 0) {
+-        return "~/";
++        return browsePlatform === "Win32" ? "C:\\" : "~/";
+       }
+       return ensureBrowseDirectoryPath(baseDirectory);
+     },
+-    [primaryEnvironmentId, savedEnvironmentRuntimeById, settings],
++    [getBrowsePlatformForEnvironment, primaryEnvironmentId, savedEnvironmentRuntimeById, settings],
+   );
+ 
+   const projectCwdById = useMemo(
+@@ -549,9 +580,13 @@ function OpenCommandPaletteDialog() {
+   }
+ 
+   function handleQueryChange(nextQuery: string): void {
++    const normalizedQuery =
++      currentView?.initialQuery !== undefined
++        ? normalizeProjectPathForEnvironmentInput(nextQuery, browseEnvironmentPlatform)
++        : nextQuery;
+     setHighlightedItemValue(null);
+-    setQuery(nextQuery);
+-    if (nextQuery === "" && currentView?.initialQuery) {
++    setQuery(normalizedQuery);
++    if (normalizedQuery === "" && currentView?.initialQuery) {
+       popView();
+     }
+   }
+@@ -741,7 +776,11 @@ function OpenCommandPaletteDialog() {
+         return;
+       }
+ 
+-      const cwd = resolveProjectPathForDispatch(rawCwd, currentProjectCwdForBrowse);
++      const cwd = resolveProjectPathForDispatch(
++        rawCwd,
++        currentProjectCwdForBrowse,
++        browseEnvironmentPlatform,
++      );
+       if (cwd.length === 0) return;
+ 
+       const existing = findProjectByPath(
+@@ -855,7 +894,14 @@ function OpenCommandPaletteDialog() {
+     displayedGroups = relativePathNeedsActiveProject ? [] : browseGroups;
+   }
+ 
+-  const inputPlaceholder = getCommandPaletteInputPlaceholder(paletteMode);
++  const inputPlaceholder =
++    paletteMode === "root-browse" || paletteMode === "submenu-browse"
++      ? getBrowseInputPlaceholder({
++          mode: paletteMode,
++          platform: browseEnvironmentPlatform,
++          environmentLabel: browseEnvironmentLabel,
++        })
++      : getCommandPaletteInputPlaceholder(paletteMode);
+   const isSubmenu = paletteMode === "submenu" || paletteMode === "submenu-browse";
+   const hasHighlightedBrowseItem = highlightedItemValue?.startsWith("browse:") ?? false;
+   const canSubmitBrowsePath = isBrowsing && !relativePathNeedsActiveProject;
+@@ -891,10 +937,15 @@ function OpenCommandPaletteDialog() {
+       ? (browseResult?.parentPath ?? trimmedQuery)
+       : browseDirectoryPath || trimmedQuery;
+ 
+-    const resolvedPath = resolveProjectPathForDispatch(initialPath, currentProjectCwdForBrowse);
++    const resolvedPath = resolveProjectPathForDispatch(
++      initialPath,
++      currentProjectCwdForBrowse,
++      browseEnvironmentPlatform,
++    );
+     return resolvedPath.length > 0 ? resolvedPath : undefined;
+   }, [
+     browseDirectoryPath,
++    browseEnvironmentPlatform,
+     browseResult?.parentPath,
+     canOpenProjectFromFileManager,
+     currentProjectCwdForBrowse,
+diff --git a/apps/web/src/components/chat/ChatHeader.tsx b/apps/web/src/components/chat/ChatHeader.tsx
+index cda0bb13..8cd0bba5 100644
+--- a/apps/web/src/components/chat/ChatHeader.tsx
++++ b/apps/web/src/components/chat/ChatHeader.tsx
+@@ -9,7 +9,7 @@ import { scopeThreadRef } from "@t3tools/client-runtime";
+ import { memo } from "react";
+ import GitActionsControl from "../GitActionsControl";
+ import { type DraftId } from "~/composerDraftStore";
+-import { DiffIcon, TerminalSquareIcon } from "lucide-react";
++import { CloudIcon, DiffIcon, MonitorIcon, TerminalSquareIcon } from "lucide-react";
+ import { Badge } from "../ui/badge";
+ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+ import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
+@@ -23,6 +23,9 @@ interface ChatHeaderProps {
+   draftId?: DraftId;
+   activeThreadTitle: string;
+   activeProjectName: string | undefined;
++  activeEnvironmentLabel: string | null;
++  activeEnvironmentIsPrimary: boolean;
++  activeWorkspacePath: string | null;
+   isGitRepo: boolean;
+   openInCwd: string | null;
+   activeProjectScripts: ProjectScript[] | undefined;
+@@ -49,6 +52,9 @@ export const ChatHeader = memo(function ChatHeader({
+   draftId,
+   activeThreadTitle,
+   activeProjectName,
++  activeEnvironmentLabel,
++  activeEnvironmentIsPrimary,
++  activeWorkspacePath,
+   isGitRepo,
+   openInCwd,
+   activeProjectScripts,
+@@ -78,11 +84,37 @@ export const ChatHeader = memo(function ChatHeader({
+         >
+           {activeThreadTitle}
+         </h2>
+-        {activeProjectName && (
+-          <Badge variant="outline" className="min-w-0 shrink overflow-hidden">
+-            <span className="min-w-0 truncate">{activeProjectName}</span>
+-          </Badge>
+-        )}
++        {activeProjectName ? (
++          <Tooltip>
++            <TooltipTrigger
++              render={
++                <Badge variant="outline" className="min-w-0 shrink overflow-hidden">
++                  <span className="min-w-0 truncate">{activeProjectName}</span>
++                </Badge>
++              }
++            />
++            <TooltipPopup side="bottom">
++              {activeWorkspacePath ? `Project path: ${activeWorkspacePath}` : activeProjectName}
++            </TooltipPopup>
++          </Tooltip>
++        ) : null}
++        {activeEnvironmentLabel ? (
++          <Tooltip>
++            <TooltipTrigger
++              render={
++                <Badge variant="outline" className="min-w-0 shrink gap-1 overflow-hidden">
++                  {activeEnvironmentIsPrimary ? (
++                    <MonitorIcon className="size-3 shrink-0" />
++                  ) : (
++                    <CloudIcon className="size-3 shrink-0" />
++                  )}
++                  <span className="min-w-0 truncate">{activeEnvironmentLabel}</span>
++                </Badge>
++              }
++            />
++            <TooltipPopup side="bottom">Environment: {activeEnvironmentLabel}</TooltipPopup>
++          </Tooltip>
++        ) : null}
+         {activeProjectName && !isGitRepo && (
+           <Badge variant="outline" className="shrink-0 text-[10px] text-amber-700">
+             No Git
+diff --git a/apps/web/src/hooks/useHandleNewThread.ts b/apps/web/src/hooks/useHandleNewThread.ts
+index d512b6c7..3aa9996a 100644
+--- a/apps/web/src/hooks/useHandleNewThread.ts
++++ b/apps/web/src/hooks/useHandleNewThread.ts
+@@ -9,20 +9,14 @@ import {
+   useComposerDraftStore,
+ } from "../composerDraftStore";
+ import { newDraftId, newThreadId } from "../lib/utils";
++import { isReusableDraftForProjectRef } from "../lib/projectDrafts";
+ import { orderItemsByPreferredIds } from "../components/Sidebar.logic";
+-import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
+ import { selectProjectsAcrossEnvironments, useStore } from "../store";
+ import { createThreadSelectorByRef } from "../storeSelectors";
+ import { resolveThreadRouteTarget } from "../threadRoutes";
+ import { useUiStateStore } from "../uiStateStore";
+-import { useSettings } from "./useSettings";
+ 
+ function useNewThreadState() {
+-  const projects = useStore(useShallow((store) => selectProjectsAcrossEnvironments(store)));
+-  const projectGroupingSettings = useSettings((settings) => ({
+-    sidebarProjectGroupingMode: settings.sidebarProjectGroupingMode,
+-    sidebarProjectGroupingOverrides: settings.sidebarProjectGroupingOverrides,
+-  }));
+   const router = useRouter();
+   const getCurrentRouteTarget = useCallback(() => {
+     const currentRouteParams = router.state.matches[router.state.matches.length - 1]?.params ?? {};
+@@ -39,26 +33,18 @@ function useNewThreadState() {
+       },
+     ): Promise<void> => {
+       const {
+-        getDraftSessionByLogicalProjectKey,
++        getDraftSessionByProjectRef,
+         getDraftSession,
+         getDraftThread,
+         applyStickyState,
+         setDraftThreadContext,
+-        setLogicalProjectDraftThreadId,
++        setProjectDraftThreadId,
+       } = useComposerDraftStore.getState();
+       const currentRouteTarget = getCurrentRouteTarget();
+-      const project = projects.find(
+-        (candidate) =>
+-          candidate.id === projectRef.projectId &&
+-          candidate.environmentId === projectRef.environmentId,
+-      );
+-      const logicalProjectKey = project
+-        ? deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings)
+-        : scopedProjectKey(projectRef);
+       const hasBranchOption = options?.branch !== undefined;
+       const hasWorktreePathOption = options?.worktreePath !== undefined;
+       const hasEnvModeOption = options?.envMode !== undefined;
+-      const storedDraftThread = getDraftSessionByLogicalProjectKey(logicalProjectKey);
++      const storedDraftThread = getDraftSessionByProjectRef(projectRef);
+       const latestActiveDraftThread: DraftThreadState | null = currentRouteTarget
+         ? currentRouteTarget.kind === "server"
+           ? getDraftThread(currentRouteTarget.threadRef)
+@@ -73,7 +59,7 @@ function useNewThreadState() {
+               ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
+             });
+           }
+-          setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, storedDraftThread.draftId, {
++          setProjectDraftThreadId(projectRef, storedDraftThread.draftId, {
+             threadId: storedDraftThread.threadId,
+           });
+           if (
+@@ -92,8 +78,7 @@ function useNewThreadState() {
+       if (
+         latestActiveDraftThread &&
+         currentRouteTarget?.kind === "draft" &&
+-        latestActiveDraftThread.logicalProjectKey === logicalProjectKey &&
+-        latestActiveDraftThread.promotedTo == null
++        isReusableDraftForProjectRef(projectRef, latestActiveDraftThread)
+       ) {
+         if (hasBranchOption || hasWorktreePathOption || hasEnvModeOption) {
+           setDraftThreadContext(currentRouteTarget.draftId, {
+@@ -102,7 +87,7 @@ function useNewThreadState() {
+             ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
+           });
+         }
+-        setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, currentRouteTarget.draftId, {
++        setProjectDraftThreadId(projectRef, currentRouteTarget.draftId, {
+           threadId: latestActiveDraftThread.threadId,
+           createdAt: latestActiveDraftThread.createdAt,
+           runtimeMode: latestActiveDraftThread.runtimeMode,
+@@ -118,7 +103,7 @@ function useNewThreadState() {
+       const threadId = newThreadId();
+       const createdAt = new Date().toISOString();
+       return (async () => {
+-        setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, draftId, {
++        setProjectDraftThreadId(projectRef, draftId, {
+           threadId,
+           createdAt,
+           branch: options?.branch ?? null,
+@@ -134,7 +119,7 @@ function useNewThreadState() {
+         });
+       })();
+     },
+-    [getCurrentRouteTarget, projectGroupingSettings, router, projects],
++    [getCurrentRouteTarget, router],
+   );
+ }
+ 
+diff --git a/apps/web/src/lib/projectDrafts.test.ts b/apps/web/src/lib/projectDrafts.test.ts
+new file mode 100644
+index 00000000..323c5e6a
+--- /dev/null
++++ b/apps/web/src/lib/projectDrafts.test.ts
+@@ -0,0 +1,49 @@
++import { scopeThreadRef } from "@t3tools/client-runtime";
++import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
++import { describe, expect, it } from "vitest";
++
++import { isReusableDraftForProjectRef } from "./projectDrafts";
++
++const projectRef = {
++  environmentId: EnvironmentId.make("environment-local"),
++  projectId: ProjectId.make("project-alpha"),
++} as const;
++
++describe("isReusableDraftForProjectRef", () => {
++  it("accepts a draft already bound to the same physical project", () => {
++    expect(
++      isReusableDraftForProjectRef(projectRef, {
++        environmentId: projectRef.environmentId,
++        projectId: projectRef.projectId,
++      }),
++    ).toBe(true);
++  });
++
++  it("rejects a draft from another environment for the same logical repo", () => {
++    expect(
++      isReusableDraftForProjectRef(projectRef, {
++        environmentId: EnvironmentId.make("environment-wsl"),
++        projectId: projectRef.projectId,
++      }),
++    ).toBe(false);
++  });
++
++  it("rejects a draft from another physical project in the same environment", () => {
++    expect(
++      isReusableDraftForProjectRef(projectRef, {
++        environmentId: projectRef.environmentId,
++        projectId: ProjectId.make("project-beta"),
++      }),
++    ).toBe(false);
++  });
++
++  it("rejects a draft that is already being promoted", () => {
++    expect(
++      isReusableDraftForProjectRef(projectRef, {
++        environmentId: projectRef.environmentId,
++        projectId: projectRef.projectId,
++        promotedTo: scopeThreadRef(projectRef.environmentId, ThreadId.make("thread-1")),
++      }),
++    ).toBe(false);
++  });
++});
+diff --git a/apps/web/src/lib/projectDrafts.ts b/apps/web/src/lib/projectDrafts.ts
+new file mode 100644
+index 00000000..ce9a2a1a
+--- /dev/null
++++ b/apps/web/src/lib/projectDrafts.ts
+@@ -0,0 +1,20 @@
++import type { ScopedProjectRef, ScopedThreadRef } from "@t3tools/contracts";
++
++interface ProjectScopedDraftLike {
++  readonly environmentId: ScopedProjectRef["environmentId"];
++  readonly projectId: ScopedProjectRef["projectId"];
++  readonly promotedTo?: ScopedThreadRef | null;
++}
++
++export function isReusableDraftForProjectRef(
++  projectRef: ScopedProjectRef,
++  draft: ProjectScopedDraftLike | null | undefined,
++): boolean {
++  if (!draft || draft.promotedTo != null) {
++    return false;
++  }
++
++  return (
++    draft.environmentId === projectRef.environmentId && draft.projectId === projectRef.projectId
++  );
++}
+diff --git a/apps/web/src/lib/projectPaths.test.ts b/apps/web/src/lib/projectPaths.test.ts
+index 7989622e..b31aa02c 100644
+--- a/apps/web/src/lib/projectPaths.test.ts
++++ b/apps/web/src/lib/projectPaths.test.ts
+@@ -11,6 +11,7 @@ import {
+   inferProjectTitleFromPath,
+   isExplicitRelativeProjectPath,
+   isFilesystemBrowseQuery,
++  normalizeProjectPathForEnvironmentInput,
+   normalizeProjectPathForComparison,
+   normalizeProjectPathForDispatch,
+   isUnsupportedWindowsProjectPath,
+@@ -63,6 +64,31 @@ describe("projectPaths", () => {
+     expect(isUnsupportedWindowsProjectPath("C:\\Work\\Repo\\", "Win32")).toBe(false);
+   });
+ 
++  it("normalizes WSL UNC paths for linux-targeted project entry", () => {
++    expect(
++      normalizeProjectPathForEnvironmentInput(
++        "\\\\wsl.localhost\\Ubuntu-24.04\\home\\julius\\repo\\",
++        "Linux",
++      ),
++    ).toBe("/home/julius/repo/");
++    expect(
++      isFilesystemBrowseQuery("\\\\wsl.localhost\\Ubuntu-24.04\\home\\julius\\repo", "Linux"),
++    ).toBe(true);
++    expect(
++      isUnsupportedWindowsProjectPath(
++        "\\\\wsl.localhost\\Ubuntu-24.04\\home\\julius\\repo",
++        "Linux",
++      ),
++    ).toBe(false);
++    expect(
++      resolveProjectPathForDispatch(
++        "\\\\wsl.localhost\\Ubuntu-24.04\\home\\julius\\repo\\",
++        undefined,
++        "Linux",
++      ),
++    ).toBe("/home/julius/repo");
++  });
++
+   it("detects explicit relative project paths", () => {
+     expect(isExplicitRelativeProjectPath(".")).toBe(true);
+     expect(isExplicitRelativeProjectPath("..")).toBe(true);
+diff --git a/apps/web/src/lib/projectPaths.ts b/apps/web/src/lib/projectPaths.ts
+index 4b823dff..c699cb80 100644
+--- a/apps/web/src/lib/projectPaths.ts
++++ b/apps/web/src/lib/projectPaths.ts
+@@ -6,6 +6,33 @@ import {
+ } from "@t3tools/shared/path";
+ import { isWindowsPlatform } from "./utils";
+ 
++function isLinuxPlatform(platform: string): boolean {
++  return platform.toLowerCase() === "linux";
++}
++
++function isWslUncPath(value: string): boolean {
++  const normalized = value.trim().replace(/\\/g, "/");
++  return /^\/\/wsl(?:\.localhost|\$)\/[^/]+(?:\/.*)?$/i.test(normalized);
++}
++
++function wslUncPathToLinuxPath(value: string): string | null {
++  const normalized = value.trim().replace(/\\/g, "/");
++  const match = normalized.match(/^\/\/wsl(?:\.localhost|\$)\/[^/]+(\/.*)?$/i);
++  if (!match) {
++    return null;
++  }
++
++  return (match[1] ?? "/").replace(/\/+/g, "/");
++}
++
++export function normalizeProjectPathForEnvironmentInput(value: string, platform: string): string {
++  if (!isLinuxPlatform(platform)) {
++    return value;
++  }
++
++  return wslUncPathToLinuxPath(value) ?? value;
++}
++
+ function isRootPath(value: string): boolean {
+   return value === "/" || value === "\\" || /^[a-zA-Z]:[/\\]?$/.test(value);
+ }
+@@ -104,28 +131,37 @@ export function isFilesystemBrowseQuery(
+   value: string,
+   platform = typeof navigator === "undefined" ? "" : navigator.platform,
+ ): boolean {
++  const normalizedValue = normalizeProjectPathForEnvironmentInput(value, platform);
+   const allowWindowsPaths = isWindowsPlatform(platform);
+   return (
+-    value.startsWith("./") ||
+-    value.startsWith("../") ||
+-    value.startsWith(".\\") ||
+-    value.startsWith("..\\") ||
+-    value.startsWith("/") ||
+-    value.startsWith("~/") ||
+-    (allowWindowsPaths && isWindowsAbsolutePath(value))
++    normalizedValue.startsWith("./") ||
++    normalizedValue.startsWith("../") ||
++    normalizedValue.startsWith(".\\") ||
++    normalizedValue.startsWith("..\\") ||
++    normalizedValue.startsWith("/") ||
++    normalizedValue.startsWith("~/") ||
++    (allowWindowsPaths && isWindowsAbsolutePath(normalizedValue))
+   );
+ }
+ 
+ export function isUnsupportedWindowsProjectPath(value: string, platform: string): boolean {
+-  return isWindowsAbsolutePath(value) && !isWindowsPlatform(platform);
++  return (
++    isWindowsAbsolutePath(value) &&
++    !isWindowsPlatform(platform) &&
++    !(isLinuxPlatform(platform) && isWslUncPath(value))
++  );
+ }
+ 
+ export function normalizeProjectPathForDispatch(value: string): string {
+   return trimTrailingPathSeparators(value.trim());
+ }
+ 
+-export function resolveProjectPathForDispatch(value: string, cwd?: string | null): string {
+-  const trimmedValue = value.trim();
++export function resolveProjectPathForDispatch(
++  value: string,
++  cwd?: string | null,
++  platform?: string,
++): string {
++  const trimmedValue = normalizeProjectPathForEnvironmentInput(value, platform ?? "").trim();
+   if (!isExplicitRelativePath(trimmedValue) || !cwd) {
+     return normalizeProjectPathForDispatch(trimmedValue);
+   }
+diff --git a/package.json b/package.json
+index 93a75d5b..154447b1 100644
+--- a/package.json
++++ b/package.json
+@@ -41,6 +41,7 @@
+     "typecheck": "turbo run typecheck",
+     "lint": "oxlint --report-unused-disable-directives",
+     "test": "turbo run test",
++    "test:windows-wsl-support": "bun run --filter=@t3tools/desktop test:wsl-support",
+     "test:desktop-smoke": "turbo run smoke-test --filter=@t3tools/desktop",
+     "fmt": "oxfmt",
+     "fmt:check": "oxfmt --check",

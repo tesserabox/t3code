@@ -1,0 +1,921 @@
+diff --git a/apps/desktop/src/backendTarget.ts b/apps/desktop/src/backendTarget.ts
+new file mode 100644
+index 00000000..78582fef
+--- /dev/null
++++ b/apps/desktop/src/backendTarget.ts
+@@ -0,0 +1,161 @@
++/**
++ * BackendTarget — Abstraction for where the T3 Code server runs.
++ *
++ * The desktop app spawns a backend server process. By default this runs
++ * locally (LocalBackendTarget). For WSL support, a WslBackendTarget
++ * spawns the server inside a WSL distro via wsl.exe.
++ *
++ * @module backendTarget
++ */
++import * as ChildProcess from "node:child_process";
++import * as FS from "node:fs";
++import * as OS from "node:os";
++import * as Path from "node:path";
++import { app } from "electron";
++
++/**
++ * Bootstrap configuration passed to the backend server on startup.
++ */
++export interface BackendBootstrapConfig {
++  readonly mode: "desktop";
++  readonly noBrowser: boolean;
++  readonly port: number;
++  readonly t3Home: string;
++  readonly host: string;
++  readonly desktopBootstrapToken: string;
++  readonly otlpTracesUrl?: string;
++  readonly otlpMetricsUrl?: string;
++}
++
++/**
++ * Result of spawning a backend server.
++ */
++export interface BackendSpawnResult {
++  readonly child: ChildProcess.ChildProcess;
++  /** True if the bootstrap config was successfully delivered */
++  readonly bootstrapDelivered: boolean;
++}
++
++/**
++ * BackendTarget — Defines how to spawn and communicate with a backend server.
++ */
++export interface BackendTarget {
++  /** Target type identifier */
++  readonly type: "local" | "wsl";
++  /** Human-readable label for UI display */
++  readonly displayLabel: string;
++  /**
++   * Prepare the target for startup, performing any one-time setup required
++   * before the backend process can be spawned.
++   */
++  ensureReady(): boolean;
++  /**
++   * Spawn the backend server process.
++   * The caller is responsible for event handling (error, exit, readiness detection).
++   */
++  spawn(
++    config: BackendBootstrapConfig,
++    options: {
++      readonly env: NodeJS.ProcessEnv;
++      readonly captureOutput: boolean;
++    },
++  ): BackendSpawnResult;
++  /**
++   * Translate a path from the host OS to the target's filesystem.
++   * For local targets, this is a no-op.
++   * For WSL targets, this converts Windows paths to Linux paths.
++   */
++  translatePath(hostPath: string): string;
++  /**
++   * Check if the target is available (e.g., WSL is installed and a distro exists).
++   */
++  isAvailable(): boolean;
++}
++
++// ── Helpers ────────────────────────────────────────────────────────────
++
++function resolveAppRoot(): string {
++  if (!app.isPackaged) {
++    // Development: resolve from the compiled desktop bundle back to the repo root.
++    return Path.resolve(__dirname, "../../..");
++  }
++  // Production: app.asar root
++  return app.getAppPath();
++}
++
++function resolveBackendEntry(): string {
++  return Path.join(resolveAppRoot(), "apps/server/dist/bin.mjs");
++}
++
++function resolveBackendCwd(): string {
++  if (!app.isPackaged) {
++    return resolveAppRoot();
++  }
++  return OS.homedir();
++}
++
++// ── LocalBackendTarget ─────────────────────────────────────────────────
++
++/**
++ * LocalBackendTarget — Spawns the server as a local child process.
++ * This wraps the existing behavior from main.ts startBackend().
++ */
++export class LocalBackendTarget implements BackendTarget {
++  readonly type = "local" as const;
++  readonly displayLabel = "Local";
++
++  ensureReady(): boolean {
++    return this.isAvailable();
++  }
++
++  spawn(
++    config: BackendBootstrapConfig,
++    options: {
++      readonly env: NodeJS.ProcessEnv;
++      readonly captureOutput: boolean;
++    },
++  ): BackendSpawnResult {
++    const backendEntry = resolveBackendEntry();
++
++    const child = ChildProcess.spawn(process.execPath, [backendEntry, "--bootstrap-fd", "3"], {
++      cwd: resolveBackendCwd(),
++      env: {
++        ...options.env,
++        ELECTRON_RUN_AS_NODE: "1",
++      },
++      stdio: options.captureOutput
++        ? ["ignore", "pipe", "pipe", "pipe"]
++        : ["ignore", "inherit", "inherit", "pipe"],
++    });
++
++    // Deliver bootstrap config via fd 3 pipe
++    const bootstrapStream = child.stdio[3];
++    let bootstrapDelivered = false;
++    if (bootstrapStream && "write" in bootstrapStream) {
++      bootstrapStream.write(`${JSON.stringify(config)}\n`);
++      bootstrapStream.end();
++      bootstrapDelivered = true;
++    }
++
++    return { child, bootstrapDelivered };
++  }
++
++  translatePath(hostPath: string): string {
++    return hostPath; // No-op for local target
++  }
++
++  isAvailable(): boolean {
++    const entry = resolveBackendEntry();
++    return FS.existsSync(entry);
++  }
++}
++
++/**
++ * Create the default backend target.
++ *
++ * Desktop bootstraps locally by default. Extra WSL runtimes are exposed as
++ * opt-in managed environments via Connections.
++ */
++export function createDefaultBackendTarget(): BackendTarget {
++  return new LocalBackendTarget();
++}
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index c5507c6f..92951399 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -76,6 +76,7 @@ import {
+ import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch.ts";
+ import { resolveDesktopAppBranding } from "./appBranding.ts";
+ import { bindFirstRevealTrigger, type RevealSubscription } from "./windowReveal.ts";
++import { createDefaultBackendTarget, type BackendTarget } from "./backendTarget.ts";
+ 
+ syncShellEnvironment();
+ 
+@@ -212,6 +213,7 @@ let backendEndpointUrl: string | null = null;
+ let backendAdvertisedHost: string | null = null;
+ let backendReadinessAbortController: AbortController | null = null;
+ let backendInitialWindowOpenInFlight: Promise<void> | null = null;
++const backendTarget: BackendTarget = createDefaultBackendTarget();
+ let backendListeningDetector: ServerListeningDetector | null = null;
+ let restartAttempt = 0;
+ let restartTimer: ReturnType<typeof setTimeout> | null = null;
+@@ -725,16 +727,7 @@ function resolveAboutCommitHash(): string | null {
+   return aboutCommitHashCache;
+ }
+ 
+-function resolveBackendEntry(): string {
+-  return Path.join(resolveAppRoot(), "apps/server/dist/bin.mjs");
+-}
+-
+-function resolveBackendCwd(): string {
+-  if (!app.isPackaged) {
+-    return resolveAppRoot();
+-  }
+-  return OS.homedir();
+-}
++// resolveBackendEntry and resolveBackendCwd moved to backendTarget.ts
+ 
+ function resolveDesktopStaticDir(): string | null {
+   const appRoot = resolveAppRoot();
+@@ -1373,47 +1366,37 @@ function startBackend(): void {
+   if (isQuitting || backendProcess) return;
+ 
+   backendObservabilitySettings = readPersistedBackendObservabilitySettings();
+-  const backendEntry = resolveBackendEntry();
+-  if (!FS.existsSync(backendEntry)) {
+-    scheduleBackendRestart(`missing server entry at ${backendEntry}`);
++
++  if (!backendTarget.isAvailable()) {
++    scheduleBackendRestart(`backend target '${backendTarget.displayLabel}' is not available`);
+     return;
+   }
+ 
+   const captureBackendLogs = !isDevelopment;
+-  const child = ChildProcess.spawn(process.execPath, [backendEntry, "--bootstrap-fd", "3"], {
+-    cwd: resolveBackendCwd(),
+-    // In Electron main, process.execPath points to the Electron binary.
+-    // Run the child in Node mode so this backend process does not become a GUI app instance.
+-    env: {
+-      ...backendChildEnv(),
+-      ELECTRON_RUN_AS_NODE: "1",
++  const { child, bootstrapDelivered } = backendTarget.spawn(
++    {
++      mode: "desktop",
++      noBrowser: true,
++      port: backendPort,
++      t3Home: BASE_DIR,
++      host: backendBindHost,
++      desktopBootstrapToken: backendBootstrapToken,
++      ...(backendObservabilitySettings.otlpTracesUrl
++        ? { otlpTracesUrl: backendObservabilitySettings.otlpTracesUrl }
++        : {}),
++      ...(backendObservabilitySettings.otlpMetricsUrl
++        ? { otlpMetricsUrl: backendObservabilitySettings.otlpMetricsUrl }
++        : {}),
+     },
+-    stdio: captureBackendLogs
+-      ? ["ignore", "pipe", "pipe", "pipe"]
+-      : ["ignore", "inherit", "inherit", "pipe"],
+-  });
+-  const bootstrapStream = child.stdio[3];
+-  if (bootstrapStream && "write" in bootstrapStream) {
+-    bootstrapStream.write(
+-      `${JSON.stringify({
+-        mode: "desktop",
+-        noBrowser: true,
+-        port: backendPort,
+-        t3Home: BASE_DIR,
+-        host: backendBindHost,
+-        desktopBootstrapToken: backendBootstrapToken,
+-        ...(backendObservabilitySettings.otlpTracesUrl
+-          ? { otlpTracesUrl: backendObservabilitySettings.otlpTracesUrl }
+-          : {}),
+-        ...(backendObservabilitySettings.otlpMetricsUrl
+-          ? { otlpMetricsUrl: backendObservabilitySettings.otlpMetricsUrl }
+-          : {}),
+-      })}\n`,
+-    );
+-    bootstrapStream.end();
+-  } else {
++    {
++      env: backendChildEnv(),
++      captureOutput: captureBackendLogs,
++    },
++  );
++
++  if (!bootstrapDelivered) {
+     child.kill("SIGTERM");
+-    scheduleBackendRestart("missing desktop bootstrap pipe");
++    scheduleBackendRestart("failed to deliver bootstrap config");
+     return;
+   }
+   const listeningDetector = new ServerListeningDetector();
+@@ -1427,7 +1410,7 @@ function startBackend(): void {
+   };
+   writeBackendSessionBoundary(
+     "START",
+-    `pid=${child.pid ?? "unknown"} port=${backendPort} cwd=${resolveBackendCwd()}`,
++    `pid=${child.pid ?? "unknown"} port=${backendPort} target=${backendTarget.displayLabel}`,
+   );
+   captureBackendOutput(child);
+ 
+diff --git a/apps/desktop/src/wslBackendTarget.ts b/apps/desktop/src/wslBackendTarget.ts
+new file mode 100644
+index 00000000..e84a3171
+--- /dev/null
++++ b/apps/desktop/src/wslBackendTarget.ts
+@@ -0,0 +1,499 @@
++/**
++ * WslBackendTarget — Spawns the T3 Code server inside a WSL distro.
++ *
++ * Uses `wsl.exe` to start a Node.js process inside the Linux environment.
++ * Communication happens over localhost TCP (WSL2 shares host network stack).
++ *
++ * Prerequisites:
++ * - Windows 10/11 with WSL2 installed
++ * - At least one WSL distro configured
++ * - Node.js installed inside the WSL distro (system, nvm, fnm, etc.)
++ *
++ * @module wslBackendTarget
++ */
++import * as ChildProcess from "node:child_process";
++
++import type { BackendBootstrapConfig, BackendSpawnResult, BackendTarget } from "./backendTarget.ts";
++
++// ── WSL Helpers ────────────────────────────────────────────────────────
++
++/** Build distro args for wsl.exe */
++function distroArgs(distro?: string): string[] {
++  return distro ? ["-d", distro] : [];
++}
++
++/**
++ * Run a command inside WSL using execFileSync (no shell interpolation).
++ * Uses `--exec` to bypass the default shell (avoids variable expansion
++ * by zsh/bash login shells mangling arguments).
++ * Returns trimmed stdout, or undefined on failure.
++ */
++function wslExec(
++  args: string[],
++  options?: { distro?: string | undefined; timeout?: number | undefined },
++): string | undefined {
++  if (process.platform !== "win32") return undefined;
++  try {
++    const output = ChildProcess.execFileSync(
++      "wsl.exe",
++      [...distroArgs(options?.distro), "--exec", ...args],
++      {
++        encoding: "utf-8",
++        timeout: options?.timeout ?? 10000,
++        stdio: ["ignore", "pipe", "ignore"],
++      },
++    );
++    return output.trim();
++  } catch {
++    return undefined;
++  }
++}
++
++/**
++ * Run a command inside WSL, returning only the exit code (0 = success).
++ */
++function wslTest(
++  args: string[],
++  options?: { distro?: string | undefined; timeout?: number | undefined },
++): boolean {
++  if (process.platform !== "win32") return false;
++  try {
++    ChildProcess.execFileSync("wsl.exe", [...distroArgs(options?.distro), "--exec", ...args], {
++      stdio: "ignore",
++      timeout: options?.timeout ?? 10000,
++    });
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++function formatExecFileSyncError(error: unknown): string | undefined {
++  if (!(error instanceof Error)) {
++    return undefined;
++  }
++
++  const withStreams = error as Error & {
++    readonly stdout?: Buffer | string;
++    readonly stderr?: Buffer | string;
++  };
++  const stderr = withStreams.stderr?.toString().trim();
++  if (stderr && stderr.length > 0) {
++    return stderr;
++  }
++  const stdout = withStreams.stdout?.toString().trim();
++  if (stdout && stdout.length > 0) {
++    return stdout;
++  }
++  return error.message;
++}
++
++// ── Node.js Resolution ─────────────────────────────────────────────────
++
++/**
++ * Shell snippet that resolves node even when managed by nvm/fnm.
++ * Tries bare `node` first, then sources nvm if available.
++ * Used by both detection and spawn for consistency.
++ *
++ * The snippet is a static string — dynamic values (server entry,
++ * bootstrap JSON) are passed via `bash -c '...' bash "$1" "$2"` positional
++ * args to avoid shell-injection issues.
++ */
++const NODE_RESOLVE_PREAMBLE = [
++  "if ! command -v node >/dev/null 2>&1; then",
++  '  export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
++  '  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"',
++  // Try fnm
++  "  if ! command -v node >/dev/null 2>&1 && command -v fnm >/dev/null 2>&1; then",
++  '    eval "$(fnm env)"',
++  "  fi",
++  "fi",
++].join("\n");
++
++// ── WSL Detection ──────────────────────────────────────────────────────
++
++export interface WslDistro {
++  readonly name: string;
++  readonly isDefault: boolean;
++}
++
++/**
++ * Check if WSL is available on this system.
++ * Returns false on non-Windows or if wsl.exe is not found.
++ */
++export function isWslAvailable(): boolean {
++  if (process.platform !== "win32") return false;
++  try {
++    ChildProcess.execFileSync("wsl.exe", ["--status"], {
++      stdio: "ignore",
++      timeout: 5000,
++    });
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++/**
++ * List installed WSL distros.
++ */
++export function listWslDistros(): WslDistro[] {
++  if (process.platform !== "win32") return [];
++  try {
++    // wsl.exe --list --quiet outputs UTF-16LE with null bytes
++    const raw = ChildProcess.execFileSync("wsl.exe", ["--list", "--quiet"], {
++      timeout: 10000,
++      stdio: ["ignore", "pipe", "ignore"],
++    });
++    // Decode as UTF-16LE and strip null bytes / BOM
++    const output = raw
++      .toString("utf16le")
++      .replace(/^\uFEFF/, "")
++      .split("\0")
++      .join("");
++    const lines = output
++      .split(/\r?\n/)
++      .map((line) => line.trim())
++      .filter((line) => line.length > 0);
++
++    if (lines.length === 0) return [];
++
++    // First line from --list --quiet is the default distro
++    return lines.map((name, index) => ({
++      name,
++      isDefault: index === 0,
++    }));
++  } catch {
++    return [];
++  }
++}
++
++/**
++ * Get the default WSL distro name, or undefined if none available.
++ */
++export function getDefaultWslDistro(): string | undefined {
++  const distros = listWslDistros();
++  return distros.find((d) => d.isDefault)?.name ?? distros[0]?.name;
++}
++
++// ── Path Translation ───────────────────────────────────────────────────
++
++/**
++ * Convert a Windows path to a WSL/Linux path.
++ * Uses `wslpath` utility inside WSL for accurate translation.
++ * Falls back to manual conversion if wslpath fails.
++ */
++export function windowsToWslPath(windowsPath: string, distro?: string): string {
++  if (process.platform !== "win32") return windowsPath;
++  const result = wslExec(["wslpath", "-u", windowsPath], { distro, timeout: 5000 });
++  return result ?? manualWindowsToWslPath(windowsPath);
++}
++
++/**
++ * Convert a WSL/Linux path to a Windows UNC path.
++ */
++export function wslToWindowsPath(wslPath: string, distro?: string): string {
++  if (process.platform !== "win32") return wslPath;
++  const result = wslExec(["wslpath", "-w", wslPath], { distro, timeout: 5000 });
++  if (result) return result;
++  // Fallback: manual conversion (/home/user/... → \\wsl.localhost\distro\home\user\...)
++  const distroName = distro ?? "Ubuntu";
++  return `\\\\wsl.localhost\\${distroName}${wslPath.replace(/\//g, "\\")}`;
++}
++
++function manualWindowsToWslPath(windowsPath: string): string {
++  // C:\Users\foo\bar → /mnt/c/Users/foo/bar
++  const normalized = windowsPath.replace(/\\/g, "/");
++  const match = normalized.match(/^([A-Za-z]):(\/.*)/);
++  if (match && match[1] && match[2]) {
++    return `/mnt/${match[1].toLowerCase()}${match[2]}`;
++  }
++  // UNC path: \\wsl.localhost\Ubuntu\home\... → /home/...
++  const uncMatch = normalized.match(/^\/\/wsl\.localhost\/[^/]+(.+)/);
++  if (uncMatch && uncMatch[1]) {
++    return uncMatch[1];
++  }
++  return windowsPath;
++}
++
++// ── Server Installation ────────────────────────────────────────────────
++
++const WSL_SERVER_DIR = ".t3/server";
++const WSL_SERVER_FINGERPRINT_FILE = ".wsl-bundle-fingerprint";
++
++/**
++ * Check if the server is installed inside a WSL distro.
++ */
++export function isServerInstalledInWsl(distro?: string): boolean {
++  return wslTest(["bash", "-c", `test -f "$HOME/${WSL_SERVER_DIR}/apps/server/dist/bin.mjs"`], {
++    distro,
++    timeout: 5000,
++  });
++}
++
++function readInstalledWslServerFingerprint(distro?: string): string | undefined {
++  return wslExec(["bash", "-c", `cat "$HOME/${WSL_SERVER_DIR}/${WSL_SERVER_FINGERPRINT_FILE}"`], {
++    distro,
++    timeout: 5000,
++  });
++}
++
++/**
++ * Check if Node.js is available inside a WSL distro.
++ * Handles nvm / fnm managed installs by sourcing their init scripts.
++ */
++export function isNodeAvailableInWsl(distro?: string): boolean {
++  if (process.platform !== "win32") return false;
++  try {
++    ChildProcess.execFileSync(
++      "wsl.exe",
++      [...distroArgs(distro), "--exec", "bash", "-c", `${NODE_RESOLVE_PREAMBLE}\nnode --version`],
++      { stdio: "ignore", timeout: 10000 },
++    );
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++export function canReachNpmRegistryInWsl(distro?: string): boolean {
++  if (process.platform !== "win32") return false;
++  try {
++    ChildProcess.execFileSync(
++      "wsl.exe",
++      [
++        ...distroArgs(distro),
++        "--exec",
++        "bash",
++        "-c",
++        `${NODE_RESOLVE_PREAMBLE}\nexport npm_config_fetch_retries=0 npm_config_fetch_timeout=15000\nnpm ping --loglevel error >/dev/null`,
++      ],
++      {
++        stdio: ["ignore", "pipe", "pipe"],
++        timeout: 20000,
++      },
++    );
++    return true;
++  } catch (error) {
++    const detail = formatExecFileSyncError(error);
++    if (detail) {
++      console.error(
++        `[desktop] WSL npm registry check failed${distro ? ` for ${distro}` : ""}: ${detail}`,
++      );
++    }
++    return false;
++  }
++}
++
++/**
++ * Install the server bundle into a WSL distro's ~/.t3/server/ directory.
++ * Copies the built server dist from the Windows host into WSL.
++ * Returns true on success.
++ */
++export function installServerInWsl(hostServerDir: string, distro?: string): boolean {
++  if (process.platform !== "win32") return false;
++
++  if (!canReachNpmRegistryInWsl(distro)) {
++    return false;
++  }
++
++  const wslServerDir = `$HOME/${WSL_SERVER_DIR}`;
++  const wslHostPath = windowsToWslPath(hostServerDir, distro);
++
++  const script = [
++    "set -euo pipefail",
++    NODE_RESOLVE_PREAMBLE,
++    'src="$1"',
++    `target="${wslServerDir}"`,
++    `fingerprint_file="${wslServerDir}/${WSL_SERVER_FINGERPRINT_FILE}"`,
++    'fingerprint="$(cat "$src/.wsl-bundle-fingerprint")"',
++    'installed_fingerprint=""',
++    'if [ -f "$fingerprint_file" ]; then',
++    '  installed_fingerprint="$(cat "$fingerprint_file")"',
++    "fi",
++    'if [ "$installed_fingerprint" = "$fingerprint" ] && [ -f "$target/apps/server/dist/bin.mjs" ]; then',
++    "  exit 0",
++    "fi",
++    'tmp="${target}.tmp.$$"',
++    'prev="${target}.prev"',
++    'rm -rf "$tmp" "$prev"',
++    'mkdir -p "$tmp/apps/server"',
++    'cp -R "$src/apps/server/dist" "$tmp/apps/server/"',
++    'cp "$src/apps/server/package.json" "$tmp/apps/server/package.json"',
++    'cd "$tmp/apps/server"',
++    "export npm_config_fetch_retries=1 npm_config_fetch_timeout=30000",
++    "npm install --omit=dev --no-package-lock --no-audit --no-fund",
++    `printf '%s\n' "$fingerprint" > "$tmp/${WSL_SERVER_FINGERPRINT_FILE}"`,
++    'if [ -d "$target" ]; then',
++    '  mv "$target" "$prev"',
++    "fi",
++    'mv "$tmp" "$target"',
++    'rm -rf "$prev"',
++  ].join("\n");
++
++  try {
++    ChildProcess.execFileSync(
++      "wsl.exe",
++      [...distroArgs(distro), "--exec", "bash", "-c", script, "bash", wslHostPath],
++      {
++        stdio: ["ignore", "pipe", "pipe"],
++        timeout: 180000,
++      },
++    );
++    return isServerInstalledInWsl(distro);
++  } catch (error) {
++    const detail = formatExecFileSyncError(error);
++    if (detail) {
++      console.error(
++        `[desktop] Failed to install WSL server bundle${distro ? ` for ${distro}` : ""}: ${detail}`,
++      );
++    }
++    return false;
++  }
++}
++
++// ── WslBackendTarget ───────────────────────────────────────────────────
++
++export interface WslBackendTargetOptions {
++  /** WSL distro name (defaults to the default distro) */
++  readonly distro?: string;
++  /** Staged Windows-side server bundle that can be copied into WSL */
++  readonly installSourceRoot?: string;
++  /** Fingerprint for the staged server bundle */
++  readonly installFingerprint?: string;
++}
++
++/**
++ * WslBackendTarget — Spawns the server inside a WSL distro.
++ *
++ * Architecture:
++ * - Server runs as a Node.js process inside WSL
++ * - Communication via localhost TCP (WSL2 shares host network stack)
++ * - Bootstrap config passed via --bootstrap-json CLI arg (fd 3 pipe
++ *   doesn't work across wsl.exe boundary)
++ * - Node.js resolved via nvm/fnm if not on system PATH
++ * - Dynamic values passed as positional args to bash -c (no shell injection)
++ * - Path translation at the boundary via wslpath
++ */
++export class WslBackendTarget implements BackendTarget {
++  readonly type = "wsl" as const;
++  readonly distro: string | undefined;
++  readonly installSourceRoot: string | undefined;
++  readonly installFingerprint: string | undefined;
++
++  constructor(options?: WslBackendTargetOptions) {
++    this.distro = options?.distro;
++    this.installSourceRoot = options?.installSourceRoot;
++    this.installFingerprint = options?.installFingerprint;
++  }
++
++  get displayLabel(): string {
++    return this.distro ? `WSL (${this.distro})` : "WSL";
++  }
++
++  ensureReady(): boolean {
++    if (!isWslAvailable()) return false;
++
++    const distro = this.distro ?? getDefaultWslDistro();
++    if (!distro) return false;
++    if (!isNodeAvailableInWsl(distro)) return false;
++
++    const serverInstalled = isServerInstalledInWsl(distro);
++    if (serverInstalled) {
++      if (!this.installFingerprint) {
++        return true;
++      }
++      const installedFingerprint = readInstalledWslServerFingerprint(distro);
++      if (installedFingerprint === this.installFingerprint) {
++        return true;
++      }
++    }
++
++    if (!this.installSourceRoot) {
++      return false;
++    }
++
++    return installServerInWsl(this.installSourceRoot, distro);
++  }
++
++  spawn(
++    config: BackendBootstrapConfig,
++    options: {
++      readonly env: NodeJS.ProcessEnv;
++      readonly captureOutput: boolean;
++    },
++  ): BackendSpawnResult {
++    const serverEntryRelative = `${WSL_SERVER_DIR}/apps/server/dist/bin.mjs`;
++
++    // Translate t3Home to WSL path
++    const wslT3Home = windowsToWslPath(config.t3Home, this.distro);
++    const wslConfig: BackendBootstrapConfig = {
++      ...config,
++      t3Home: wslT3Home,
++    };
++
++    // fd 3 pipe doesn't work across wsl.exe — use --bootstrap-json instead.
++    // Keep the server entry path inside the bash script so `$HOME` expands in
++    // the WSL shell rather than being passed to Node as a literal string.
++    const bootstrapJson = JSON.stringify(wslConfig);
++
++    const child = ChildProcess.spawn(
++      "wsl.exe",
++      [
++        ...distroArgs(this.distro),
++        "--exec",
++        "bash",
++        "-c",
++        // $1 = bootstrapJson (passed as a positional arg below)
++        `${NODE_RESOLVE_PREAMBLE}\nexec node "$HOME/${serverEntryRelative}" --bootstrap-json "$1"`,
++        "bash", // $0
++        bootstrapJson,
++      ],
++      {
++        env: options.env,
++        windowsHide: true,
++        stdio: options.captureOutput
++          ? ["ignore", "pipe", "pipe"]
++          : ["ignore", "inherit", "inherit"],
++      },
++    );
++
++    return { child, bootstrapDelivered: true };
++  }
++
++  translatePath(hostPath: string): string {
++    return windowsToWslPath(hostPath, this.distro);
++  }
++
++  isAvailable(): boolean {
++    if (!isWslAvailable()) return false;
++    const distro = this.distro ?? getDefaultWslDistro();
++    if (!distro) return false;
++    if (!isNodeAvailableInWsl(distro)) return false;
++    if (!isServerInstalledInWsl(distro)) {
++      return false;
++    }
++    return this.installFingerprint
++      ? readInstalledWslServerFingerprint(distro) === this.installFingerprint
++      : true;
++  }
++}
++
++/**
++ * Detect if a folder path is inside WSL.
++ * WSL paths on Windows are UNC paths: \\wsl.localhost\DistroName\...
++ * or \\wsl$\DistroName\...
++ */
++export function isWslPath(folderPath: string): boolean {
++  const normalized = folderPath.toLowerCase().replace(/\\/g, "/");
++  return normalized.startsWith("//wsl.localhost/") || normalized.startsWith("//wsl$/");
++}
++
++/**
++ * Extract the distro name from a WSL UNC path.
++ */
++export function extractWslDistroFromPath(folderPath: string): string | undefined {
++  const normalized = folderPath.replace(/\\/g, "/");
++  const match = normalized.match(/^\/\/wsl(?:\.localhost|\$)\/([^/]+)/i);
++  return match?.[1];
++}
+diff --git a/apps/server/src/cli-config.test.ts b/apps/server/src/cli-config.test.ts
+index 5adece73..41ffd45a 100644
+--- a/apps/server/src/cli-config.test.ts
++++ b/apps/server/src/cli-config.test.ts
+@@ -44,6 +44,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
+           devUrl: Option.none(),
+           noBrowser: Option.none(),
+           bootstrapFd: Option.none(),
++          bootstrapJson: Option.none(),
+           autoBootstrapProjectFromCwd: Option.none(),
+           logWebSocketEvents: Option.none(),
+         },
+@@ -106,6 +107,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
+           devUrl: Option.some(new URL("http://127.0.0.1:4173")),
+           noBrowser: Option.some(true),
+           bootstrapFd: Option.none(),
++          bootstrapJson: Option.none(),
+           autoBootstrapProjectFromCwd: Option.some(true),
+           logWebSocketEvents: Option.some(true),
+         },
+@@ -174,6 +176,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
+           devUrl: Option.some(new URL("http://127.0.0.1:4173")),
+           noBrowser: Option.some(false),
+           bootstrapFd: Option.none(),
++          bootstrapJson: Option.none(),
+           autoBootstrapProjectFromCwd: Option.some(false),
+           logWebSocketEvents: Option.some(false),
+         },
+@@ -244,6 +247,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
+           devUrl: Option.none(),
+           noBrowser: Option.none(),
+           bootstrapFd: Option.none(),
++          bootstrapJson: Option.none(),
+           autoBootstrapProjectFromCwd: Option.none(),
+           logWebSocketEvents: Option.none(),
+         },
+@@ -303,6 +307,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
+           devUrl: Option.some(new URL("http://127.0.0.1:5173")),
+           noBrowser: Option.none(),
+           bootstrapFd: Option.none(),
++          bootstrapJson: Option.none(),
+           autoBootstrapProjectFromCwd: Option.none(),
+           logWebSocketEvents: Option.none(),
+         },
+@@ -359,6 +364,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
+           devUrl: Option.some(new URL("http://127.0.0.1:4173")),
+           noBrowser: Option.none(),
+           bootstrapFd: Option.none(),
++          bootstrapJson: Option.none(),
+           autoBootstrapProjectFromCwd: Option.none(),
+           logWebSocketEvents: Option.none(),
+         },
+@@ -430,6 +436,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
+           devUrl: Option.none(),
+           noBrowser: Option.none(),
+           bootstrapFd: Option.none(),
++          bootstrapJson: Option.none(),
+           autoBootstrapProjectFromCwd: Option.none(),
+           logWebSocketEvents: Option.none(),
+         },
+@@ -483,6 +490,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
+           devUrl: Option.none(),
+           noBrowser: Option.none(),
+           bootstrapFd: Option.none(),
++          bootstrapJson: Option.none(),
+           autoBootstrapProjectFromCwd: Option.none(),
+           logWebSocketEvents: Option.none(),
+         },
+diff --git a/apps/server/src/cli.ts b/apps/server/src/cli.ts
+index 4fc23a1d..83a3e1a0 100644
+--- a/apps/server/src/cli.ts
++++ b/apps/server/src/cli.ts
+@@ -113,6 +113,12 @@ const bootstrapFdFlag = Flag.integer("bootstrap-fd").pipe(
+   Flag.withDescription("Read one-time bootstrap secrets from the given file descriptor."),
+   Flag.optional,
+ );
++const bootstrapJsonFlag = Flag.string("bootstrap-json").pipe(
++  Flag.withDescription(
++    "Inline bootstrap config as a JSON string. Alternative to --bootstrap-fd for environments where fd passing is not available (e.g., WSL via wsl.exe).",
++  ),
++  Flag.optional,
++);
+ const autoBootstrapProjectFromCwdFlag = Flag.boolean("auto-bootstrap-project-from-cwd").pipe(
+   Flag.withDescription(
+     "Create a project for the current working directory on startup when missing.",
+@@ -185,6 +191,7 @@ interface CliServerFlags {
+   readonly devUrl: Option.Option<URL>;
+   readonly noBrowser: Option.Option<boolean>;
+   readonly bootstrapFd: Option.Option<number>;
++  readonly bootstrapJson: Option.Option<string>;
+   readonly autoBootstrapProjectFromCwd: Option.Option<boolean>;
+   readonly logWebSocketEvents: Option.Option<boolean>;
+ }
+@@ -231,14 +238,18 @@ export const resolveServerConfig = (
+       devUrl: flags.devUrl ?? Option.none(),
+       noBrowser: flags.noBrowser ?? Option.none(),
+       bootstrapFd: flags.bootstrapFd ?? Option.none(),
++      bootstrapJson: flags.bootstrapJson ?? Option.none(),
+       autoBootstrapProjectFromCwd: flags.autoBootstrapProjectFromCwd ?? Option.none(),
+       logWebSocketEvents: flags.logWebSocketEvents ?? Option.none(),
+     } satisfies CliServerFlags;
+     const bootstrapFd = Option.getOrUndefined(normalizedFlags.bootstrapFd) ?? env.bootstrapFd;
++    const bootstrapJsonRaw = Option.getOrUndefined(normalizedFlags.bootstrapJson);
+     const bootstrapEnvelope =
+       bootstrapFd !== undefined
+         ? yield* readBootstrapEnvelope(BootstrapEnvelopeSchema, bootstrapFd)
+-        : Option.none();
++        : bootstrapJsonRaw !== undefined
++          ? Schema.decodeOption(BootstrapEnvelopeSchema)(JSON.parse(bootstrapJsonRaw))
++          : Option.none();
+     const bootstrap = Option.getOrUndefined(bootstrapEnvelope);
+ 
+     const mode: RuntimeMode = Option.getOrElse(
+@@ -384,6 +395,7 @@ const resolveCliAuthConfig = (
+       devUrl: flags.devUrl ?? Option.none(),
+       noBrowser: Option.none(),
+       bootstrapFd: Option.none(),
++      bootstrapJson: Option.none(),
+       autoBootstrapProjectFromCwd: Option.none(),
+       logWebSocketEvents: Option.none(),
+     },
+@@ -764,6 +776,7 @@ const sharedServerCommandFlags = {
+   devUrl: devUrlFlag,
+   noBrowser: noBrowserFlag,
+   bootstrapFd: bootstrapFdFlag,
++  bootstrapJson: bootstrapJsonFlag,
+   autoBootstrapProjectFromCwd: autoBootstrapProjectFromCwdFlag,
+   logWebSocketEvents: logWebSocketEventsFlag,
+ } as const;

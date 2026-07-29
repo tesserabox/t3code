@@ -1,0 +1,11 @@
+ apps/server/package.json                           |   2 +-
+ .../src/provider/Layers/CopilotAdapter.test.ts     | 264 ++++++++++++++
+ apps/server/src/provider/Layers/CopilotAdapter.ts  | 390 +++++++++++++++------
+ .../src/provider/Layers/CopilotProvider.test.ts    |  31 ++
+ apps/server/src/provider/Layers/CopilotProvider.ts | 218 +++++++-----
+ .../src/provider/Layers/copilotCliPath.test.ts     |  72 ++++
+ apps/server/src/provider/Layers/copilotCliPath.ts  | 142 ++++++--
+ bun.lock                                           |  19 +-
+ package.json                                       |   1 +
+ scripts/build-desktop-artifact.ts                  |   4 +-
+ 10 files changed, 893 insertions(+), 250 deletions(-)

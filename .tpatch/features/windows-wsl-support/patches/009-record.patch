@@ -1,0 +1,352 @@
+diff --git a/apps/desktop/src/backendEnvironment.ts b/apps/desktop/src/backendEnvironment.ts
+new file mode 100644
+index 00000000..7d713027
+--- /dev/null
++++ b/apps/desktop/src/backendEnvironment.ts
+@@ -0,0 +1,130 @@
++import * as OS from "node:os";
++import * as Path from "node:path";
++
++import { LocalBackendTarget, type BackendTarget } from "./backendTarget.ts";
++import {
++  extractWslDistroFromPath,
++  isNodeAvailableInWsl,
++  isWslAvailable,
++  isWslPath,
++  listWslDistros,
++  WslBackendTarget,
++} from "./wslBackendTarget.ts";
++import { prepareWslServerBundle } from "./wslServerBundle.ts";
++
++export interface ManagedBackendEnvironment {
++  readonly key: string;
++  readonly displayLabel: string;
++  readonly kind: BackendTarget["type"];
++  readonly target: BackendTarget;
++  readonly baseDir: string;
++}
++
++export interface BackendEnvironmentManager {
++  readonly primaryEnvironment: ManagedBackendEnvironment;
++  listEnvironments(): readonly ManagedBackendEnvironment[];
++  getEnvironment(key: string): ManagedBackendEnvironment | undefined;
++  resolveEnvironmentForPath(folderPath: string): ManagedBackendEnvironment;
++}
++
++interface CreateDefaultBackendEnvironmentManagerOptions {
++  readonly rootBaseDir: string;
++  readonly appRoot: string;
++}
++
++function environmentPathFragment(value: string): string {
++  const normalized = value
++    .trim()
++    .toLowerCase()
++    .replace(/[^a-z0-9]+/g, "-")
++    .replace(/^-+|-+$/g, "");
++  return normalized.length > 0 ? normalized : "default";
++}
++
++function makeLocalEnvironment(rootBaseDir: string): ManagedBackendEnvironment {
++  const target = new LocalBackendTarget();
++  return {
++    key: "local",
++    displayLabel: target.displayLabel,
++    kind: target.type,
++    target,
++    baseDir: rootBaseDir,
++  };
++}
++
++function makeWslEnvironment(
++  rootBaseDir: string,
++  distro: string,
++  installSourceRoot: string,
++  installFingerprint: string,
++): ManagedBackendEnvironment {
++  const target = new WslBackendTarget({
++    distro,
++    installSourceRoot,
++    installFingerprint,
++  });
++  return {
++    key: `wsl:${distro}`,
++    displayLabel: target.displayLabel,
++    kind: target.type,
++    target,
++    baseDir: Path.join(rootBaseDir, "environments", "wsl", environmentPathFragment(distro)),
++  };
++}
++
++export function createDefaultBackendEnvironmentManager(
++  options: CreateDefaultBackendEnvironmentManagerOptions,
++): BackendEnvironmentManager {
++  const localEnvironment = makeLocalEnvironment(options.rootBaseDir);
++
++  const wslEnvironments =
++    process.platform === "win32" && isWslAvailable()
++      ? (() => {
++          const bundle = prepareWslServerBundle({
++            appRoot: options.appRoot,
++            cacheRoot: Path.join(OS.homedir(), ".t3", "wsl-server-bundles"),
++          });
++          if (!bundle) {
++            return [];
++          }
++
++          return listWslDistros()
++            .filter((distro) => isNodeAvailableInWsl(distro.name))
++            .map((distro) =>
++              makeWslEnvironment(
++                options.rootBaseDir,
++                distro.name,
++                bundle.hostPath,
++                bundle.fingerprint,
++              ),
++            );
++        })()
++      : [];
++
++  const allEnvironments = [localEnvironment, ...wslEnvironments];
++  const byKey = new Map(allEnvironments.map((environment) => [environment.key, environment]));
++  // Keep the desktop bootstrap local. Extra WSL environments are opt-in via Connections.
++  const primaryEnvironment = localEnvironment;
++
++  return {
++    primaryEnvironment,
++    listEnvironments(): readonly ManagedBackendEnvironment[] {
++      return allEnvironments;
++    },
++    getEnvironment(key: string): ManagedBackendEnvironment | undefined {
++      return byKey.get(key);
++    },
++    resolveEnvironmentForPath(folderPath: string): ManagedBackendEnvironment {
++      if (!isWslPath(folderPath)) {
++        return localEnvironment;
++      }
++
++      const distro = extractWslDistroFromPath(folderPath);
++      if (!distro) {
++        return localEnvironment;
++      }
++
++      return byKey.get(`wsl:${distro}`) ?? localEnvironment;
++    },
++  };
++}
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index 017d8f7f..c0acd056 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -8,6 +8,7 @@ import {
+   createDefaultBackendTarget,
+   type BackendTarget,
+ } from "./backendTarget.ts";
++import { createDefaultBackendEnvironmentManager, type ManagedBackendEnvironment } from "./backendEnvironment.ts";
+ 
+ import {
+   app,
+@@ -107,6 +108,8 @@ const SET_SAVED_ENVIRONMENT_SECRET_CHANNEL = "desktop:set-saved-environment-secr
+ const REMOVE_SAVED_ENVIRONMENT_SECRET_CHANNEL = "desktop:remove-saved-environment-secret";
+ const GET_SERVER_EXPOSURE_STATE_CHANNEL = "desktop:get-server-exposure-state";
+ const SET_SERVER_EXPOSURE_MODE_CHANNEL = "desktop:set-server-exposure-mode";
++const LIST_MANAGED_ENVIRONMENTS_CHANNEL = "desktop:list-managed-environments";
++const PREPARE_MANAGED_ENVIRONMENT_REGISTRATION_CHANNEL = "desktop:prepare-managed-environment-registration";
+ const BASE_DIR = process.env.T3CODE_HOME?.trim() || Path.join(OS.homedir(), ".t3");
+ const STATE_DIR = Path.join(BASE_DIR, "userdata");
+ const DESKTOP_SETTINGS_PATH = Path.join(STATE_DIR, "desktop-settings.json");
+@@ -224,6 +227,16 @@ let isQuitting = false;
+ let desktopProtocolRegistered = false;
+ let aboutCommitHashCache: string | null | undefined;
+ const backendTarget: BackendTarget = createDefaultBackendTarget();
++const backendEnvironmentManager = createDefaultBackendEnvironmentManager({
++  rootBaseDir: BASE_DIR,
++  appRoot: ROOT_DIR,
++});
++
++function listManagedBackendEnvironments(): readonly ManagedBackendEnvironment[] {
++  return backendEnvironmentManager
++    .listEnvironments()
++    .filter((environment) => environment.key !== backendEnvironmentManager.primaryEnvironment.key);
++}
+ let desktopLogSink: RotatingFileSink | null = null;
+ let backendLogSink: RotatingFileSink | null = null;
+ let restoreStdIoCapture: (() => void) | null = null;
+@@ -1862,6 +1875,35 @@ function registerIpcHandlers(): void {
+       state: updateState,
+     } satisfies DesktopUpdateCheckResult;
+   });
++
++  ipcMain.removeHandler(LIST_MANAGED_ENVIRONMENTS_CHANNEL);
++  ipcMain.handle(LIST_MANAGED_ENVIRONMENTS_CHANNEL, async () =>
++    listManagedBackendEnvironments().map((environment) => ({
++      key: environment.key,
++      displayLabel: environment.displayLabel,
++      kind: environment.kind,
++    })),
++  );
++
++  ipcMain.removeHandler(PREPARE_MANAGED_ENVIRONMENT_REGISTRATION_CHANNEL);
++  ipcMain.handle(
++    PREPARE_MANAGED_ENVIRONMENT_REGISTRATION_CHANNEL,
++    async (_event, rawEnvironmentKey: string) => {
++      const environment = backendEnvironmentManager.getEnvironment(rawEnvironmentKey);
++      if (!environment) {
++        throw new Error(`Unknown managed environment: ${rawEnvironmentKey}`);
++      }
++      // Ensure the target is ready (e.g., WSL server bundle installed)
++      const ready = environment.target.ensureReady();
++      return {
++        key: environment.key,
++        displayLabel: environment.displayLabel,
++        kind: environment.kind,
++        ready,
++        baseDir: environment.baseDir,
++      };
++    },
++  );
+ }
+ 
+ function getIconOption(): { icon: string } | Record<string, never> {
+diff --git a/apps/desktop/src/wslServerBundle.ts b/apps/desktop/src/wslServerBundle.ts
+new file mode 100644
+index 00000000..d655a978
+--- /dev/null
++++ b/apps/desktop/src/wslServerBundle.ts
+@@ -0,0 +1,136 @@
++import * as Crypto from "node:crypto";
++import * as FS from "node:fs";
++import * as OS from "node:os";
++import * as Path from "node:path";
++
++import rootPackageJson from "../../../package.json" with { type: "json" };
++import serverPackageJson from "../../server/package.json" with { type: "json" };
++
++interface WslServerRuntimePackageJson {
++  readonly name: string;
++  readonly version: string;
++  readonly repository: {
++    readonly type: string;
++    readonly url: string;
++    readonly directory: string;
++  };
++  readonly bin: Record<string, string>;
++  readonly type: string;
++  readonly engines: Record<string, string>;
++  readonly files: string[];
++  readonly dependencies: Record<string, string>;
++  readonly overrides: Record<string, string>;
++}
++
++export interface PreparedWslServerBundle {
++  readonly hostPath: string;
++  readonly fingerprint: string;
++}
++
++function resolveCatalogDependencies(
++  dependencies: Record<string, string>,
++  catalog: Record<string, string>,
++  label: string,
++): Record<string, string> {
++  return Object.fromEntries(
++    Object.entries(dependencies).map(([name, spec]) => {
++      if (typeof spec !== "string" || !spec.startsWith("catalog:")) {
++        return [name, spec];
++      }
++
++      const catalogKey = spec.slice("catalog:".length).trim();
++      const lookupKey = catalogKey.length > 0 ? catalogKey : name;
++      const resolved = catalog[lookupKey];
++
++      if (typeof resolved !== "string" || resolved.length === 0) {
++        throw new Error(
++          `Unable to resolve '${spec}' for ${label} dependency '${name}'. Expected key '${lookupKey}' in root workspace catalog.`,
++        );
++      }
++
++      return [name, resolved];
++    }),
++  );
++}
++
++export function createWslServerRuntimePackageJson(): WslServerRuntimePackageJson {
++  return {
++    name: serverPackageJson.name,
++    version: serverPackageJson.version,
++    repository: serverPackageJson.repository,
++    bin: serverPackageJson.bin,
++    type: serverPackageJson.type,
++    engines: serverPackageJson.engines,
++    files: serverPackageJson.files,
++    dependencies: resolveCatalogDependencies(
++      serverPackageJson.dependencies,
++      rootPackageJson.workspaces.catalog,
++      "apps/server",
++    ),
++    overrides: resolveCatalogDependencies(
++      rootPackageJson.overrides,
++      rootPackageJson.workspaces.catalog,
++      "apps/server",
++    ),
++  };
++}
++
++function updateHashFromDirectory(hash: Crypto.Hash, directory: string, relativeRoot = ""): void {
++  const entries = FS.readdirSync(directory, { withFileTypes: true }).toSorted((left, right) =>
++    left.name.localeCompare(right.name),
++  );
++
++  for (const entry of entries) {
++    const absolutePath = Path.join(directory, entry.name);
++    const relativePath = relativeRoot.length > 0 ? `${relativeRoot}/${entry.name}` : entry.name;
++    hash.update(relativePath);
++
++    if (entry.isDirectory()) {
++      hash.update("dir");
++      updateHashFromDirectory(hash, absolutePath, relativePath);
++      continue;
++    }
++
++    if (entry.isFile()) {
++      hash.update("file");
++      hash.update(FS.readFileSync(absolutePath));
++    }
++  }
++}
++
++function computeBundleFingerprint(sourceDistDir: string, runtimePackageJson: string): string {
++  const hash = Crypto.createHash("sha256");
++  hash.update(runtimePackageJson);
++  updateHashFromDirectory(hash, sourceDistDir);
++  return hash.digest("hex").slice(0, 16);
++}
++
++export function prepareWslServerBundle(input: {
++  readonly appRoot: string;
++  readonly cacheRoot?: string;
++}): PreparedWslServerBundle | undefined {
++  const sourceDistDir = Path.join(input.appRoot, "apps/server/dist");
++  const sourceEntry = Path.join(sourceDistDir, "bin.mjs");
++  if (!FS.existsSync(sourceEntry)) {
++    return undefined;
++  }
++
++  const runtimePackageJson = `${JSON.stringify(createWslServerRuntimePackageJson(), null, 2)}\n`;
++  const fingerprint = computeBundleFingerprint(sourceDistDir, runtimePackageJson);
++  const cacheRoot = input.cacheRoot ?? Path.join(OS.homedir(), ".t3", "wsl-server-bundles");
++  const bundleDir = Path.join(cacheRoot, fingerprint);
++  const fingerprintFile = Path.join(bundleDir, ".wsl-bundle-fingerprint");
++
++  if (!FS.existsSync(fingerprintFile)) {
++    FS.rmSync(bundleDir, { recursive: true, force: true });
++    FS.mkdirSync(Path.join(bundleDir, "apps/server"), { recursive: true });
++    FS.cpSync(sourceDistDir, Path.join(bundleDir, "apps/server/dist"), { recursive: true });
++    FS.writeFileSync(Path.join(bundleDir, "apps/server/package.json"), runtimePackageJson);
++    FS.writeFileSync(fingerprintFile, `${fingerprint}\n`);
++  }
++
++  return {
++    hostPath: bundleDir,
++    fingerprint,
++  };
++}

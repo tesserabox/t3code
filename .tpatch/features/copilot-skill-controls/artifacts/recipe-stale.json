@@ -1,0 +1,5 @@
+{
+  "stale": true,
+  "reason": "patch touches files absent from recipe: apps/server/src/provider/Layers/ProviderRegistry.ts, apps/server/src/provider/Services/ProviderAdapter.ts, apps/server/src/provider/Services/ProviderRegistry.ts, apps/server/src/provider/providerMaintenanceRunner.test.ts, apps/server/src/ws.ts, packages/contracts/src/rpc.ts",
+  "detected_at": "2026-05-15T20:50:35Z"
+}

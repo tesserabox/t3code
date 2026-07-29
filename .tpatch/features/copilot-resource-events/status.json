@@ -1,0 +1,31 @@
+{
+  "id": "copilot-resource-events",
+  "slug": "copilot-resource-events",
+  "title": "Handle Copilot SDK resource events for rich content rendering. Map resource, resource_link, image, audio, file, blob, directory content blocks to ProviderRuntimeEvent types. Add frontend components for inline images, audio players, and file download links. Requires new contract types in providerRuntime.ts.",
+  "state": "blocked",
+  "compatibility": "unknown",
+  "requested_at": "2026-04-22T10:44:43Z",
+  "updated_at": "2026-05-13T08:00:26Z",
+  "last_command": "reconcile",
+  "notes": "Reconciliation blocked — manual intervention needed",
+  "apply": {
+    "completed_at": "2026-04-23T17:32:29Z",
+    "base_commit": "fc8a225a788a0590f38d2c2e9494cfb68a342fe0",
+    "has_patch": true
+  },
+  "reconcile": {
+    "attempted_at": "2026-05-13T08:00:26Z",
+    "upstream_ref": "upstream/main",
+    "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+    "outcome": "blocked",
+    "labels": [
+      "blocked-by-parent"
+    ]
+  },
+  "depends_on": [
+    {
+      "slug": "copilot-cli-provider",
+      "kind": "hard"
+    }
+  ]
+}

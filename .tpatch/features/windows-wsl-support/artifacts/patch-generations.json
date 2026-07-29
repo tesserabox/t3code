@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "feature": "windows-wsl-support",
+  "current_generation": 1,
+  "generations": [
+    {
+      "generation": 1,
+      "generation_id": "pg_2f4aa3b49da3",
+      "kind": "record",
+      "patch_sha256": "998e8c1090c3a758eeb11f5ecd5041761cc8c01d34a04d03121135d24891091e",
+      "git_patch_id": "c947e92ea2222c6ed39a1c7991ef82bcc7d83af5",
+      "git_patch_id_algorithm": "git-patch-id-stable",
+      "recipe_sha256": "f18fec9dc1a4d24921f877e1facf64cc8f0c15efa42462770a2844f40d94d5e0",
+      "canonical_patch": "artifacts/post-apply.patch",
+      "audit_patch": "patches/011-record.patch",
+      "base_commit": "e42c13bf9",
+      "upper": {
+        "kind": "commit",
+        "ref": "27bead0f7",
+        "commit": "27bead0f7f5c183bc338ca4c5342c49c3eddb7de"
+      },
+      "capture": {
+        "mode": "committed-range",
+        "pathspecs": [
+          "apps/desktop/src/backendEnvironment.ts",
+          "apps/desktop/src/backendTarget.ts",
+          "apps/desktop/src/main.ts",
+          "apps/desktop/src/wslBackendTarget.ts",
+          "apps/desktop/src/wslServerBundle.ts",
+          "apps/server/src/cli-config.test.ts",
+          "apps/server/src/cli.ts"
+        ],
+        "claim_ids": []
+      },
+      "touched_paths": [
+        "apps/desktop/src/backendEnvironment.ts",
+        "apps/desktop/src/backendTarget.ts",
+        "apps/desktop/src/main.ts",
+        "apps/desktop/src/wslBackendTarget.ts",
+        "apps/desktop/src/wslServerBundle.ts",
+        "apps/server/src/cli-config.test.ts",
+        "apps/server/src/cli.ts"
+      ],
+      "dependencies": [],
+      "refs": {
+        "anchors": "",
+        "fingerprints": "",
+        "relations": "",
+        "vector_manifest": ""
+      }
+    }
+  ]
+}

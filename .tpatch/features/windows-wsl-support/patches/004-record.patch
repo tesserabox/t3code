@@ -1,0 +1,1952 @@
+diff --git a/apps/desktop/src/backendEnvironment.test.ts b/apps/desktop/src/backendEnvironment.test.ts
+index f480554f..c176fd97 100644
+--- a/apps/desktop/src/backendEnvironment.test.ts
++++ b/apps/desktop/src/backendEnvironment.test.ts
+@@ -146,7 +146,7 @@ describe("backendEnvironment", () => {
+     }
+   });
+ 
+-  it("creates isolated base directories for local and per-distro WSL environments", () => {
++  it("keeps the primary desktop environment local while discovering WSL environments", () => {
+     isWslAvailableMock.mockReturnValue(true);
+     listWslDistrosMock.mockReturnValue([
+       { name: "Ubuntu-24.04", isDefault: true },
+@@ -166,7 +166,7 @@ describe("backendEnvironment", () => {
+       appRoot: "D:\\Development\\TesseraCode\\t3code",
+     });
+ 
+-    expect(manager.primaryEnvironment.key).toBe("wsl:Ubuntu-24.04");
++    expect(manager.primaryEnvironment.key).toBe("local");
+     expect(manager.listEnvironments()).toEqual([
+       expect.objectContaining({
+         key: "local",
+diff --git a/apps/desktop/src/backendEnvironment.ts b/apps/desktop/src/backendEnvironment.ts
+index ed485b4d..7d713027 100644
+--- a/apps/desktop/src/backendEnvironment.ts
++++ b/apps/desktop/src/backendEnvironment.ts
+@@ -4,7 +4,6 @@ import * as Path from "node:path";
+ import { LocalBackendTarget, type BackendTarget } from "./backendTarget.ts";
+ import {
+   extractWslDistroFromPath,
+-  getDefaultWslDistro,
+   isNodeAvailableInWsl,
+   isWslAvailable,
+   isWslPath,
+@@ -104,9 +103,8 @@ export function createDefaultBackendEnvironmentManager(
+ 
+   const allEnvironments = [localEnvironment, ...wslEnvironments];
+   const byKey = new Map(allEnvironments.map((environment) => [environment.key, environment]));
+-  const defaultDistro = getDefaultWslDistro();
+-  const primaryEnvironment =
+-    (defaultDistro ? byKey.get(`wsl:${defaultDistro}`) : undefined) ?? localEnvironment;
++  // Keep the desktop bootstrap local. Extra WSL environments are opt-in via Connections.
++  const primaryEnvironment = localEnvironment;
+ 
+   return {
+     primaryEnvironment,
+diff --git a/apps/desktop/src/backendTarget.test.ts b/apps/desktop/src/backendTarget.test.ts
+new file mode 100644
+index 00000000..1ad15d94
+--- /dev/null
++++ b/apps/desktop/src/backendTarget.test.ts
+@@ -0,0 +1,96 @@
++import * as Path from "node:path";
++import { fileURLToPath } from "node:url";
++
++import { beforeEach, describe, expect, it, vi } from "vitest";
++
++const { bootstrapEndMock, bootstrapWriteMock, existsSyncMock, spawnMock } = vi.hoisted(() => ({
++  bootstrapEndMock: vi.fn(),
++  bootstrapWriteMock: vi.fn(),
++  existsSyncMock: vi.fn(),
++  spawnMock: vi.fn(),
++}));
++
++vi.mock("node:child_process", () => ({
++  spawn: spawnMock,
++}));
++
++vi.mock("node:fs", () => ({
++  existsSync: existsSyncMock,
++}));
++
++vi.mock("electron", () => ({
++  app: {
++    isPackaged: false,
++    getAppPath: () => "/ignored/app/path",
++  },
++}));
++
++import {
++  createDefaultBackendTarget,
++  LocalBackendTarget,
++  type BackendBootstrapConfig,
++} from "./backendTarget.ts";
++
++const TEST_BOOTSTRAP_CONFIG: BackendBootstrapConfig = {
++  mode: "desktop",
++  noBrowser: true,
++  port: 3210,
++  t3Home: "C:\\Users\\test\\.t3",
++  host: "127.0.0.1",
++  desktopBootstrapToken: "bootstrap-token",
++};
++
++const EXPECTED_REPO_ROOT = Path.resolve(
++  Path.join(Path.dirname(fileURLToPath(import.meta.url)), "../../.."),
++);
++const EXPECTED_BACKEND_ENTRY = Path.join(EXPECTED_REPO_ROOT, "apps/server/dist/bin.mjs");
++
++describe("backendTarget", () => {
++  beforeEach(() => {
++    bootstrapEndMock.mockReset();
++    bootstrapWriteMock.mockReset();
++    existsSyncMock.mockReset();
++    spawnMock.mockReset();
++    spawnMock.mockReturnValue({
++      stdio: [null, null, null, { end: bootstrapEndMock, write: bootstrapWriteMock }],
++    });
++  });
++
++  it("prefers the local backend target by default", () => {
++    expect(createDefaultBackendTarget()).toBeInstanceOf(LocalBackendTarget);
++  });
++
++  it("resolves the local backend entry from the repo root in development", () => {
++    existsSyncMock.mockReturnValue(true);
++
++    const target = new LocalBackendTarget();
++
++    expect(target.isAvailable()).toBe(true);
++    expect(existsSyncMock).toHaveBeenCalledWith(EXPECTED_BACKEND_ENTRY);
++  });
++
++  it("spawns the local backend from the repo root in development", () => {
++    const target = new LocalBackendTarget();
++
++    const result = target.spawn(TEST_BOOTSTRAP_CONFIG, {
++      env: { TEST_ENV: "1" },
++      captureOutput: true,
++    });
++
++    expect(spawnMock).toHaveBeenCalledWith(
++      process.execPath,
++      [EXPECTED_BACKEND_ENTRY, "--bootstrap-fd", "3"],
++      expect.objectContaining({
++        cwd: EXPECTED_REPO_ROOT,
++        env: expect.objectContaining({
++          ELECTRON_RUN_AS_NODE: "1",
++          TEST_ENV: "1",
++        }),
++        stdio: ["ignore", "pipe", "pipe", "pipe"],
++      }),
++    );
++    expect(result.bootstrapDelivered).toBe(true);
++    expect(bootstrapWriteMock).toHaveBeenCalledWith(`${JSON.stringify(TEST_BOOTSTRAP_CONFIG)}\n`);
++    expect(bootstrapEndMock).toHaveBeenCalled();
++  });
++});
+diff --git a/apps/desktop/src/backendTarget.ts b/apps/desktop/src/backendTarget.ts
+index a50391d6..78582fef 100644
+--- a/apps/desktop/src/backendTarget.ts
++++ b/apps/desktop/src/backendTarget.ts
+@@ -76,8 +76,8 @@ export interface BackendTarget {
+ 
+ function resolveAppRoot(): string {
+   if (!app.isPackaged) {
+-    // Development: use the repo root
+-    return Path.resolve(Path.join(app.getAppPath(), ".."));
++    // Development: resolve from the compiled desktop bundle back to the repo root.
++    return Path.resolve(__dirname, "../../..");
+   }
+   // Production: app.asar root
+   return app.getAppPath();
+@@ -150,37 +150,12 @@ export class LocalBackendTarget implements BackendTarget {
+   }
+ }
+ 
+-import {
+-  WslBackendTarget,
+-  isWslAvailable,
+-  getDefaultWslDistro,
+-  isNodeAvailableInWsl,
+-} from "./wslBackendTarget.ts";
+-import { prepareWslServerBundle } from "./wslServerBundle.ts";
+-
+ /**
+  * Create the default backend target.
+  *
+- * On Windows, if WSL is available with Node.js and the server installed,
+- * creates a WslBackendTarget so WSL projects use a native Linux server.
+- * Falls back to LocalBackendTarget otherwise.
++ * Desktop bootstraps locally by default. Extra WSL runtimes are exposed as
++ * opt-in managed environments via Connections.
+  */
+ export function createDefaultBackendTarget(): BackendTarget {
+-  if (process.platform === "win32" && isWslAvailable()) {
+-    const distro = getDefaultWslDistro();
+-    if (distro && isNodeAvailableInWsl(distro)) {
+-      const bundle = prepareWslServerBundle({
+-        appRoot: resolveAppRoot(),
+-        cacheRoot: Path.join(OS.homedir(), ".t3", "wsl-server-bundles"),
+-      });
+-      if (bundle) {
+-        return new WslBackendTarget({
+-          distro,
+-          installSourceRoot: bundle.hostPath,
+-          installFingerprint: bundle.fingerprint,
+-        });
+-      }
+-    }
+-  }
+   return new LocalBackendTarget();
+ }
+diff --git a/apps/desktop/src/clientPersistence.test.ts b/apps/desktop/src/clientPersistence.test.ts
+index 27f1e1d9..11007e13 100644
+--- a/apps/desktop/src/clientPersistence.test.ts
++++ b/apps/desktop/src/clientPersistence.test.ts
+@@ -87,6 +87,21 @@ describe("clientPersistence", () => {
+     expect(readSavedEnvironmentRegistry(registryPath)).toEqual([savedRegistryRecord]);
+   });
+ 
++  it("preserves desktop-managed saved environment metadata", () => {
++    const registryPath = makeTempPath("saved-environments.json");
++    const managedRecord: PersistedSavedEnvironmentRecord = {
++      ...savedRegistryRecord,
++      management: {
++        kind: "desktop-managed",
++        environmentKey: "wsl:Ubuntu-24.04",
++      },
++    };
++
++    writeSavedEnvironmentRegistry(registryPath, [managedRecord]);
++
++    expect(readSavedEnvironmentRegistry(registryPath)).toEqual([managedRecord]);
++  });
++
+   it("persists encrypted saved environment secrets when encryption is available", () => {
+     const registryPath = makeTempPath("saved-environments.json");
+     const secretStorage = makeSecretStorage(true);
+diff --git a/apps/desktop/src/clientPersistence.ts b/apps/desktop/src/clientPersistence.ts
+index ad08a003..635ee764 100644
+--- a/apps/desktop/src/clientPersistence.ts
++++ b/apps/desktop/src/clientPersistence.ts
+@@ -21,6 +21,17 @@ interface SavedEnvironmentRegistryDocument {
+   readonly records: readonly PersistedSavedEnvironmentStorageRecord[];
+ }
+ 
++function isPersistedSavedEnvironmentManagement(
++  value: unknown,
++): value is PersistedSavedEnvironmentStorageRecord["management"] {
++  return (
++    value === undefined ||
++    (Predicate.isObject(value) &&
++      value.kind === "desktop-managed" &&
++      typeof value.environmentKey === "string")
++  );
++}
++
+ export interface DesktopSecretStorage {
+   readonly isEncryptionAvailable: () => boolean;
+   readonly encryptString: (value: string) => Buffer;
+@@ -57,6 +68,7 @@ function isPersistedSavedEnvironmentStorageRecord(
+     typeof value.wsBaseUrl === "string" &&
+     typeof value.createdAt === "string" &&
+     (value.lastConnectedAt === null || typeof value.lastConnectedAt === "string") &&
++    isPersistedSavedEnvironmentManagement(value.management) &&
+     (value.encryptedBearerToken === undefined || typeof value.encryptedBearerToken === "string")
+   );
+ }
+@@ -84,6 +96,7 @@ function toPersistedSavedEnvironmentRecord(
+     wsBaseUrl: record.wsBaseUrl,
+     createdAt: record.createdAt,
+     lastConnectedAt: record.lastConnectedAt,
++    ...(record.management ? { management: record.management } : {}),
+   };
+ }
+ 
+@@ -134,6 +147,7 @@ export function writeSavedEnvironmentRegistry(
+             wsBaseUrl: record.wsBaseUrl,
+             createdAt: record.createdAt,
+             lastConnectedAt: record.lastConnectedAt,
++            ...(record.management ? { management: record.management } : {}),
+             encryptedBearerToken,
+           }
+         : record;
+@@ -189,7 +203,7 @@ export function writeSavedEnvironmentSecret(input: {
+       const encryptedBearerToken = input.secretStorage
+         .encryptString(input.secret)
+         .toString("base64");
+-      return {
++      const nextRecord: PersistedSavedEnvironmentStorageRecord = {
+         environmentId: record.environmentId,
+         label: record.label,
+         httpBaseUrl: record.httpBaseUrl,
+@@ -197,7 +211,11 @@ export function writeSavedEnvironmentSecret(input: {
+         createdAt: record.createdAt,
+         lastConnectedAt: record.lastConnectedAt,
+         encryptedBearerToken,
+-      } satisfies PersistedSavedEnvironmentStorageRecord;
++      };
++      if (record.management) {
++        nextRecord.management = record.management;
++      }
++      return nextRecord;
+     }),
+   } satisfies SavedEnvironmentRegistryDocument);
+   return found;
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index 9965f82d..f4a8b913 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -23,6 +23,8 @@ import type {
+   ClientSettings,
+   DesktopTheme,
+   DesktopAppBranding,
++  DesktopManagedEnvironmentCandidate,
++  DesktopManagedEnvironmentRegistration,
+   DesktopServerExposureMode,
+   DesktopServerExposureState,
+   DesktopUpdateChannel,
+@@ -99,6 +101,9 @@ const GET_APP_BRANDING_CHANNEL = "desktop:get-app-branding";
+ const GET_LOCAL_ENVIRONMENT_BOOTSTRAP_CHANNEL = "desktop:get-local-environment-bootstrap";
+ const GET_CLIENT_SETTINGS_CHANNEL = "desktop:get-client-settings";
+ const SET_CLIENT_SETTINGS_CHANNEL = "desktop:set-client-settings";
++const LIST_MANAGED_ENVIRONMENTS_CHANNEL = "desktop:list-managed-environments";
++const PREPARE_MANAGED_ENVIRONMENT_REGISTRATION_CHANNEL =
++  "desktop:prepare-managed-environment-registration";
+ const GET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL = "desktop:get-saved-environment-registry";
+ const SET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL = "desktop:set-saved-environment-registry";
+ const GET_SAVED_ENVIRONMENT_SECRET_CHANNEL = "desktop:get-saved-environment-secret";
+@@ -205,6 +210,20 @@ type LinuxDesktopNamedApp = Electron.App & {
+   setDesktopName?: (desktopName: string) => void;
+ };
+ 
++interface ManagedBackendRuntime {
++  readonly environment: ManagedBackendEnvironment;
++  child: ChildProcess.ChildProcess | null;
++  port: number | null;
++  bootstrapToken: string | null;
++  httpBaseUrl: string | null;
++  wsBaseUrl: string | null;
++  startPromise: Promise<DesktopManagedEnvironmentRegistration> | null;
++  listeningDetector: ServerListeningDetector | null;
++  restartAttempt: number;
++  restartTimer: ReturnType<typeof setTimeout> | null;
++  expectedExit: boolean;
++}
++
+ let mainWindow: BrowserWindow | null = null;
+ let backendProcess: ChildProcess.ChildProcess | null = null;
+ let backendPort = 0;
+@@ -216,16 +235,17 @@ let backendEndpointUrl: string | null = null;
+ let backendAdvertisedHost: string | null = null;
+ let backendReadinessAbortController: AbortController | null = null;
+ let backendInitialWindowOpenInFlight: Promise<void> | null = null;
+-const primaryBackendEnvironment: ManagedBackendEnvironment = createDefaultBackendEnvironmentManager(
+-  {
+-    rootBaseDir: BASE_DIR,
+-    appRoot: ROOT_DIR,
+-  },
+-).primaryEnvironment;
++const backendEnvironmentManager = createDefaultBackendEnvironmentManager({
++  rootBaseDir: BASE_DIR,
++  appRoot: ROOT_DIR,
++});
++const primaryBackendEnvironment: ManagedBackendEnvironment =
++  backendEnvironmentManager.primaryEnvironment;
+ const backendTarget: BackendTarget = primaryBackendEnvironment.target;
+ let backendListeningDetector: ServerListeningDetector | null = null;
+ let restartAttempt = 0;
+ let restartTimer: ReturnType<typeof setTimeout> | null = null;
++const managedBackendRuntimes = new Map<string, ManagedBackendRuntime>();
+ let isQuitting = false;
+ let desktopProtocolRegistered = false;
+ let aboutCommitHashCache: string | null | undefined;
+@@ -591,12 +611,15 @@ function initializePackagedLogging(): void {
+   }
+ }
+ 
+-function captureBackendOutput(child: ChildProcess.ChildProcess): void {
++function captureBackendOutput(
++  child: ChildProcess.ChildProcess,
++  listeningDetector?: ServerListeningDetector | null,
++): void {
+   const attachStream = (stream: NodeJS.ReadableStream | null | undefined): void => {
+     stream?.on("data", (chunk: unknown) => {
+       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
+       backendLogSink?.write(buffer);
+-      backendListeningDetector?.push(buffer);
++      (listeningDetector ?? backendListeningDetector)?.push(buffer);
+     });
+   };
+ 
+@@ -604,6 +627,355 @@ function captureBackendOutput(child: ChildProcess.ChildProcess): void {
+   attachStream(child.stderr);
+ }
+ 
++function listManagedBackendEnvironments(): readonly ManagedBackendEnvironment[] {
++  return backendEnvironmentManager
++    .listEnvironments()
++    .filter((environment) => environment.key !== primaryBackendEnvironment.key);
++}
++
++function toDesktopManagedEnvironmentCandidate(
++  environment: ManagedBackendEnvironment,
++): DesktopManagedEnvironmentCandidate {
++  return {
++    key: environment.key,
++    label: environment.displayLabel,
++    kind: environment.kind,
++  };
++}
++
++function requireManagedBackendEnvironment(environmentKey: string): ManagedBackendEnvironment {
++  const environment = backendEnvironmentManager.getEnvironment(environmentKey);
++  if (!environment || environment.key === primaryBackendEnvironment.key) {
++    throw new Error(`Unknown managed environment '${environmentKey}'.`);
++  }
++  return environment;
++}
++
++function getOrCreateManagedBackendRuntime(
++  environment: ManagedBackendEnvironment,
++): ManagedBackendRuntime {
++  const existing = managedBackendRuntimes.get(environment.key);
++  if (existing) {
++    return existing;
++  }
++
++  const runtime: ManagedBackendRuntime = {
++    environment,
++    child: null,
++    port: null,
++    bootstrapToken: null,
++    httpBaseUrl: null,
++    wsBaseUrl: null,
++    startPromise: null,
++    listeningDetector: null,
++    restartAttempt: 0,
++    restartTimer: null,
++    expectedExit: false,
++  };
++  managedBackendRuntimes.set(environment.key, runtime);
++  return runtime;
++}
++
++function toManagedBackendRegistration(
++  runtime: ManagedBackendRuntime,
++): DesktopManagedEnvironmentRegistration {
++  if (!runtime.httpBaseUrl || !runtime.wsBaseUrl || !runtime.bootstrapToken) {
++    throw new Error(`Managed environment '${runtime.environment.key}' is not ready.`);
++  }
++
++  return {
++    key: runtime.environment.key,
++    label: runtime.environment.displayLabel,
++    kind: runtime.environment.kind,
++    httpBaseUrl: runtime.httpBaseUrl,
++    wsBaseUrl: runtime.wsBaseUrl,
++    bootstrapToken: runtime.bootstrapToken,
++  };
++}
++
++function clearManagedBackendRestartTimer(runtime: ManagedBackendRuntime): void {
++  if (runtime.restartTimer) {
++    clearTimeout(runtime.restartTimer);
++    runtime.restartTimer = null;
++  }
++}
++
++function scheduleManagedBackendRestart(runtime: ManagedBackendRuntime, reason: string): void {
++  if (isQuitting || runtime.expectedExit || runtime.restartTimer) {
++    return;
++  }
++
++  const delayMs = Math.min(500 * 2 ** runtime.restartAttempt, 10_000);
++  runtime.restartAttempt += 1;
++  writeDesktopLogHeader(
++    `managed backend exited unexpectedly key=${runtime.environment.key} reason=${sanitizeLogValue(reason)} restartMs=${delayMs}`,
++  );
++
++  runtime.restartTimer = setTimeout(() => {
++    runtime.restartTimer = null;
++    void ensureManagedBackendEnvironmentRegistration(runtime.environment.key).catch((error) => {
++      writeDesktopLogHeader(
++        `managed backend restart failed key=${runtime.environment.key} message=${sanitizeLogValue(formatErrorMessage(error))}`,
++      );
++    });
++  }, delayMs);
++}
++
++function stopManagedBackendEnvironment(environmentKey: string): void {
++  const runtime = managedBackendRuntimes.get(environmentKey);
++  if (!runtime) {
++    return;
++  }
++
++  clearManagedBackendRestartTimer(runtime);
++  runtime.expectedExit = true;
++  runtime.listeningDetector = null;
++
++  const child = runtime.child;
++  runtime.child = null;
++  runtime.startPromise = null;
++  managedBackendRuntimes.delete(environmentKey);
++
++  if (!child) {
++    return;
++  }
++
++  if (child.exitCode === null && child.signalCode === null) {
++    expectedBackendExitChildren.add(child);
++    child.kill("SIGTERM");
++    setTimeout(() => {
++      if (child.exitCode === null && child.signalCode === null) {
++        child.kill("SIGKILL");
++      }
++    }, 2_000).unref();
++  }
++}
++
++function stopManagedBackendEnvironments(): void {
++  for (const environmentKey of managedBackendRuntimes.keys()) {
++    stopManagedBackendEnvironment(environmentKey);
++  }
++}
++
++async function startManagedBackendRuntime(
++  runtime: ManagedBackendRuntime,
++): Promise<DesktopManagedEnvironmentRegistration> {
++  clearManagedBackendRestartTimer(runtime);
++
++  if (!runtime.environment.target.ensureReady()) {
++    throw new Error(
++      `Managed backend target '${runtime.environment.displayLabel}' is not available.`,
++    );
++  }
++
++  const preferredPort = runtime.port ?? Math.max(DEFAULT_DESKTOP_BACKEND_PORT + 1, backendPort + 1);
++  const port = await resolveDesktopBackendPort({
++    host: DESKTOP_LOOPBACK_HOST,
++    startPort: preferredPort,
++  });
++
++  runtime.port = port;
++  if (runtime.expectedExit) {
++    throw new Error("Managed backend start canceled.");
++  }
++  runtime.bootstrapToken = Crypto.randomBytes(24).toString("hex");
++  runtime.httpBaseUrl = `http://${DESKTOP_LOOPBACK_HOST}:${port}`;
++  runtime.wsBaseUrl = `ws://${DESKTOP_LOOPBACK_HOST}:${port}`;
++
++  const listeningDetector = new ServerListeningDetector();
++  runtime.listeningDetector = listeningDetector;
++
++  let child: ChildProcess.ChildProcess | null = null;
++
++  try {
++    const spawnResult = runtime.environment.target.spawn(
++      {
++        mode: "desktop",
++        noBrowser: true,
++        port,
++        t3Home: runtime.environment.baseDir,
++        host: DESKTOP_LOOPBACK_HOST,
++        desktopBootstrapToken: runtime.bootstrapToken,
++        ...(backendObservabilitySettings.otlpTracesUrl
++          ? { otlpTracesUrl: backendObservabilitySettings.otlpTracesUrl }
++          : {}),
++        ...(backendObservabilitySettings.otlpMetricsUrl
++          ? { otlpMetricsUrl: backendObservabilitySettings.otlpMetricsUrl }
++          : {}),
++      },
++      {
++        env: backendChildEnv(),
++        captureOutput: !isDevelopment,
++      },
++    );
++
++    const startedChild = spawnResult.child;
++    child = startedChild;
++    if (!spawnResult.bootstrapDelivered) {
++      startedChild.kill("SIGTERM");
++      throw new Error("Failed to deliver managed backend bootstrap config.");
++    }
++
++    runtime.child = startedChild;
++    captureBackendOutput(startedChild, listeningDetector);
++    writeDesktopLogHeader(
++      `managed backend start requested key=${runtime.environment.key} port=${port} target=${runtime.environment.displayLabel}`,
++    );
++
++    startedChild.once("spawn", () => {
++      runtime.restartAttempt = 0;
++    });
++
++    startedChild.on("error", (error) => {
++      if (runtime.listeningDetector === listeningDetector) {
++        listeningDetector.fail(error);
++        runtime.listeningDetector = null;
++      }
++      const wasExpected = runtime.expectedExit || expectedBackendExitChildren.has(startedChild);
++      if (runtime.child === startedChild) {
++        runtime.child = null;
++      }
++      if (wasExpected || isQuitting) {
++        return;
++      }
++      scheduleManagedBackendRestart(runtime, error.message);
++    });
++
++    startedChild.on("exit", (code, signal) => {
++      if (runtime.listeningDetector === listeningDetector) {
++        listeningDetector.fail(
++          new Error(
++            `managed backend exited before readiness (code=${code ?? "null"} signal=${signal ?? "null"})`,
++          ),
++        );
++        runtime.listeningDetector = null;
++      }
++      const wasExpected = runtime.expectedExit || expectedBackendExitChildren.has(startedChild);
++      if (runtime.child === startedChild) {
++        runtime.child = null;
++      }
++      if (wasExpected || isQuitting) {
++        return;
++      }
++      scheduleManagedBackendRestart(runtime, `code=${code ?? "null"} signal=${signal ?? "null"}`);
++    });
++
++    await waitForBackendStartupReady({
++      listeningPromise: listeningDetector.promise,
++      waitForHttpReady: () =>
++        waitForHttpReady(runtime.httpBaseUrl ?? `http://${DESKTOP_LOOPBACK_HOST}:${port}`, {
++          timeoutMs: 60_000,
++        }),
++      cancelHttpWait: () => undefined,
++    });
++
++    runtime.listeningDetector = null;
++    if (runtime.expectedExit) {
++      throw new Error("Managed backend start canceled.");
++    }
++    writeDesktopLogHeader(
++      `managed backend ready key=${runtime.environment.key} baseUrl=${runtime.httpBaseUrl}`,
++    );
++    return toManagedBackendRegistration(runtime);
++  } catch (error) {
++    runtime.listeningDetector = null;
++    if (runtime.child === child) {
++      runtime.child = null;
++    }
++    if (child && child.exitCode === null && child.signalCode === null) {
++      const failedChild = child;
++      runtime.expectedExit = true;
++      expectedBackendExitChildren.add(failedChild);
++      failedChild.kill("SIGTERM");
++      setTimeout(() => {
++        if (failedChild.exitCode === null && failedChild.signalCode === null) {
++          failedChild.kill("SIGKILL");
++        }
++      }, 2_000).unref();
++      runtime.expectedExit = false;
++    }
++    runtime.bootstrapToken = null;
++    runtime.httpBaseUrl = null;
++    runtime.wsBaseUrl = null;
++    throw error;
++  }
++}
++
++async function ensureManagedBackendEnvironmentRegistration(
++  environmentKey: string,
++): Promise<DesktopManagedEnvironmentRegistration> {
++  const environment = requireManagedBackendEnvironment(environmentKey);
++  const runtime = getOrCreateManagedBackendRuntime(environment);
++
++  if (runtime.startPromise) {
++    return runtime.startPromise;
++  }
++
++  if (runtime.child && runtime.httpBaseUrl && runtime.wsBaseUrl && runtime.bootstrapToken) {
++    return toManagedBackendRegistration(runtime);
++  }
++
++  const startPromise = startManagedBackendRuntime(runtime).finally(() => {
++    if (runtime.startPromise === startPromise) {
++      runtime.startPromise = null;
++    }
++  });
++  runtime.startPromise = startPromise;
++  return startPromise;
++}
++
++function syncManagedBackendsAfterRegistryWrite(
++  previousRecords: readonly PersistedSavedEnvironmentRecord[],
++  nextRecords: readonly PersistedSavedEnvironmentRecord[],
++): void {
++  const nextManagedKeys = new Set(
++    nextRecords.flatMap((record) =>
++      record.management?.kind === "desktop-managed" ? [record.management.environmentKey] : [],
++    ),
++  );
++
++  for (const record of previousRecords) {
++    if (
++      record.management?.kind === "desktop-managed" &&
++      !nextManagedKeys.has(record.management.environmentKey)
++    ) {
++      stopManagedBackendEnvironment(record.management.environmentKey);
++    }
++  }
++}
++
++async function readHydratedSavedEnvironmentRegistry(): Promise<
++  readonly PersistedSavedEnvironmentRecord[]
++> {
++  const records = readSavedEnvironmentRegistry(SAVED_ENVIRONMENT_REGISTRY_PATH);
++  const hydratedRecords: PersistedSavedEnvironmentRecord[] = [];
++
++  for (const record of records) {
++    if (record.management?.kind !== "desktop-managed") {
++      hydratedRecords.push(record);
++      continue;
++    }
++
++    try {
++      const registration = await ensureManagedBackendEnvironmentRegistration(
++        record.management.environmentKey,
++      );
++      hydratedRecords.push({
++        ...record,
++        httpBaseUrl: registration.httpBaseUrl,
++        wsBaseUrl: registration.wsBaseUrl,
++      });
++    } catch (error) {
++      writeDesktopLogHeader(
++        `managed backend hydration warning key=${record.management.environmentKey} message=${sanitizeLogValue(formatErrorMessage(error))}`,
++      );
++      hydratedRecords.push(record);
++    }
++  }
++
++  return hydratedRecords;
++}
++
+ initializePackagedLogging();
+ 
+ if (process.platform === "linux") {
+@@ -1571,9 +1943,28 @@ function registerIpcHandlers(): void {
+     writeClientSettings(CLIENT_SETTINGS_PATH, rawSettings as ClientSettings);
+   });
+ 
++  ipcMain.removeHandler(LIST_MANAGED_ENVIRONMENTS_CHANNEL);
++  ipcMain.handle(LIST_MANAGED_ENVIRONMENTS_CHANNEL, async () =>
++    listManagedBackendEnvironments().map((environment) =>
++      toDesktopManagedEnvironmentCandidate(environment),
++    ),
++  );
++
++  ipcMain.removeHandler(PREPARE_MANAGED_ENVIRONMENT_REGISTRATION_CHANNEL);
++  ipcMain.handle(
++    PREPARE_MANAGED_ENVIRONMENT_REGISTRATION_CHANNEL,
++    async (_event, rawEnvironmentKey: unknown) => {
++      if (typeof rawEnvironmentKey !== "string" || rawEnvironmentKey.trim().length === 0) {
++        throw new Error("Invalid managed environment key.");
++      }
++
++      return ensureManagedBackendEnvironmentRegistration(rawEnvironmentKey);
++    },
++  );
++
+   ipcMain.removeHandler(GET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL);
+   ipcMain.handle(GET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL, async () =>
+-    readSavedEnvironmentRegistry(SAVED_ENVIRONMENT_REGISTRY_PATH),
++    readHydratedSavedEnvironmentRegistry(),
+   );
+ 
+   ipcMain.removeHandler(SET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL);
+@@ -1582,10 +1973,11 @@ function registerIpcHandlers(): void {
+       throw new Error("Invalid saved environment registry payload.");
+     }
+ 
+-    writeSavedEnvironmentRegistry(
+-      SAVED_ENVIRONMENT_REGISTRY_PATH,
+-      rawRecords as readonly PersistedSavedEnvironmentRecord[],
+-    );
++    const previousRecords = readSavedEnvironmentRegistry(SAVED_ENVIRONMENT_REGISTRY_PATH);
++    const nextRecords = rawRecords as readonly PersistedSavedEnvironmentRecord[];
++
++    writeSavedEnvironmentRegistry(SAVED_ENVIRONMENT_REGISTRY_PATH, nextRecords);
++    syncManagedBackendsAfterRegistryWrite(previousRecords, nextRecords);
+   });
+ 
+   ipcMain.removeHandler(GET_SAVED_ENVIRONMENT_SECRET_CHANNEL);
+@@ -2100,6 +2492,7 @@ app.on("before-quit", () => {
+   writeDesktopLogHeader("before-quit received");
+   clearUpdatePollTimer();
+   cancelBackendReadinessWait();
++  stopManagedBackendEnvironments();
+   stopBackend();
+   restoreStdIoCapture?.();
+ });
+diff --git a/apps/desktop/src/preload.ts b/apps/desktop/src/preload.ts
+index a6756048..36c4e00b 100644
+--- a/apps/desktop/src/preload.ts
++++ b/apps/desktop/src/preload.ts
+@@ -17,6 +17,9 @@ const GET_APP_BRANDING_CHANNEL = "desktop:get-app-branding";
+ const GET_LOCAL_ENVIRONMENT_BOOTSTRAP_CHANNEL = "desktop:get-local-environment-bootstrap";
+ const GET_CLIENT_SETTINGS_CHANNEL = "desktop:get-client-settings";
+ const SET_CLIENT_SETTINGS_CHANNEL = "desktop:set-client-settings";
++const LIST_MANAGED_ENVIRONMENTS_CHANNEL = "desktop:list-managed-environments";
++const PREPARE_MANAGED_ENVIRONMENT_REGISTRATION_CHANNEL =
++  "desktop:prepare-managed-environment-registration";
+ const GET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL = "desktop:get-saved-environment-registry";
+ const SET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL = "desktop:set-saved-environment-registry";
+ const GET_SAVED_ENVIRONMENT_SECRET_CHANNEL = "desktop:get-saved-environment-secret";
+@@ -42,6 +45,9 @@ contextBridge.exposeInMainWorld("desktopBridge", {
+   },
+   getClientSettings: () => ipcRenderer.invoke(GET_CLIENT_SETTINGS_CHANNEL),
+   setClientSettings: (settings) => ipcRenderer.invoke(SET_CLIENT_SETTINGS_CHANNEL, settings),
++  listManagedEnvironments: () => ipcRenderer.invoke(LIST_MANAGED_ENVIRONMENTS_CHANNEL),
++  prepareManagedEnvironmentRegistration: (environmentKey) =>
++    ipcRenderer.invoke(PREPARE_MANAGED_ENVIRONMENT_REGISTRATION_CHANNEL, environmentKey),
+   getSavedEnvironmentRegistry: () => ipcRenderer.invoke(GET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL),
+   setSavedEnvironmentRegistry: (records) =>
+     ipcRenderer.invoke(SET_SAVED_ENVIRONMENT_REGISTRY_CHANNEL, records),
+diff --git a/apps/desktop/src/wslBackendTarget.test.ts b/apps/desktop/src/wslBackendTarget.test.ts
+index 109f4736..8174d5c2 100644
+--- a/apps/desktop/src/wslBackendTarget.test.ts
++++ b/apps/desktop/src/wslBackendTarget.test.ts
+@@ -10,6 +10,7 @@ vi.mock("node:child_process", () => ({
+   spawn: spawnMock,
+ }));
+ 
++import type { BackendBootstrapConfig } from "./backendTarget.ts";
+ import {
+   canReachNpmRegistryInWsl,
+   installServerInWsl,
+@@ -18,6 +19,14 @@ import {
+ } from "./wslBackendTarget.ts";
+ 
+ const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
++const TEST_BOOTSTRAP_CONFIG: BackendBootstrapConfig = {
++  mode: "desktop",
++  noBrowser: true,
++  port: 3210,
++  t3Home: "C:\\Users\\test\\.t3",
++  host: "127.0.0.1",
++  desktopBootstrapToken: "bootstrap-token",
++};
+ 
+ function setPlatform(platform: NodeJS.Platform): void {
+   Object.defineProperty(process, "platform", {
+@@ -160,4 +169,25 @@ describe("wslBackendTarget", () => {
+       ),
+     ).toBe(true);
+   });
++
++  it("hides the spawned WSL console window", () => {
++    execFileSyncMock.mockReturnValue("/mnt/c/Users/test/.t3\n");
++    spawnMock.mockReturnValue({ pid: 1234 });
++
++    const target = new WslBackendTarget({ distro: "Ubuntu-24.04" });
++
++    target.spawn(TEST_BOOTSTRAP_CONFIG, {
++      env: {},
++      captureOutput: true,
++    });
++
++    expect(spawnMock).toHaveBeenCalledWith(
++      "wsl.exe",
++      expect.any(Array),
++      expect.objectContaining({
++        windowsHide: true,
++        stdio: ["ignore", "pipe", "pipe"],
++      }),
++    );
++  });
+ });
+diff --git a/apps/desktop/src/wslBackendTarget.ts b/apps/desktop/src/wslBackendTarget.ts
+index e8b914ee..e84a3171 100644
+--- a/apps/desktop/src/wslBackendTarget.ts
++++ b/apps/desktop/src/wslBackendTarget.ts
+@@ -451,6 +451,7 @@ export class WslBackendTarget implements BackendTarget {
+       ],
+       {
+         env: options.env,
++        windowsHide: true,
+         stdio: options.captureOutput
+           ? ["ignore", "pipe", "pipe"]
+           : ["ignore", "inherit", "inherit"],
+diff --git a/apps/server/src/atomicFile.ts b/apps/server/src/atomicFile.ts
+new file mode 100644
+index 00000000..32654b85
+--- /dev/null
++++ b/apps/server/src/atomicFile.ts
+@@ -0,0 +1,5 @@
++import { randomUUID } from "node:crypto";
++
++export function makeAtomicTempPath(targetPath: string): string {
++  return `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
++}
+diff --git a/apps/server/src/keybindings.ts b/apps/server/src/keybindings.ts
+index 07ae9156..5ce07647 100644
+--- a/apps/server/src/keybindings.ts
++++ b/apps/server/src/keybindings.ts
+@@ -45,6 +45,7 @@ import {
+ } from "effect";
+ import * as Semaphore from "effect/Semaphore";
+ import { ServerConfig } from "./config.ts";
++import { makeAtomicTempPath } from "./atomicFile.ts";
+ import { fromLenientJson } from "@t3tools/shared/schemaJson";
+ 
+ type WhenToken =
+@@ -663,7 +664,7 @@ const makeKeybindings = Effect.gen(function* () {
+   });
+ 
+   const writeConfigAtomically = (rules: readonly KeybindingRule[]) => {
+-    const tempPath = `${keybindingsConfigPath}.${process.pid}.${Date.now()}.tmp`;
++    const tempPath = makeAtomicTempPath(keybindingsConfigPath);
+ 
+     return Schema.encodeEffect(KeybindingsConfigPrettyJson)(rules).pipe(
+       Effect.map((encoded) => `${encoded}\n`),
+diff --git a/apps/server/src/provider/Layers/ProviderRegistry.ts b/apps/server/src/provider/Layers/ProviderRegistry.ts
+index 96102448..bff027bc 100644
+--- a/apps/server/src/provider/Layers/ProviderRegistry.ts
++++ b/apps/server/src/provider/Layers/ProviderRegistry.ts
+@@ -5,6 +5,7 @@
+  */
+ import type { ProviderKind, ServerProvider } from "@t3tools/contracts";
+ import { Effect, Equal, FileSystem, Layer, Path, PubSub, Ref, Stream } from "effect";
++import * as Semaphore from "effect/Semaphore";
+ 
+ import { ServerConfig } from "../../config.ts";
+ import { ClaudeProviderLive } from "./ClaudeProvider.ts";
+@@ -153,6 +154,7 @@ const ProviderRegistryLiveBase = Layer.effect(
+     const fallbackByProvider = new Map(
+       fallbackProviders.map((provider) => [provider.provider, provider] as const),
+     );
++    const persistSemaphore = yield* Semaphore.make(1);
+ 
+     const cachedProviders = yield* Effect.forEach(
+       activeProviders,
+@@ -182,14 +184,16 @@ const ProviderRegistryLiveBase = Layer.effect(
+     const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(cachedProviders);
+ 
+     const persistProvider = (provider: ServerProvider) =>
+-      writeProviderStatusCache({
+-        filePath: cachePathByProvider.get(provider.provider)!,
+-        provider,
+-      }).pipe(
+-        Effect.provideService(FileSystem.FileSystem, fileSystem),
+-        Effect.provideService(Path.Path, path),
+-        Effect.tapError(Effect.logError),
+-        Effect.ignore,
++      persistSemaphore.withPermits(1)(
++        writeProviderStatusCache({
++          filePath: cachePathByProvider.get(provider.provider)!,
++          provider,
++        }).pipe(
++          Effect.provideService(FileSystem.FileSystem, fileSystem),
++          Effect.provideService(Path.Path, path),
++          Effect.tapError(Effect.logError),
++          Effect.ignore,
++        ),
+       );
+ 
+     const upsertProviders = Effect.fn("upsertProviders")(function* (
+diff --git a/apps/server/src/provider/providerStatusCache.test.ts b/apps/server/src/provider/providerStatusCache.test.ts
+index b0cb5bc6..6220530a 100644
+--- a/apps/server/src/provider/providerStatusCache.test.ts
++++ b/apps/server/src/provider/providerStatusCache.test.ts
+@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
+ import type { ServerProvider } from "@t3tools/contracts";
+ import { assert, it } from "@effect/vitest";
+ import { Effect, FileSystem } from "effect";
++import { vi } from "vitest";
+ 
+ import {
+   hydrateCachedProvider,
+@@ -9,6 +10,7 @@ import {
+   resolveProviderStatusCachePath,
+   writeProviderStatusCache,
+ } from "./providerStatusCache.ts";
++import { makeAtomicTempPath } from "../atomicFile.ts";
+ 
+ const makeProvider = (
+   provider: ServerProvider["provider"],
+@@ -73,6 +75,23 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
+     }),
+   );
+ 
++  it("generates unique temp file paths even within the same millisecond", () => {
++    const restoreNow = vi.spyOn(Date, "now").mockReturnValue(1_777_109_485_269);
++
++    try {
++      const targetPath = "C:/tmp/copilot.json";
++      const tempPaths = new Set([
++        makeAtomicTempPath(targetPath),
++        makeAtomicTempPath(targetPath),
++        makeAtomicTempPath(targetPath),
++      ]);
++
++      assert.equal(tempPaths.size, 3);
++    } finally {
++      restoreNow.mockRestore();
++    }
++  });
++
+   it("hydrates cached provider status while preserving current settings-derived models", () => {
+     const cachedCodex = makeProvider("codex", {
+       checkedAt: "2026-04-10T12:00:00.000Z",
+diff --git a/apps/server/src/provider/providerStatusCache.ts b/apps/server/src/provider/providerStatusCache.ts
+index b1d0e4d0..dd339b14 100644
+--- a/apps/server/src/provider/providerStatusCache.ts
++++ b/apps/server/src/provider/providerStatusCache.ts
+@@ -2,6 +2,8 @@ import * as nodePath from "node:path";
+ import { type ServerProvider, ServerProvider as ServerProviderSchema } from "@t3tools/contracts";
+ import { Cause, Effect, FileSystem, Path, Schema } from "effect";
+ 
++import { makeAtomicTempPath } from "../atomicFile.ts";
++
+ export const PROVIDER_CACHE_IDS = [
+   "codex",
+   "copilot",
+@@ -98,7 +100,7 @@ export const writeProviderStatusCache = (input: {
+   readonly filePath: string;
+   readonly provider: ServerProvider;
+ }) => {
+-  const tempPath = `${input.filePath}.${process.pid}.${Date.now()}.tmp`;
++  const tempPath = makeAtomicTempPath(input.filePath);
+   return Effect.gen(function* () {
+     const fs = yield* FileSystem.FileSystem;
+     const path = yield* Path.Path;
+diff --git a/apps/server/src/serverRuntimeState.ts b/apps/server/src/serverRuntimeState.ts
+index 569e4ac1..a82e6180 100644
+--- a/apps/server/src/serverRuntimeState.ts
++++ b/apps/server/src/serverRuntimeState.ts
+@@ -1,5 +1,6 @@
+ import { Effect, FileSystem, Option, Path, Schema } from "effect";
+ 
++import { makeAtomicTempPath } from "./atomicFile.ts";
+ import { type ServerConfigShape } from "./config.ts";
+ import { formatHostForUrl, isWildcardHost } from "./startupAccess.ts";
+ 
+@@ -45,7 +46,7 @@ export const persistServerRuntimeState = (input: {
+   Effect.gen(function* () {
+     const fs = yield* FileSystem.FileSystem;
+     const pathService = yield* Path.Path;
+-    const tempPath = `${input.path}.${process.pid}.${Date.now()}.tmp`;
++    const tempPath = makeAtomicTempPath(input.path);
+     return yield* fs.makeDirectory(pathService.dirname(input.path), { recursive: true }).pipe(
+       Effect.flatMap(() => fs.writeFileString(tempPath, `${JSON.stringify(input.state)}\n`)),
+       Effect.flatMap(() => fs.rename(tempPath, input.path)),
+diff --git a/apps/server/src/serverSettings.ts b/apps/server/src/serverSettings.ts
+index c47c442a..04d80291 100644
+--- a/apps/server/src/serverSettings.ts
++++ b/apps/server/src/serverSettings.ts
+@@ -40,6 +40,7 @@ import {
+ } from "effect";
+ import * as Semaphore from "effect/Semaphore";
+ import { ServerConfig } from "./config.ts";
++import { makeAtomicTempPath } from "./atomicFile.ts";
+ import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
+ import { fromLenientJson } from "@t3tools/shared/schemaJson";
+ import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
+@@ -233,7 +234,7 @@ const makeServerSettings = Effect.gen(function* () {
+   const getSettingsFromCache = Cache.get(settingsCache, cacheKey);
+ 
+   const writeSettingsAtomically = (settings: ServerSettings) => {
+-    const tempPath = `${settingsPath}.${process.pid}.${Date.now()}.tmp`;
++    const tempPath = makeAtomicTempPath(settingsPath);
+     const sparseSettings = stripDefaultServerSettings(settings, DEFAULT_SERVER_SETTINGS) ?? {};
+ 
+     return Effect.succeed(`${JSON.stringify(sparseSettings, null, 2)}\n`).pipe(
+diff --git a/apps/web/src/components/ChatView.tsx b/apps/web/src/components/ChatView.tsx
+index 6d772a4c..58ded3f0 100644
+--- a/apps/web/src/components/ChatView.tsx
++++ b/apps/web/src/components/ChatView.tsx
+@@ -34,7 +34,11 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+ import { useNavigate, useSearch } from "@tanstack/react-router";
+ import { useShallow } from "zustand/react/shallow";
+ import { useGitStatus } from "~/lib/gitStatusState";
+-import { readPrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
++import {
++  readPrimaryEnvironmentBootstrapLabel,
++  readPrimaryEnvironmentDescriptor,
++  usePrimaryEnvironmentId,
++} from "../environments/primary";
+ import { readEnvironmentApi } from "../environmentApi";
+ import { isElectron } from "../env";
+ import { readLocalApi } from "../localApi";
+@@ -848,6 +852,8 @@ export default function ChatView(props: ChatViewProps) {
+   // drive the environment picker in BranchToolbar.
+   const allProjects = useStore(useShallow(selectProjectsAcrossEnvironments));
+   const primaryEnvironmentId = usePrimaryEnvironmentId();
++  const primaryEnvironmentLabel =
++    readPrimaryEnvironmentBootstrapLabel() ?? readPrimaryEnvironmentDescriptor()?.label ?? null;
+   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((s) => s.byId);
+   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((s) => s.byId);
+   const projectGroupingSettings = useSettings((settings) => ({
+@@ -876,7 +882,9 @@ export default function ChatView(props: ChatViewProps) {
+       const label = resolveEnvironmentOptionLabel({
+         isPrimary,
+         environmentId: p.environmentId,
+-        runtimeLabel: runtimeState?.descriptor?.label ?? null,
++        runtimeLabel: isPrimary
++          ? primaryEnvironmentLabel
++          : (runtimeState?.descriptor?.label ?? null),
+         savedLabel: savedRecord?.label ?? null,
+       });
+       envs.push({
+@@ -896,6 +904,7 @@ export default function ChatView(props: ChatViewProps) {
+     activeProject,
+     allProjects,
+     projectGroupingSettings,
++    primaryEnvironmentLabel,
+     primaryEnvironmentId,
+     savedEnvironmentRegistry,
+     savedEnvironmentRuntimeById,
+@@ -1049,12 +1058,13 @@ export default function ChatView(props: ChatViewProps) {
+       isPrimary,
+       environmentId: activeThread.environmentId,
+       runtimeLabel: isPrimary
+-        ? (readPrimaryEnvironmentDescriptor()?.label ?? null)
++        ? primaryEnvironmentLabel
+         : (activeEnvRuntimeState?.descriptor?.label ?? null),
+       savedLabel: savedEnvironmentRegistry[activeThread.environmentId]?.label ?? null,
+     });
+   }, [
+     activeEnvRuntimeState?.descriptor?.label,
++    primaryEnvironmentLabel,
+     activeThread,
+     primaryEnvironmentId,
+     savedEnvironmentRegistry,
+diff --git a/apps/web/src/components/CommandPalette.tsx b/apps/web/src/components/CommandPalette.tsx
+index 7c600e17..b0192593 100644
+--- a/apps/web/src/components/CommandPalette.tsx
++++ b/apps/web/src/components/CommandPalette.tsx
+@@ -33,7 +33,11 @@ import {
+ import { useShallow } from "zustand/react/shallow";
+ import { useCommandPaletteStore } from "../commandPaletteStore";
+ import { readEnvironmentApi } from "../environmentApi";
+-import { readPrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
++import {
++  readPrimaryEnvironmentBootstrapLabel,
++  readPrimaryEnvironmentDescriptor,
++  usePrimaryEnvironmentId,
++} from "../environments/primary";
+ import {
+   useSavedEnvironmentRegistryStore,
+   useSavedEnvironmentRuntimeStore,
+@@ -242,7 +246,8 @@ function OpenCommandPaletteDialog() {
+   );
+   const [isPickingProjectFolder, setIsPickingProjectFolder] = useState(false);
+   const primaryEnvironmentId = usePrimaryEnvironmentId();
+-  const primaryEnvironmentLabel = readPrimaryEnvironmentDescriptor()?.label ?? null;
++  const primaryEnvironmentLabel =
++    readPrimaryEnvironmentBootstrapLabel() ?? readPrimaryEnvironmentDescriptor()?.label ?? null;
+   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((state) => state.byId);
+   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
+ 
+@@ -921,6 +926,7 @@ function OpenCommandPaletteDialog() {
+     browseEnvironmentId !== null &&
+     primaryEnvironmentId !== null &&
+     browseEnvironmentId === primaryEnvironmentId &&
++    isWindowsPlatform(browseEnvironmentPlatform) &&
+     typeof window !== "undefined" &&
+     window.desktopBridge !== undefined;
+   const fileManagerInitialPath = useMemo(() => {
+diff --git a/apps/web/src/components/settings/ConnectionsSettings.tsx b/apps/web/src/components/settings/ConnectionsSettings.tsx
+index ab31fe7e..652540ab 100644
+--- a/apps/web/src/components/settings/ConnectionsSettings.tsx
++++ b/apps/web/src/components/settings/ConnectionsSettings.tsx
+@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from "react";
+ import {
+   type AuthClientSession,
+   type AuthPairingLink,
++  type DesktopManagedEnvironmentCandidate,
+   type DesktopServerExposureState,
+   type EnvironmentId,
+ } from "@t3tools/contracts";
+@@ -62,6 +63,7 @@ import {
+   type SavedEnvironmentRuntimeState,
+   useSavedEnvironmentRegistryStore,
+   useSavedEnvironmentRuntimeStore,
++  addDesktopManagedEnvironment,
+   addSavedEnvironment,
+   getPrimaryEnvironmentConnection,
+   reconnectSavedEnvironment,
+@@ -160,6 +162,18 @@ function getSavedBackendStatusTooltip(
+     : "Not connected yet.";
+ }
+ 
++function getManagedEnvironmentKindLabel(kind: DesktopManagedEnvironmentCandidate["kind"]): string {
++  return kind === "wsl" ? "WSL" : "Local";
++}
++
++function getSavedEnvironmentScopeLabel(record: SavedEnvironmentRecord): string {
++  if (record.management?.kind === "desktop-managed") {
++    return record.management.environmentKey.startsWith("wsl:") ? "WSL managed" : "Local managed";
++  }
++
++  return "Paired remote";
++}
++
+ /** Direct row in the card ΓÇô same pattern as the Provider / ACP-agent list rows. */
+ const ITEM_ROW_CLASSNAME = "border-t border-border/60 px-4 py-4 first:border-t-0 sm:px-5";
+ 
+@@ -701,6 +715,7 @@ function SavedBackendListRow({
+   const descriptorLabel = runtime?.descriptor?.label ?? null;
+   const statusTooltip = getSavedBackendStatusTooltip(runtime, record, nowMs);
+   const metadataBits = [
++    getSavedEnvironmentScopeLabel(record),
+     roleLabel,
+     record.lastConnectedAt
+       ? `Last connected ${formatAccessTimestamp(record.lastConnectedAt)}`
+@@ -767,6 +782,31 @@ export function ConnectionsSettings() {
+         .map((record) => record.environmentId),
+     [savedEnvironmentsById],
+   );
++  const managedEnvironmentKeys = useMemo(
++    () =>
++      new Set(
++        Object.values(savedEnvironmentsById).flatMap((record) =>
++          record.management?.kind === "desktop-managed" ? [record.management.environmentKey] : [],
++        ),
++      ),
++    [savedEnvironmentsById],
++  );
++  const managedSavedEnvironmentIds = useMemo(
++    () =>
++      savedEnvironmentIds.filter(
++        (environmentId) =>
++          savedEnvironmentsById[environmentId]?.management?.kind === "desktop-managed",
++      ),
++    [savedEnvironmentIds, savedEnvironmentsById],
++  );
++  const pairedSavedEnvironmentIds = useMemo(
++    () =>
++      savedEnvironmentIds.filter(
++        (environmentId) =>
++          savedEnvironmentsById[environmentId]?.management?.kind !== "desktop-managed",
++      ),
++    [savedEnvironmentIds, savedEnvironmentsById],
++  );
+ 
+   const [desktopServerExposureState, setDesktopServerExposureState] =
+     useState<DesktopServerExposureState | null>(null);
+@@ -796,6 +836,10 @@ export function ConnectionsSettings() {
+   const [savedBackendPairingUrl, setSavedBackendPairingUrl] = useState("");
+   const [savedBackendHost, setSavedBackendHost] = useState("");
+   const [savedBackendPairingCode, setSavedBackendPairingCode] = useState("");
++  const [managedEnvironmentCandidates, setManagedEnvironmentCandidates] = useState<
++    ReadonlyArray<DesktopManagedEnvironmentCandidate>
++  >([]);
++  const [isLoadingManagedEnvironments, setIsLoadingManagedEnvironments] = useState(false);
+   const [savedBackendError, setSavedBackendError] = useState<string | null>(null);
+   const [isAddingSavedBackend, setIsAddingSavedBackend] = useState(false);
+   const [reconnectingSavedEnvironmentId, setReconnectingSavedEnvironmentId] =
+@@ -949,6 +993,40 @@ export function ConnectionsSettings() {
+     savedBackendPairingUrl,
+   ]);
+ 
++  const handleAddManagedEnvironment = useCallback(
++    async (candidate: DesktopManagedEnvironmentCandidate) => {
++      setIsAddingSavedBackend(true);
++      setSavedBackendError(null);
++      try {
++        const record = await addDesktopManagedEnvironment({
++          environmentKey: candidate.key,
++          label: savedBackendLabel.trim() || candidate.label,
++        });
++        setSavedBackendLabel("");
++        setSavedBackendPairingUrl("");
++        setSavedBackendHost("");
++        setSavedBackendPairingCode("");
++        setAddBackendDialogOpen(false);
++        toastManager.add({
++          type: "success",
++          title: "Environment added",
++          description: `${record.label} is now managed by this desktop and will reconnect on app startup.`,
++        });
++      } catch (error) {
++        const message = error instanceof Error ? error.message : "Failed to add environment.";
++        setSavedBackendError(message);
++        toastManager.add({
++          type: "error",
++          title: "Could not add environment",
++          description: message,
++        });
++      } finally {
++        setIsAddingSavedBackend(false);
++      }
++    },
++    [savedBackendLabel],
++  );
++
+   const handleReconnectSavedBackend = useCallback(async (environmentId: EnvironmentId) => {
+     setReconnectingSavedEnvironmentId(environmentId);
+     setSavedBackendError(null);
+@@ -1107,6 +1185,47 @@ export function ConnectionsSettings() {
+     setDesktopServerExposureState(null);
+     setDesktopServerExposureError(null);
+   }, [canManageLocalBackend]);
++
++  useEffect(() => {
++    if (!desktopBridge) {
++      setManagedEnvironmentCandidates([]);
++      setIsLoadingManagedEnvironments(false);
++      return;
++    }
++
++    if (!addBackendDialogOpen) {
++      return;
++    }
++
++    let cancelled = false;
++    setIsLoadingManagedEnvironments(true);
++    void desktopBridge
++      .listManagedEnvironments()
++      .then((candidates) => {
++        if (cancelled) {
++          return;
++        }
++        setManagedEnvironmentCandidates(candidates);
++      })
++      .catch((error: unknown) => {
++        if (cancelled) {
++          return;
++        }
++        const message =
++          error instanceof Error ? error.message : "Failed to load desktop-managed environments.";
++        setSavedBackendError(message);
++      })
++      .finally(() => {
++        if (!cancelled) {
++          setIsLoadingManagedEnvironments(false);
++        }
++      });
++
++    return () => {
++      cancelled = true;
++    };
++  }, [addBackendDialogOpen, desktopBridge]);
++
+   const visibleDesktopPairingLinks = useMemo(
+     () => desktopPairingLinks.filter((pairingLink) => pairingLink.role === "client"),
+     [desktopPairingLinks],
+@@ -1268,7 +1387,7 @@ export function ConnectionsSettings() {
+       )}
+ 
+       <SettingsSection
+-        title="Remote environments"
++        title="Connections"
+         headerAction={
+           <Dialog
+             open={addBackendDialogOpen}
+@@ -1290,7 +1409,9 @@ export function ConnectionsSettings() {
+             <DialogPopup>
+               <DialogHeader>
+                 <DialogTitle>Add Environment</DialogTitle>
+-                <DialogDescription>Pair another environment to this client.</DialogDescription>
++                <DialogDescription>
++                  Add a desktop-managed or paired environment to this client.
++                </DialogDescription>
+                 <div className="flex gap-1 rounded-lg border border-border/60 bg-muted/50 p-1">
+                   <button
+                     type="button"
+@@ -1322,72 +1443,130 @@ export function ConnectionsSettings() {
+               </DialogHeader>
+               <DialogPanel>
+                 <div className="space-y-4">
+-                  {savedBackendMode === "pairing-url" ? (
+-                    <p className="text-xs text-muted-foreground">
+-                      Enter the full pairing URL from the environment you want to connect to.
+-                    </p>
+-                  ) : (
+-                    <p className="text-xs text-muted-foreground">
+-                      Enter the backend host and pairing code separately.
+-                    </p>
+-                  )}
+-                  <div className="space-y-3">
+-                    <label className="block">
+-                      <span className="mb-1.5 block text-xs font-medium text-foreground">
+-                        Label
+-                      </span>
+-                      <Input
+-                        value={savedBackendLabel}
+-                        onChange={(event) => setSavedBackendLabel(event.target.value)}
+-                        placeholder="My backend (optional)"
+-                        disabled={isAddingSavedBackend}
+-                        spellCheck={false}
+-                      />
+-                    </label>
++                  {desktopBridge ? (
++                    <div className="space-y-3 rounded-xl border border-border/60 bg-muted/20 p-3">
++                      <div className="space-y-1">
++                        <p className="text-xs font-medium text-foreground">
++                          Available on this desktop
++                        </p>
++                        <p className="text-xs text-muted-foreground">
++                          Add a local or WSL backend that this desktop can manage for you.
++                        </p>
++                      </div>
++                      {isLoadingManagedEnvironments ? (
++                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
++                          <Spinner className="size-3.5" />
++                          Loading desktop-managed environmentsΓÇª
++                        </div>
++                      ) : managedEnvironmentCandidates.length > 0 ? (
++                        <div className="space-y-2">
++                          {managedEnvironmentCandidates.map((candidate) => {
++                            const alreadyAdded = managedEnvironmentKeys.has(candidate.key);
++                            return (
++                              <div
++                                key={candidate.key}
++                                className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-background/70 px-3 py-2"
++                              >
++                                <div className="min-w-0 flex-1 space-y-1">
++                                  <p className="truncate text-sm font-medium text-foreground">
++                                    {candidate.label}
++                                  </p>
++                                  <p className="text-xs text-muted-foreground">
++                                    {getManagedEnvironmentKindLabel(candidate.kind)} environment
++                                  </p>
++                                </div>
++                                <Button
++                                  size="xs"
++                                  variant="outline"
++                                  disabled={isAddingSavedBackend || alreadyAdded}
++                                  onClick={() => void handleAddManagedEnvironment(candidate)}
++                                >
++                                  {alreadyAdded ? "Added" : "Add"}
++                                </Button>
++                              </div>
++                            );
++                          })}
++                        </div>
++                      ) : (
++                        <p className="text-xs text-muted-foreground">
++                          No extra desktop-managed environments are available right now.
++                        </p>
++                      )}
++                    </div>
++                  ) : null}
++                  <div
++                    className={cn(
++                      "space-y-4",
++                      desktopBridge ? "border-t border-border/60 pt-4" : undefined,
++                    )}
++                  >
+                     {savedBackendMode === "pairing-url" ? (
++                      <p className="text-xs text-muted-foreground">
++                        Enter the full pairing URL from the environment you want to connect to.
++                      </p>
++                    ) : (
++                      <p className="text-xs text-muted-foreground">
++                        Enter the backend host and pairing code separately.
++                      </p>
++                    )}
++                    <div className="space-y-3">
+                       <label className="block">
+                         <span className="mb-1.5 block text-xs font-medium text-foreground">
+-                          Pairing URL
++                          Label
+                         </span>
+                         <Input
+-                          value={savedBackendPairingUrl}
+-                          onChange={(event) => setSavedBackendPairingUrl(event.target.value)}
+-                          placeholder="https://backend.example.com/pair#token=..."
++                          value={savedBackendLabel}
++                          onChange={(event) => setSavedBackendLabel(event.target.value)}
++                          placeholder="My backend (optional)"
+                           disabled={isAddingSavedBackend}
+                           spellCheck={false}
+                         />
+-                        <span className="mt-1 block text-[11px] text-muted-foreground">
+-                          The full URL including the pairing token.
+-                        </span>
+                       </label>
+-                    ) : (
+-                      <>
++                      {savedBackendMode === "pairing-url" ? (
+                         <label className="block">
+                           <span className="mb-1.5 block text-xs font-medium text-foreground">
+-                            Host
++                            Pairing URL
+                           </span>
+                           <Input
+-                            value={savedBackendHost}
+-                            onChange={(event) => setSavedBackendHost(event.target.value)}
+-                            placeholder="https://backend.example.com"
++                            value={savedBackendPairingUrl}
++                            onChange={(event) => setSavedBackendPairingUrl(event.target.value)}
++                            placeholder="https://backend.example.com/pair#token=..."
+                             disabled={isAddingSavedBackend}
+                             spellCheck={false}
+                           />
+-                        </label>
+-                        <label className="block">
+-                          <span className="mb-1.5 block text-xs font-medium text-foreground">
+-                            Pairing code
++                          <span className="mt-1 block text-[11px] text-muted-foreground">
++                            The full URL including the pairing token.
+                           </span>
+-                          <Input
+-                            value={savedBackendPairingCode}
+-                            onChange={(event) => setSavedBackendPairingCode(event.target.value)}
+-                            placeholder="Pairing code"
+-                            disabled={isAddingSavedBackend}
+-                            spellCheck={false}
+-                          />
+                         </label>
+-                      </>
+-                    )}
++                      ) : (
++                        <>
++                          <label className="block">
++                            <span className="mb-1.5 block text-xs font-medium text-foreground">
++                              Host
++                            </span>
++                            <Input
++                              value={savedBackendHost}
++                              onChange={(event) => setSavedBackendHost(event.target.value)}
++                              placeholder="https://backend.example.com"
++                              disabled={isAddingSavedBackend}
++                              spellCheck={false}
++                            />
++                          </label>
++                          <label className="block">
++                            <span className="mb-1.5 block text-xs font-medium text-foreground">
++                              Pairing code
++                            </span>
++                            <Input
++                              value={savedBackendPairingCode}
++                              onChange={(event) => setSavedBackendPairingCode(event.target.value)}
++                              placeholder="Pairing code"
++                              disabled={isAddingSavedBackend}
++                              spellCheck={false}
++                            />
++                          </label>
++                        </>
++                      )}
++                    </div>
+                   </div>
+                   {savedBackendError ? (
+                     <p className="text-xs text-destructive">{savedBackendError}</p>
+@@ -1407,7 +1586,34 @@ export function ConnectionsSettings() {
+           </Dialog>
+         }
+       >
+-        {savedEnvironmentIds.map((environmentId) => (
++        {managedSavedEnvironmentIds.length > 0 ? (
++          <div className={ITEM_ROW_CLASSNAME}>
++            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
++              Managed by this desktop
++            </p>
++          </div>
++        ) : null}
++
++        {managedSavedEnvironmentIds.map((environmentId) => (
++          <SavedBackendListRow
++            key={environmentId}
++            environmentId={environmentId}
++            reconnectingEnvironmentId={reconnectingSavedEnvironmentId}
++            removingEnvironmentId={removingSavedEnvironmentId}
++            onReconnect={handleReconnectSavedBackend}
++            onRemove={handleRemoveSavedBackend}
++          />
++        ))}
++
++        {pairedSavedEnvironmentIds.length > 0 ? (
++          <div className={ITEM_ROW_CLASSNAME}>
++            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
++              Paired remotely
++            </p>
++          </div>
++        ) : null}
++
++        {pairedSavedEnvironmentIds.map((environmentId) => (
+           <SavedBackendListRow
+             key={environmentId}
+             environmentId={environmentId}
+@@ -1421,8 +1627,8 @@ export function ConnectionsSettings() {
+         {savedEnvironmentIds.length === 0 ? (
+           <div className={ITEM_ROW_CLASSNAME}>
+             <p className="text-xs text-muted-foreground">
+-              No remote environments yet. Click &ldquo;Add environment&rdquo; to pair another
+-              environment.
++              No saved environments yet. Click &ldquo;Add environment&rdquo; to manage a desktop
++              environment or pair another remote one.
+             </p>
+           </div>
+         ) : null}
+diff --git a/apps/web/src/components/settings/SettingsPanels.browser.tsx b/apps/web/src/components/settings/SettingsPanels.browser.tsx
+index b508b29b..42dd3ef5 100644
+--- a/apps/web/src/components/settings/SettingsPanels.browser.tsx
++++ b/apps/web/src/components/settings/SettingsPanels.browser.tsx
+@@ -288,6 +288,10 @@ const createDesktopBridgeStub = (overrides?: {
+     }),
+     getClientSettings: vi.fn().mockResolvedValue(null),
+     setClientSettings: vi.fn().mockResolvedValue(undefined),
++    listManagedEnvironments: vi.fn().mockResolvedValue([]),
++    prepareManagedEnvironmentRegistration: vi.fn().mockImplementation(async () => {
++      throw new Error("Managed environment registration is not implemented in this story.");
++    }),
+     getSavedEnvironmentRegistry: vi.fn().mockResolvedValue([]),
+     setSavedEnvironmentRegistry: vi.fn().mockResolvedValue(undefined),
+     getSavedEnvironmentSecret: vi.fn().mockResolvedValue(null),
+diff --git a/apps/web/src/environments/primary/index.ts b/apps/web/src/environments/primary/index.ts
+index 2614164b..eaa852d0 100644
+--- a/apps/web/src/environments/primary/index.ts
++++ b/apps/web/src/environments/primary/index.ts
+@@ -32,4 +32,8 @@ export {
+   __resetServerAuthBootstrapForTests,
+ } from "./auth";
+ 
+-export { resolvePrimaryEnvironmentHttpUrl, isLoopbackHostname } from "./target";
++export {
++  resolvePrimaryEnvironmentHttpUrl,
++  isLoopbackHostname,
++  readPrimaryEnvironmentBootstrapLabel,
++} from "./target";
+diff --git a/apps/web/src/environments/primary/target.ts b/apps/web/src/environments/primary/target.ts
+index 04b7d903..9ab69919 100644
+--- a/apps/web/src/environments/primary/target.ts
++++ b/apps/web/src/environments/primary/target.ts
+@@ -12,6 +12,11 @@ function getDesktopLocalEnvironmentBootstrap(): DesktopEnvironmentBootstrap | nu
+   return window.desktopBridge?.getLocalEnvironmentBootstrap() ?? null;
+ }
+ 
++export function readPrimaryEnvironmentBootstrapLabel(): string | null {
++  const label = getDesktopLocalEnvironmentBootstrap()?.label?.trim();
++  return label && label.length > 0 ? label : null;
++}
++
+ function normalizeBaseUrl(rawValue: string): string {
+   return new URL(rawValue, window.location.origin).toString();
+ }
+diff --git a/apps/web/src/environments/runtime/catalog.ts b/apps/web/src/environments/runtime/catalog.ts
+index 6aecf80f..aec5906b 100644
+--- a/apps/web/src/environments/runtime/catalog.ts
++++ b/apps/web/src/environments/runtime/catalog.ts
+@@ -3,6 +3,7 @@ import type {
+   AuthSessionRole,
+   EnvironmentId,
+   ExecutionEnvironmentDescriptor,
++  PersistedSavedEnvironmentManagement,
+   PersistedSavedEnvironmentRecord,
+   ServerConfig,
+ } from "@t3tools/contracts";
+@@ -18,6 +19,7 @@ export interface SavedEnvironmentRecord {
+   readonly httpBaseUrl: string;
+   readonly createdAt: string;
+   readonly lastConnectedAt: string | null;
++  readonly management?: PersistedSavedEnvironmentManagement;
+ }
+ 
+ interface SavedEnvironmentRegistryState {
+@@ -44,6 +46,7 @@ function toPersistedSavedEnvironmentRecord(
+     wsBaseUrl: record.wsBaseUrl,
+     createdAt: record.createdAt,
+     lastConnectedAt: record.lastConnectedAt,
++    ...(record.management ? { management: record.management } : {}),
+   };
+ }
+ 
+diff --git a/apps/web/src/environments/runtime/index.ts b/apps/web/src/environments/runtime/index.ts
+index 8c813f10..5b5a14c9 100644
+--- a/apps/web/src/environments/runtime/index.ts
++++ b/apps/web/src/environments/runtime/index.ts
+@@ -15,6 +15,7 @@ export {
+ } from "./catalog";
+ 
+ export {
++  addDesktopManagedEnvironment,
+   addSavedEnvironment,
+   disconnectSavedEnvironment,
+   ensureEnvironmentConnectionBootstrapped,
+diff --git a/apps/web/src/environments/runtime/service.addSavedEnvironment.test.ts b/apps/web/src/environments/runtime/service.addSavedEnvironment.test.ts
+index 9bcbc4f7..da842c7a 100644
+--- a/apps/web/src/environments/runtime/service.addSavedEnvironment.test.ts
++++ b/apps/web/src/environments/runtime/service.addSavedEnvironment.test.ts
+@@ -1,5 +1,5 @@
+ import { EnvironmentId } from "@t3tools/contracts";
+-import { beforeEach, describe, expect, it, vi } from "vitest";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ 
+ const mockResolveRemotePairingTarget = vi.fn();
+ const mockFetchRemoteEnvironmentDescriptor = vi.fn();
+@@ -59,6 +59,10 @@ vi.mock("./connection", () => ({
+ }));
+ 
+ describe("addSavedEnvironment", () => {
++  afterEach(() => {
++    vi.unstubAllGlobals();
++  });
++
+   beforeEach(() => {
+     vi.resetModules();
+     vi.clearAllMocks();
+@@ -102,4 +106,46 @@ describe("addSavedEnvironment", () => {
+ 
+     await resetEnvironmentServiceForTests();
+   });
++
++  it("persists desktop-managed metadata when registering via the desktop bridge", async () => {
++    const prepareManagedEnvironmentRegistration = vi.fn().mockResolvedValue({
++      key: "wsl:Ubuntu-24.04",
++      label: "WSL (Ubuntu-24.04)",
++      kind: "wsl",
++      httpBaseUrl: "http://127.0.0.1:13773/",
++      wsBaseUrl: "ws://127.0.0.1:13773/",
++      bootstrapToken: "desktop-bootstrap-token",
++    });
++
++    vi.stubGlobal("window", {
++      desktopBridge: {
++        prepareManagedEnvironmentRegistration,
++      },
++    });
++
++    const { addDesktopManagedEnvironment, resetEnvironmentServiceForTests } =
++      await import("./service");
++
++    await expect(
++      addDesktopManagedEnvironment({
++        environmentKey: "wsl:Ubuntu-24.04",
++      }),
++    ).rejects.toThrow("Unable to persist saved environment credentials.");
++
++    expect(prepareManagedEnvironmentRegistration).toHaveBeenCalledWith("wsl:Ubuntu-24.04");
++    expect(mockPersistSavedEnvironmentRecord).toHaveBeenCalledWith(
++      expect.objectContaining({
++        environmentId: EnvironmentId.make("environment-1"),
++        label: "WSL (Ubuntu-24.04)",
++        httpBaseUrl: "http://127.0.0.1:13773/",
++        wsBaseUrl: "ws://127.0.0.1:13773/",
++        management: {
++          kind: "desktop-managed",
++          environmentKey: "wsl:Ubuntu-24.04",
++        },
++      }),
++    );
++
++    await resetEnvironmentServiceForTests();
++  });
+ });
+diff --git a/apps/web/src/environments/runtime/service.ts b/apps/web/src/environments/runtime/service.ts
+index 40f8f8f2..34351439 100644
+--- a/apps/web/src/environments/runtime/service.ts
++++ b/apps/web/src/environments/runtime/service.ts
+@@ -808,7 +808,7 @@ async function ensureSavedEnvironmentConnection(
+   const knownEnvironment = createKnownEnvironment({
+     id: record.environmentId,
+     label: record.label,
+-    source: "manual",
++    source: record.management?.kind === "desktop-managed" ? "desktop-managed" : "manual",
+     target: {
+       httpBaseUrl: record.httpBaseUrl,
+       wsBaseUrl: record.wsBaseUrl,
+@@ -944,38 +944,47 @@ export async function removeSavedEnvironment(environmentId: EnvironmentId): Prom
+   await disconnectSavedEnvironment(environmentId);
+ }
+ 
+-export async function addSavedEnvironment(input: {
++function toPersistedSavedEnvironmentRecords(records: ReadonlyArray<SavedEnvironmentRecord>) {
++  return records.map((entry) => ({
++    environmentId: entry.environmentId,
++    label: entry.label,
++    httpBaseUrl: entry.httpBaseUrl,
++    wsBaseUrl: entry.wsBaseUrl,
++    createdAt: entry.createdAt,
++    lastConnectedAt: entry.lastConnectedAt,
++    ...(entry.management ? { management: entry.management } : {}),
++  }));
++}
++
++async function registerSavedEnvironment(input: {
+   readonly label: string;
+-  readonly pairingUrl?: string;
+-  readonly host?: string;
+-  readonly pairingCode?: string;
++  readonly httpBaseUrl: string;
++  readonly wsBaseUrl: string;
++  readonly credential: string;
++  readonly management?: SavedEnvironmentRecord["management"];
+ }): Promise<SavedEnvironmentRecord> {
+-  const resolvedTarget = resolveRemotePairingTarget({
+-    ...(input.pairingUrl !== undefined ? { pairingUrl: input.pairingUrl } : {}),
+-    ...(input.host !== undefined ? { host: input.host } : {}),
+-    ...(input.pairingCode !== undefined ? { pairingCode: input.pairingCode } : {}),
+-  });
+   const descriptor = await fetchRemoteEnvironmentDescriptor({
+-    httpBaseUrl: resolvedTarget.httpBaseUrl,
++    httpBaseUrl: input.httpBaseUrl,
+   });
+   const environmentId = descriptor.environmentId;
+ 
+-  if (environmentConnections.has(environmentId)) {
+-    throw new Error("This environment is already connected.");
++  if (environmentConnections.has(environmentId) || getSavedEnvironmentRecord(environmentId)) {
++    throw new Error("This environment is already saved.");
+   }
+ 
+   const bearerSession = await bootstrapRemoteBearerSession({
+-    httpBaseUrl: resolvedTarget.httpBaseUrl,
+-    credential: resolvedTarget.credential,
++    httpBaseUrl: input.httpBaseUrl,
++    credential: input.credential,
+   });
+ 
+   const record: SavedEnvironmentRecord = {
+     environmentId,
+     label: input.label.trim() || descriptor.label,
+-    wsBaseUrl: resolvedTarget.wsBaseUrl,
+-    httpBaseUrl: resolvedTarget.httpBaseUrl,
++    wsBaseUrl: input.wsBaseUrl,
++    httpBaseUrl: input.httpBaseUrl,
+     createdAt: isoNow(),
+     lastConnectedAt: isoNow(),
++    ...(input.management ? { management: input.management } : {}),
+   };
+ 
+   await persistSavedEnvironmentRecord(record);
+@@ -985,17 +994,11 @@ export async function addSavedEnvironment(input: {
+   );
+   if (!didPersistBearerToken) {
+     await ensureLocalApi().persistence.setSavedEnvironmentRegistry(
+-      listSavedEnvironmentRecords().map((entry) => ({
+-        environmentId: entry.environmentId,
+-        label: entry.label,
+-        httpBaseUrl: entry.httpBaseUrl,
+-        wsBaseUrl: entry.wsBaseUrl,
+-        createdAt: entry.createdAt,
+-        lastConnectedAt: entry.lastConnectedAt,
+-      })),
++      toPersistedSavedEnvironmentRecords(listSavedEnvironmentRecords()),
+     );
+     throw new Error("Unable to persist saved environment credentials.");
+   }
++
+   await ensureSavedEnvironmentConnection(record, {
+     bearerToken: bearerSession.sessionToken,
+     role: bearerSession.role,
+@@ -1004,6 +1007,50 @@ export async function addSavedEnvironment(input: {
+   return record;
+ }
+ 
++export async function addSavedEnvironment(input: {
++  readonly label: string;
++  readonly pairingUrl?: string;
++  readonly host?: string;
++  readonly pairingCode?: string;
++}): Promise<SavedEnvironmentRecord> {
++  const resolvedTarget = resolveRemotePairingTarget({
++    ...(input.pairingUrl !== undefined ? { pairingUrl: input.pairingUrl } : {}),
++    ...(input.host !== undefined ? { host: input.host } : {}),
++    ...(input.pairingCode !== undefined ? { pairingCode: input.pairingCode } : {}),
++  });
++  return registerSavedEnvironment({
++    label: input.label,
++    httpBaseUrl: resolvedTarget.httpBaseUrl,
++    wsBaseUrl: resolvedTarget.wsBaseUrl,
++    credential: resolvedTarget.credential,
++  });
++}
++
++export async function addDesktopManagedEnvironment(input: {
++  readonly environmentKey: string;
++  readonly label?: string;
++}): Promise<SavedEnvironmentRecord> {
++  const desktopBridge = window.desktopBridge;
++  if (!desktopBridge) {
++    throw new Error("Desktop-managed environments are only available in the desktop app.");
++  }
++
++  const registration = await desktopBridge.prepareManagedEnvironmentRegistration(
++    input.environmentKey,
++  );
++
++  return registerSavedEnvironment({
++    label: input.label?.trim() || registration.label,
++    httpBaseUrl: registration.httpBaseUrl,
++    wsBaseUrl: registration.wsBaseUrl,
++    credential: registration.bootstrapToken,
++    management: {
++      kind: "desktop-managed",
++      environmentKey: registration.key,
++    },
++  });
++}
++
+ export async function ensureEnvironmentConnectionBootstrapped(
+   environmentId: EnvironmentId,
+ ): Promise<void> {
+diff --git a/apps/web/src/localApi.test.ts b/apps/web/src/localApi.test.ts
+index 4258ccb3..d862ba28 100644
+--- a/apps/web/src/localApi.test.ts
++++ b/apps/web/src/localApi.test.ts
+@@ -164,6 +164,10 @@ function makeDesktopBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
+     getLocalEnvironmentBootstrap: () => null,
+     getClientSettings: async () => null,
+     setClientSettings: async () => undefined,
++    listManagedEnvironments: async () => [],
++    prepareManagedEnvironmentRegistration: async () => {
++      throw new Error("prepareManagedEnvironmentRegistration not implemented in test");
++    },
+     getSavedEnvironmentRegistry: async () => [],
+     setSavedEnvironmentRegistry: async () => undefined,
+     getSavedEnvironmentSecret: async () => null,
+diff --git a/packages/contracts/src/ipc.ts b/packages/contracts/src/ipc.ts
+index a1abc0fa..f83f3ab7 100644
+--- a/packages/contracts/src/ipc.ts
++++ b/packages/contracts/src/ipc.ts
+@@ -125,6 +125,13 @@ export interface DesktopEnvironmentBootstrap {
+   bootstrapToken?: string;
+ }
+ 
++export interface PersistedDesktopManagedEnvironmentMetadata {
++  kind: "desktop-managed";
++  environmentKey: string;
++}
++
++export type PersistedSavedEnvironmentManagement = PersistedDesktopManagedEnvironmentMetadata;
++
+ export interface PersistedSavedEnvironmentRecord {
+   environmentId: EnvironmentId;
+   label: string;
+@@ -132,6 +139,19 @@ export interface PersistedSavedEnvironmentRecord {
+   httpBaseUrl: string;
+   createdAt: string;
+   lastConnectedAt: string | null;
++  management?: PersistedSavedEnvironmentManagement;
++}
++
++export interface DesktopManagedEnvironmentCandidate {
++  key: string;
++  label: string;
++  kind: "local" | "wsl";
++}
++
++export interface DesktopManagedEnvironmentRegistration extends DesktopManagedEnvironmentCandidate {
++  httpBaseUrl: string;
++  wsBaseUrl: string;
++  bootstrapToken: string;
+ }
+ 
+ export type DesktopServerExposureMode = "local-only" | "network-accessible";
+@@ -151,6 +171,10 @@ export interface DesktopBridge {
+   getLocalEnvironmentBootstrap: () => DesktopEnvironmentBootstrap | null;
+   getClientSettings: () => Promise<ClientSettings | null>;
+   setClientSettings: (settings: ClientSettings) => Promise<void>;
++  listManagedEnvironments: () => Promise<readonly DesktopManagedEnvironmentCandidate[]>;
++  prepareManagedEnvironmentRegistration: (
++    environmentKey: string,
++  ) => Promise<DesktopManagedEnvironmentRegistration>;
+   getSavedEnvironmentRegistry: () => Promise<readonly PersistedSavedEnvironmentRecord[]>;
+   setSavedEnvironmentRegistry: (
+     records: readonly PersistedSavedEnvironmentRecord[],

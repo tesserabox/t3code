@@ -1,0 +1,85 @@
+diff --git a/apps/server/src/provider/Layers/CopilotAdapter.ts b/apps/server/src/provider/Layers/CopilotAdapter.ts
+index 9387814b..637e1d18 100644
+--- a/apps/server/src/provider/Layers/CopilotAdapter.ts
++++ b/apps/server/src/provider/Layers/CopilotAdapter.ts
+@@ -108,6 +108,7 @@ interface ActiveCopilotSession extends CopilotTurnTrackingState {
+   reasoningEffort: CodexReasoningEffort | undefined;
+   interactionMode: "default" | "plan" | undefined;
+   updatedAt: string;
++  turnSentAt: string | undefined;
+   lastError: string | undefined;
+   toolTitlesByCallId: Map<string, string>;
+   pendingApprovalResolvers: Map<string, PendingApprovalRequest>;
+@@ -483,6 +484,7 @@ function createSessionRecord(input: {
+     reasoningEffort: input.reasoningEffort,
+     interactionMode: undefined,
+     updatedAt: new Date().toISOString(),
++    turnSentAt: undefined,
+     lastError: undefined,
+     currentTurnId: undefined,
+     currentProviderTurnId: undefined,
+@@ -789,15 +791,33 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+               },
+             },
+           ];
+-        case "assistant.turn_start":
++        case "assistant.turn_start": {
++          // Use the timestamp from when sendTurn() was called (turnSentAt),
++          // not the SDK's event.timestamp, to ensure the "Worked for X" timer
++          // in the UI reflects actual elapsed time since the user sent their message.
++          const turnStartBase = (input?: {
++            readonly turnId?: TurnId | undefined;
++            readonly providerTurnId?: TurnId | undefined;
++          }) =>
++            withRefs({
++              threadId: record.threadId,
++              eventId: EventId.make(event.id),
++              createdAt: record.turnSentAt ?? event.timestamp,
++              turnId: resolveOrchestrationTurnId(input?.providerTurnId ?? input?.turnId),
++              providerTurnId: input?.providerTurnId ?? input?.turnId,
++              itemId: undefined,
++              requestId: undefined,
++              rawMethod: event.type,
++              rawPayload: event,
++            });
+           return [
+             {
+-              ...base({ providerTurnId: toTurnId(event.data.turnId) }),
++              ...turnStartBase({ providerTurnId: toTurnId(event.data.turnId) }),
+               type: "turn.started",
+               payload: record.model ? { model: record.model } : {},
+             },
+             {
+-              ...base({ providerTurnId: toTurnId(event.data.turnId) }),
++              ...turnStartBase({ providerTurnId: toTurnId(event.data.turnId) }),
+               type: "session.state.changed",
+               payload: {
+                 state: "running",
+@@ -805,6 +825,7 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+               },
+             },
+           ];
++        }
+         case "assistant.reasoning":
+           return [
+             {
+@@ -1334,6 +1355,7 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+       }
+       if (event.type === "abort" || event.type === "session.idle") {
+         clearTurnTracking(record);
++        record.turnSentAt = undefined;
+       }
+     };
+ 
+@@ -1599,9 +1621,11 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+         yield* syncInteractionMode(record, interactionMode);
+ 
+         const turnId = TurnId.make(`copilot-turn-${randomUUID()}`);
++        const turnSentAt = new Date().toISOString();
+         record.pendingTurnIds.push(turnId);
+         record.currentTurnId = turnId;
+         record.currentProviderTurnId = undefined;
++        record.turnSentAt = turnSentAt;
+ 
+         yield* Effect.tryPromise({
+           try: () =>

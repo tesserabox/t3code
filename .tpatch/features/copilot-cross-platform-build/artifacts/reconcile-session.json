@@ -1,0 +1,17 @@
+{
+  "slug": "copilot-cross-platform-build",
+  "title": "Add all Copilot SDK platform binaries as direct dependencies so cross-platform desktop builds include the correct native binary regardless of build host OS. Without this, building a Windows installer on macOS produces a package missing copilot.exe.",
+  "outcome": "blocked",
+  "phase": "phase-4-blocked",
+  "upstream_ref": "upstream/main",
+  "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+  "notes": [
+    "Operation-level: 0 present, 1 applicable, 1 conflicts",
+    "Provider semantic check error: generation request failed: Post \"http://localhost:4141/v1/messages\": context deadline exceeded",
+    "Patch cannot be applied cleanly — manual intervention needed",
+    "git: error: .git/logs/HEAD: Not a directory\nerror: .git/logs/refs/heads/main: Not a directory\nerror: .git/logs/refs/remotes/origin/HEAD: Not a directory"
+  ],
+  "conflicts": [
+    "Forward-apply failed — check for merge conflicts"
+  ]
+}

@@ -1,0 +1,86 @@
+diff --git a/scripts/build-desktop-artifact.ts b/scripts/build-desktop-artifact.ts
+index 5a641187..321376eb 100644
+--- a/scripts/build-desktop-artifact.ts
++++ b/scripts/build-desktop-artifact.ts
+@@ -778,6 +778,34 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
+   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
+   yield* fs.copy(stageResourcesDir, path.join(stageAppDir, "apps/desktop/prod-resources"));
+ 
++  // Inject Copilot SDK platform binaries into staged dependencies.
++  // bun only installs optional deps for the host OS, so for cross-compilation
++  // we need to add the target platform package as a direct dependency before install.
++  const copilotPlatformMap: Record<string, Record<string, string[]>> = {
++    mac: {
++      arm64: ["@github/copilot-darwin-arm64"],
++      x64: ["@github/copilot-darwin-x64"],
++      universal: ["@github/copilot-darwin-arm64", "@github/copilot-darwin-x64"],
++    },
++    linux: {
++      arm64: ["@github/copilot-linux-arm64"],
++      x64: ["@github/copilot-linux-x64"],
++    },
++    win: {
++      arm64: ["@github/copilot-win32-arm64"],
++      x64: ["@github/copilot-win32-x64"],
++    },
++  };
++  const copilotPlatformPackages = copilotPlatformMap[options.platform]?.[options.arch] ?? [];
++  const copilotVersion =
++    resolvedServerDependencies["@github/copilot-sdk"] ? "^1.0.34" : undefined;
++  const copilotPlatformDeps: Record<string, string> = {};
++  if (copilotVersion) {
++    for (const pkg of copilotPlatformPackages) {
++      copilotPlatformDeps[pkg] = copilotVersion;
++    }
++  }
++
+   const stagePackageJson: StagePackageJson = {
+     name: "t3code",
+     version: appVersion,
+@@ -798,6 +826,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
+     dependencies: {
+       ...resolvedServerDependencies,
+       ...resolvedDesktopRuntimeDependencies,
++      ...copilotPlatformDeps,
+     },
+     devDependencies: {
+       electron: electronVersion,
+@@ -818,38 +847,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
+     })`bun install --production`,
+   );
+ 
+-  // Ensure the Copilot SDK platform binary is installed for the target platform.
+-  // bun only installs optional deps for the host OS, so when cross-compiling
+-  // (e.g., building a Windows installer on macOS) the target binary is missing.
+-  const copilotPlatformMap: Record<string, Record<string, string[]>> = {
+-    mac: {
+-      arm64: ["@github/copilot-darwin-arm64"],
+-      x64: ["@github/copilot-darwin-x64"],
+-      universal: ["@github/copilot-darwin-arm64", "@github/copilot-darwin-x64"],
+-    },
+-    linux: {
+-      arm64: ["@github/copilot-linux-arm64"],
+-      x64: ["@github/copilot-linux-x64"],
+-    },
+-    win: {
+-      arm64: ["@github/copilot-win32-arm64"],
+-      x64: ["@github/copilot-win32-x64"],
+-    },
+-  };
+-  const copilotPlatformPackages = copilotPlatformMap[options.platform]?.[options.arch] ?? [];
+-  if (copilotPlatformPackages.length > 0) {
+-    yield* Effect.log(
+-      `[desktop-artifact] Installing Copilot SDK platform binaries: ${copilotPlatformPackages.join(", ")}`,
+-    );
+-    yield* runCommand(
+-      ChildProcess.make({
+-        cwd: stageAppDir,
+-        ...commandOutputOptions(options.verbose),
+-        shell: process.platform === "win32",
+-      })`bun add ${copilotPlatformPackages.join(" ")}`,
+-    );
+-  }
+-
+   const buildEnv: NodeJS.ProcessEnv = {
+     ...process.env,
+   };

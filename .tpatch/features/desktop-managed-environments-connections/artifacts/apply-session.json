@@ -1,0 +1,8 @@
+{
+  "slug": "desktop-managed-environments-connections",
+  "completed_at": "2026-05-06T06:07:31Z",
+  "base_commit": "5511b301f93a1254c30d2e71279ba1106819bd53",
+  "has_patch": true,
+  "validation_status": "passed",
+  "validation_notes": "tpatch test — command: bun run --filter t3 build"
+}

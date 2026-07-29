@@ -1,0 +1,1 @@
+Handle compaction/truncation events and surface exit_plan_mode as proposed plans. Compaction: map session.compaction_start, session.compaction_complete, session.truncation to canonical runtime events. Plan mode delegates to SDK system prompt guidance (no hard permission blocking, matching VS Code behavior).
