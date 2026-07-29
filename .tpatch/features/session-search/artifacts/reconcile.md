@@ -1,23 +1,17 @@
 # Reconciliation: session-search
 
-**Outcome**: blocked
-**Phase**: phase-4-forward-apply-conflicts
+**Outcome**: blocked-requires-human
+**Phase**: phase-3.5-provider-resolve
 **Upstream Ref**: upstream/main
 **Upstream Commit**: 85a89868703530e03c5e79797c7b952c684bd222
-**Timestamp**: 2026-07-29T16:48:39Z
+**Timestamp**: 2026-07-29T16:58:28Z
 
 ## Notes
 
 - Operation-level: 0 present, 1 applicable, 3 conflicts
 - Provider semantic check: still_needed
-- 3-way merge would leave conflict markers in 1 file(s) — manual resolution required (re-run with --resolve to attempt provider-assisted resolution)
-- git: Applied patch to 'apps/web/src/components/ChatView.tsx' with conflicts.
-Falling back to direct application...
-Applied patch to 'packages/contracts/src/keybindings.ts' cleanly.
-Applied patch to 'packages/shared/src/keybindings.ts' cleanly.
-U apps/web/src/components/ChatView.tsx
+- phase 3.5 blocked: 0 file(s) failed validation or provider; see resolution-session.json
 
 ## Conflicts
 
 - apps/web/src/components/ChatView.tsx
-

@@ -1,49 +1,47 @@
 {
   "slug": "session-search",
   "title": "Add in-session search (Cmd/Ctrl+F) to find text within the current chat thread. Should search across all messages (user and assistant), tool outputs, and work log entries. Highlight matches and allow navigation between results. Similar to browser find-in-page but scoped to the thread content.",
-  "outcome": "blocked",
-  "phase": "phase-4-forward-apply-conflicts",
+  "outcome": "blocked-requires-human",
+  "phase": "phase-3.5-provider-resolve",
   "upstream_ref": "upstream/main",
   "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
   "notes": [
     "Operation-level: 0 present, 1 applicable, 3 conflicts",
     "Provider semantic check: still_needed",
-    "3-way merge would leave conflict markers in 1 file(s) — manual resolution required (re-run with --resolve to attempt provider-assisted resolution)",
-    "git: Applied patch to 'apps/web/src/components/ChatView.tsx' with conflicts.\nFalling back to direct application...\nApplied patch to 'packages/contracts/src/keybindings.ts' cleanly.\nApplied patch to 'packages/shared/src/keybindings.ts' cleanly.\nU apps/web/src/components/ChatView.tsx"
+    "phase 3.5 blocked: 0 file(s) failed validation or provider; see resolution-session.json"
   ],
-  "conflicts": [
-    "apps/web/src/components/ChatView.tsx"
-  ],
+  "conflicts": ["apps/web/src/components/ChatView.tsx"],
+  "shadow_path": "/Users/jbencardino/Documents/Proyectos/tesserabox/t3code/.tpatch/shadow/session-search-2026-07-29T16-57-57.083869Z",
+  "skipped_files": ["apps/web/src/components/ChatView.tsx"],
+  "resolve_session_id": "rec-2026-07-29T16-57-57Z-d6b4ad044f59",
   "evidence": [
     {
       "schema_version": 1,
       "feature_slug": "session-search",
-      "attempt_id": "re_50d527cd4d3a",
+      "attempt_id": "re_1db8e3636377",
       "upstream_ref": "upstream/main",
       "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
       "base_commit": "5032b49b3777368215b3f46049eed7863c0f98d8",
-      "raw_reconcile_verdict": "blocked",
-      "phase": "phase-4",
-      "evidence_kind": "forward-apply",
-      "confidence": "low",
-      "matched_paths": [
-        "apps/web/src/components/ChatView.tsx"
-      ],
+      "raw_reconcile_verdict": "blocked-requires-human",
+      "phase": "phase-3.5",
+      "evidence_kind": "provider-semantic",
+      "confidence": "medium",
+      "matched_paths": ["apps/web/src/components/ChatView.tsx"],
       "matched_operations": [],
       "match_origin": "unknown",
       "upstream_commit_refs": [],
       "pre_reconcile_presence": "not-checked",
       "requires_confirmation": true,
-      "reason_code": "phase-4-forward-apply-conflicts"
+      "reason_code": "phase-3.5-provider-resolve"
     },
     {
       "schema_version": 1,
       "feature_slug": "session-search",
-      "attempt_id": "re_d8c995415f61",
+      "attempt_id": "re_ed71042be092",
       "upstream_ref": "upstream/main",
       "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
       "base_commit": "5032b49b3777368215b3f46049eed7863c0f98d8",
-      "raw_reconcile_verdict": "blocked",
+      "raw_reconcile_verdict": "blocked-requires-human",
       "phase": "phase-3.5",
       "evidence_kind": "file-novelty",
       "confidence": "medium",
@@ -63,11 +61,11 @@
     {
       "schema_version": 1,
       "feature_slug": "session-search",
-      "attempt_id": "re_9417321e9b55",
+      "attempt_id": "re_c45c370dd1e6",
       "upstream_ref": "upstream/main",
       "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
       "base_commit": "5032b49b3777368215b3f46049eed7863c0f98d8",
-      "raw_reconcile_verdict": "blocked",
+      "raw_reconcile_verdict": "blocked-requires-human",
       "phase": "phase-3.5",
       "evidence_kind": "hunk-overlap",
       "confidence": "high",
@@ -99,7 +97,7 @@
     {
       "schema_version": 1,
       "feature_slug": "session-search",
-      "attempt_id": "re_c207284a4a2e",
+      "attempt_id": "re_7e124a048dbd",
       "upstream_ref": "upstream/main",
       "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
       "base_commit": "5032b49b3777368215b3f46049eed7863c0f98d8",
@@ -109,20 +107,19 @@
       "confidence": "medium",
       "matched_paths": [],
       "matched_operations": [
-        "primary=edit-overlap",
-        "recommended_action=human-or-provider-resolution",
+        "primary=validation-blocked",
+        "recommended_action=inspect-tests-or-typecheck",
+        "secondary=edit-overlap: hunk-overlap edit-overlap nearby-window=3 apps/web/src/components/ChatView.tsx:old:1358,6-new:1362,19:edit-overlap:nearby=1 apps/web/src/components/ChatView.tsx:old:147,6-new:147,7:edit-overlap:nearby=3 apps/web/src/components/ChatView.tsx:old:2524,6-new:2541,19:none:nearby=0 apps/web/src/components/ChatView.tsx:old:3552,6-new:3582,34:edit-overlap:nearby=1 apps/web/src/components/ChatView.tsx:old:704,6-new:705,9:edit-overlap:nearby=1 packages/contracts/src/keybindings.ts:old:56,6-new:56,7:edit-overlap:nearby=3 packages/shared/src/keybindings.ts:old:28,6-new:28,7:context-only:nearby=2",
         "secondary=clean-additive: file-novelty mixed-additive"
       ],
       "match_origin": "unknown",
       "upstream_commit_refs": [],
       "pre_reconcile_presence": "not-checked",
       "requires_confirmation": false,
-      "reason_code": "edit-overlap"
+      "reason_code": "validation-blocked"
     }
   ],
-  "blocked_category": "edit-overlap",
-  "recommended_action": "human-or-provider-resolution",
-  "blocked_evidence": [
-    "hunk-overlap edit-overlap nearby-window=3 apps/web/src/components/ChatView.tsx:old:1358,6-new:1362,19:edit-overlap:nearby=1 apps/web/src/components/ChatView.tsx:old:147,6-new:147,7:edit-overlap:nearby=3 apps/web/src/components/ChatView.tsx:old:2524,6-new:2541,19:none:nearby=0 apps/web/src/components/ChatView.tsx:old:3552,6-new:3582,34:edit-overlap:nearby=1 apps/web/src/components/ChatView.tsx:old:704,6-new:705,9:edit-overlap:nearby=1 packages/contracts/src/keybindings.ts:old:56,6-new:56,7:edit-overlap:nearby=3 packages/shared/src/keybindings.ts:old:28,6-new:28,7:context-only:nearby=2"
-  ]
+  "blocked_category": "validation-blocked",
+  "recommended_action": "inspect-tests-or-typecheck",
+  "blocked_evidence": ["phase=phase-3.5-provider-resolve"]
 }

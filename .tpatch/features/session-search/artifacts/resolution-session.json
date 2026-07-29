@@ -1,0 +1,19 @@
+{
+  "session_id": "rec-2026-07-29T16-57-57Z-d6b4ad044f59",
+  "started_at": "2026-07-29T16:57:57.082676Z",
+  "ended_at": "2026-07-29T16:58:15.79494Z",
+  "verdict": "blocked-requires-human",
+  "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
+  "provider": "openai-compatible",
+  "model": "claude-opus-4.8",
+  "shadow_path": "/Users/jbencardino/Documents/Proyectos/tesserabox/t3code/.tpatch/shadow/session-search-2026-07-29T16-57-57.083869Z",
+  "conflicted_files": ["apps/web/src/components/ChatView.tsx"],
+  "outcomes": [
+    {
+      "path": "apps/web/src/components/ChatView.tsx",
+      "status": "skipped-too-large",
+      "bytes": 685821,
+      "error": "combined 3-way content 685821 bytes exceeds max_file_bytes=204800"
+    }
+  ]
+}

@@ -29,6 +29,34 @@
       "value": "apps/web/src/components/ChatView.tsx",
       "mode": "advisory",
       "source": "manual"
+    },
+    {
+      "claim_id": "6ca92b5d1a73",
+      "kind": "path",
+      "value": "apps/web/src/components/chat/MessagesTimeline.tsx",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "9fa2464a1347",
+      "kind": "path",
+      "value": "apps/web/src/components/chat/sessionSearch.test.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "e20446770f1a",
+      "kind": "path",
+      "value": "apps/web/src/components/chat/sessionSearch.ts",
+      "mode": "advisory",
+      "source": "manual"
+    },
+    {
+      "claim_id": "f194dd5a26c6",
+      "kind": "path",
+      "value": "apps/web/src/components/chat/MessagesTimeline.logic.ts",
+      "mode": "advisory",
+      "source": "manual"
     }
   ]
 }
