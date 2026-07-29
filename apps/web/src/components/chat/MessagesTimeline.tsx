@@ -135,6 +135,8 @@ interface TimelineRowSharedState {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onToggleTurnFold: (turnId: TurnId) => void;
   onToggleWorkGroup: (groupId: string, anchorElement?: HTMLElement) => void;
+  searchMatchEntryIds: ReadonlySet<string>;
+  activeSearchEntryId: string | null;
 }
 
 interface TimelineRowActivityState {
@@ -184,6 +186,8 @@ interface MessagesTimelineProps {
   onManualNavigation: () => void;
   hideEmptyPlaceholder?: boolean;
   topFadeEnabled?: boolean;
+  searchMatchEntryIds?: ReadonlySet<string>;
+  activeSearchEntryId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +223,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onManualNavigation,
   hideEmptyPlaceholder = false,
   topFadeEnabled = false,
+  searchMatchEntryIds = new Set(),
+  activeSearchEntryId = null,
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
@@ -306,6 +312,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         runningTurnId,
         expandedTurnIds,
         expandedWorkGroupIds,
+        expandAll: searchMatchEntryIds.size > 0,
         isWorking,
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
@@ -317,6 +324,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       runningTurnId,
       expandedTurnIds,
       expandedWorkGroupIds,
+      searchMatchEntryIds,
       isWorking,
       activeTurnStartedAt,
       turnDiffSummaryByAssistantMessageId,
@@ -324,6 +332,19 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
+  const activeSearchRowIndex = useMemo(() => {
+    if (activeSearchEntryId === null) {
+      return -1;
+    }
+    return rows.findIndex((row) => {
+      if (row.kind === "message") return row.message.id === activeSearchEntryId;
+      if (row.kind === "proposed-plan") return row.proposedPlan.id === activeSearchEntryId;
+      if (row.kind === "work") {
+        return row.groupedEntries.some((entry) => entry.id === activeSearchEntryId);
+      }
+      return false;
+    });
+  }, [activeSearchEntryId, rows]);
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
   const [timelineViewportElement, setTimelineViewportElement] = useState<HTMLDivElement | null>(
     null,
@@ -391,6 +412,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [handleScroll, rows.length]);
 
   useEffect(() => {
+    if (activeSearchRowIndex < 0) {
+      return;
+    }
+    onManualNavigation();
+    void listRef.current?.scrollToIndex({
+      index: activeSearchRowIndex,
+      animated: true,
+      viewOffset: 72,
+    });
+  }, [activeSearchRowIndex, listRef, onManualNavigation]);
+
+  useEffect(() => {
     if (!timelineViewportElement) {
       return;
     }
@@ -430,6 +463,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
+      searchMatchEntryIds,
+      activeSearchEntryId,
     }),
     [
       timestampFormat,
@@ -444,6 +479,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
+      searchMatchEntryIds,
+      activeSearchEntryId,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -836,6 +873,17 @@ type TimelineWorkEntry = Extract<MessagesTimelineRow, { kind: "work" }>["grouped
 type TimelineRow = MessagesTimelineRow;
 
 const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: TimelineRow }) {
+  const { activeSearchEntryId, searchMatchEntryIds } = use(TimelineRowCtx);
+  const searchEntryIds =
+    row.kind === "message"
+      ? [row.message.id]
+      : row.kind === "proposed-plan"
+        ? [row.proposedPlan.id]
+        : row.kind === "work"
+          ? row.groupedEntries.map((entry) => entry.id)
+          : [];
+  const matchesSearch = searchEntryIds.some((entryId) => searchMatchEntryIds.has(entryId));
+  const isActiveSearchMatch = searchEntryIds.includes(activeSearchEntryId ?? "");
   return (
     <div
       className={cn(
@@ -847,6 +895,8 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
           ? "pb-2"
           : "pb-4",
         row.kind === "message" && row.message.role === "assistant" ? "group/assistant" : null,
+        matchesSearch && "rounded-md bg-yellow-500/10",
+        isActiveSearchMatch && "ring-2 ring-yellow-500/70 ring-offset-2 ring-offset-background",
       )}
       data-timeline-row-id={row.id}
       data-timeline-row-kind={row.kind}

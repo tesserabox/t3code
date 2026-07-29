@@ -225,6 +225,8 @@ import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
+import { SessionSearchBar } from "./chat/SessionSearchBar";
+import { deriveSessionSearchMatches } from "./chat/sessionSearch";
 import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
@@ -1266,6 +1268,9 @@ function ChatViewContent(props: ChatViewProps) {
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
+  const [isSessionSearchOpen, setIsSessionSearchOpen] = useState(false);
+  const [sessionSearchQuery, setSessionSearchQuery] = useState("");
+  const [sessionSearchMatchIndex, setSessionSearchMatchIndex] = useState(0);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
   const optimisticUserMessagesRef = useRef(optimisticUserMessages);
   optimisticUserMessagesRef.current = optimisticUserMessages;
@@ -2311,6 +2316,31 @@ function ChatViewContent(props: ChatViewProps) {
       deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
     [activeThread?.proposedPlans, timelineMessages, workLogEntries],
   );
+  const sessionSearchMatches = useMemo(
+    () => deriveSessionSearchMatches(timelineEntries, sessionSearchQuery),
+    [sessionSearchQuery, timelineEntries],
+  );
+  const activeSessionSearchMatch =
+    sessionSearchMatches.length === 0
+      ? null
+      : sessionSearchMatches[sessionSearchMatchIndex % sessionSearchMatches.length];
+  const sessionSearchMatchEntryIds = useMemo(
+    () => new Set(sessionSearchMatches.map((match) => match.entryId)),
+    [sessionSearchMatches],
+  );
+  const closeSessionSearch = useCallback(() => {
+    setIsSessionSearchOpen(false);
+    setSessionSearchQuery("");
+    setSessionSearchMatchIndex(0);
+  }, []);
+  useEffect(() => {
+    setSessionSearchMatchIndex((current) =>
+      sessionSearchMatches.length === 0 ? 0 : Math.min(current, sessionSearchMatches.length - 1),
+    );
+  }, [sessionSearchMatches.length]);
+  useEffect(() => {
+    closeSessionSearch();
+  }, [activeThreadKey, closeSessionSearch]);
   const [dockedDraftHeroThreadKey, setDockedDraftHeroThreadKey] = useState<string | null>(null);
   const draftHeroDockRequested =
     activeThreadKey !== null && dockedDraftHeroThreadKey === activeThreadKey;
@@ -4325,6 +4355,17 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
 
+      if (command === "chat.search") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (isSessionSearchOpen) {
+          closeSessionSearch();
+        } else {
+          setIsSessionSearchOpen(true);
+        }
+        return;
+      }
+
       if (command === "terminal.split") {
         event.preventDefault();
         event.stopPropagation();
@@ -4422,6 +4463,8 @@ function ChatViewContent(props: ChatViewProps) {
     toggleRightPanel,
     toggleTerminalVisibility,
     composerRef,
+    closeSessionSearch,
+    isSessionSearchOpen,
   ]);
 
   const onRevertToTurnCount = useCallback(
@@ -5723,6 +5766,32 @@ function ChatViewContent(props: ChatViewProps) {
             </div>
             {/* Messages Wrapper */}
             <div className="relative flex min-h-0 flex-1 flex-col">
+              {isSessionSearchOpen ? (
+                <SessionSearchBar
+                  query={sessionSearchQuery}
+                  onQueryChange={(query) => {
+                    setSessionSearchQuery(query);
+                    setSessionSearchMatchIndex(0);
+                  }}
+                  matchCount={sessionSearchMatches.length}
+                  currentMatchIndex={sessionSearchMatchIndex}
+                  onNext={() =>
+                    setSessionSearchMatchIndex((index) =>
+                      sessionSearchMatches.length > 0
+                        ? (index + 1) % sessionSearchMatches.length
+                        : 0,
+                    )
+                  }
+                  onPrevious={() =>
+                    setSessionSearchMatchIndex((index) =>
+                      sessionSearchMatches.length > 0
+                        ? (index - 1 + sessionSearchMatches.length) % sessionSearchMatches.length
+                        : 0,
+                    )
+                  }
+                  onClose={closeSessionSearch}
+                />
+              ) : null}
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
                 key={activeThread.id}
@@ -5758,6 +5827,8 @@ function ChatViewContent(props: ChatViewProps) {
                 onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
                 hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
                 topFadeEnabled={!hasTimelineTopBanner}
+                searchMatchEntryIds={sessionSearchMatchEntryIds}
+                activeSearchEntryId={activeSessionSearchMatch?.entryId ?? null}
               />
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}
