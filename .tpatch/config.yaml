@@ -2,7 +2,7 @@
 provider:
   type: openai-compatible
   base_url: "http://localhost:4141"
-  model: claude-opus-4.5
+  model: claude-opus-4.8
   auth_env: GITHUB_TOKEN
 
 # Merge strategy for applying patches: "3way" (default) or "rebase"
@@ -11,7 +11,18 @@ merge_strategy: 3way
 # Max LLM validation retries when output fails to parse (0 disables retry)
 max_retries: 2
 
-# Shell command run by `tpatch test <slug>`.
-# This is intentionally feature-scoped for the windows-wsl-support desktop dev
-# path fix because the old test:windows-wsl-support script is no longer present.
+# Max output tokens for the implement phase (default 16384). Bump higher
+# for features that emit many large file bodies inline.
+max_tokens_implement: 16384
+
+# Shell command run by `tpatch test <slug>` (e.g. "go test ./...", "bun test")
 test_command: "bun run --filter t3 build"
+
+# Feature dependency DAG (ADR-011). Default false until v0.6.0.
+features_dependencies: true
+
+# Path restructure detector thresholds (WP-003 PRD 9).
+# Defaults: prefix-split >=3 files across >=2 prefixes; prefix-move >=5 files.
+prefix_split_min_files: 3
+prefix_split_min_prefixes: 2
+prefix_move_min_files: 5

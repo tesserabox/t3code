@@ -122,3 +122,8 @@ worktree because upstream deleted or moved them, keep the feature patch-only.
 Do not retain a partial recipe or replace modified upstream files with
 snapshot-wide `write-file` operations. The canonical patch remains the
 authoritative intent, and dynamic verify will skip V7 while still running V8.
+
+After rebuilding a historical canonical patch, remove any pre-existing
+`artifacts/incremental.patch`. Reconcile prefers the incremental artifact when
+both exist, so a stale incremental patch can silently override the newly
+recorded canonical feature boundary and contaminate verdict evidence.
