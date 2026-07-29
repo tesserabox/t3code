@@ -4,14 +4,178 @@
   "outcome": "blocked",
   "phase": "phase-4-blocked",
   "upstream_ref": "upstream/main",
-  "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+  "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
   "notes": [
-    "Operation-level: 5 present, 3 applicable, 56 conflicts",
-    "Provider semantic check error: generation request failed: Post \"http://localhost:4141/v1/messages\": context deadline exceeded",
+    "Operation-level: 0 present, 11 applicable, 7 conflicts",
+    "Provider semantic check: still_needed",
     "Patch cannot be applied cleanly — manual intervention needed",
-    "git: error: corrupt patch at line 3291"
+    "git: Applied patch to 'apps/server/package.json' with conflicts.\nFalling back to direct application...\nFalling back to direct application...\nFalling back to direct application...\nFalling back to direct application...\nFalling back to direct application...\nFalling back to direct application...\nFalling back to direct application...\nFalling back to direct application...\nApplied patch to 'apps/server/src/provider/builtInDrivers.ts' cleanly.\nFalling back to direct application...\nerror: apps/web/src/components/KeybindingsToast.browser.tsx: does not exist in index\nApplied patch to 'apps/web/src/components/chat/providerIconUtils.ts' with conflicts.\nApplied patch to 'apps/web/src/components/settings/providerDriverMeta.ts' with conflicts.\nApplied patch to 'apps/web/src/session-logic.ts' cleanly.\nerror: bun.lock: does not exist in index\nApplied patch to 'packages/contracts/src/providerRuntime.ts' cleanly.\nApplied patch to 'packages/contracts/src/settings.ts' cleanly."
   ],
   "conflicts": [
     "Forward-apply failed — check for merge conflicts"
+  ],
+  "evidence": [
+    {
+      "schema_version": 1,
+      "feature_slug": "copilot-cli-provider",
+      "attempt_id": "re_ab1ac9013cf8",
+      "upstream_ref": "upstream/main",
+      "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
+      "base_commit": "48ea81c5421591f70192fa646654c6f564d95b46",
+      "raw_reconcile_verdict": "blocked",
+      "phase": "phase-4",
+      "evidence_kind": "forward-apply",
+      "confidence": "low",
+      "matched_paths": [
+        "Forward-apply failed — check for merge conflicts"
+      ],
+      "matched_operations": [],
+      "match_origin": "unknown",
+      "upstream_commit_refs": [],
+      "pre_reconcile_presence": "not-checked",
+      "requires_confirmation": true,
+      "reason_code": "phase-4-blocked"
+    },
+    {
+      "schema_version": 1,
+      "feature_slug": "copilot-cli-provider",
+      "attempt_id": "re_751f3e3f4a22",
+      "upstream_ref": "upstream/main",
+      "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
+      "base_commit": "48ea81c5421591f70192fa646654c6f564d95b46",
+      "raw_reconcile_verdict": "blocked",
+      "phase": "phase-3.5",
+      "evidence_kind": "file-novelty",
+      "confidence": "medium",
+      "matched_paths": [
+        "apps/server/package.json",
+        "apps/server/src/provider/Drivers/CopilotDriver.ts",
+        "apps/server/src/provider/Layers/CopilotAdapter.ts",
+        "apps/server/src/provider/Layers/CopilotProvider.ts",
+        "apps/server/src/provider/Layers/copilotCliPath.ts",
+        "apps/server/src/provider/Layers/copilotMcpServers.ts",
+        "apps/server/src/provider/Layers/copilotTurnTracking.ts",
+        "apps/server/src/provider/Services/CopilotAdapter.ts",
+        "apps/server/src/provider/Services/CopilotProvider.ts",
+        "apps/server/src/provider/builtInDrivers.ts",
+        "apps/server/src/textGeneration/CopilotTextGeneration.ts",
+        "apps/web/src/components/KeybindingsToast.browser.tsx",
+        "apps/web/src/components/chat/providerIconUtils.ts",
+        "apps/web/src/components/settings/providerDriverMeta.ts",
+        "apps/web/src/session-logic.ts",
+        "bun.lock",
+        "packages/contracts/src/providerRuntime.ts",
+        "packages/contracts/src/settings.ts"
+      ],
+      "matched_operations": [],
+      "match_origin": "unknown",
+      "upstream_commit_refs": [],
+      "pre_reconcile_presence": "unknown",
+      "requires_confirmation": true,
+      "reason_code": "mixed-additive"
+    },
+    {
+      "schema_version": 1,
+      "feature_slug": "copilot-cli-provider",
+      "attempt_id": "re_feeee92140fa",
+      "upstream_ref": "upstream/main",
+      "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
+      "base_commit": "48ea81c5421591f70192fa646654c6f564d95b46",
+      "raw_reconcile_verdict": "blocked",
+      "phase": "phase-3.5",
+      "evidence_kind": "hunk-overlap",
+      "confidence": "high",
+      "matched_paths": [
+        "apps/server/package.json",
+        "apps/server/src/provider/builtInDrivers.ts",
+        "apps/server/src/provider/builtInDrivers.ts",
+        "apps/server/src/provider/builtInDrivers.ts",
+        "apps/web/src/components/chat/providerIconUtils.ts",
+        "apps/web/src/components/settings/providerDriverMeta.ts",
+        "apps/web/src/components/settings/providerDriverMeta.ts",
+        "apps/web/src/session-logic.ts",
+        "packages/contracts/src/providerRuntime.ts",
+        "packages/contracts/src/settings.ts",
+        "packages/contracts/src/settings.ts"
+      ],
+      "matched_operations": [
+        "nearby-window=3",
+        "apps/server/package.json:old:28,6-new:28,7:edit-overlap:nearby=2",
+        "apps/server/src/provider/builtInDrivers.ts:old:22,6-new:22,7:edit-overlap:nearby=1",
+        "apps/server/src/provider/builtInDrivers.ts:old:34,6-new:35,7:edit-overlap:nearby=1",
+        "apps/server/src/provider/builtInDrivers.ts:old:45,6-new:47,7:edit-overlap:nearby=1",
+        "apps/web/src/components/chat/providerIconUtils.ts:old:1,9-new:1,10:edit-overlap:nearby=1",
+        "apps/web/src/components/settings/providerDriverMeta.ts:old:1,12-new:1,13:edit-overlap:nearby=1",
+        "apps/web/src/components/settings/providerDriverMeta.ts:old:40,6-new:41,12:none:nearby=0",
+        "apps/web/src/session-logic.ts:old:32,6-new:32,7:none:nearby=0",
+        "packages/contracts/src/providerRuntime.ts:old:25,6-new:25,8:none:nearby=0",
+        "packages/contracts/src/settings.ts:old:331,6-new:331,33:context-only:nearby=1",
+        "packages/contracts/src/settings.ts:old:367,6-new:394,7:edit-overlap:nearby=1"
+      ],
+      "match_origin": "unknown",
+      "upstream_commit_refs": [],
+      "pre_reconcile_presence": "present",
+      "requires_confirmation": false,
+      "reason_code": "edit-overlap"
+    },
+    {
+      "schema_version": 1,
+      "feature_slug": "copilot-cli-provider",
+      "attempt_id": "re_b9d9a1b3de75",
+      "upstream_ref": "upstream/main",
+      "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
+      "base_commit": "48ea81c5421591f70192fa646654c6f564d95b46",
+      "raw_reconcile_verdict": "blocked",
+      "phase": "phase-3.5",
+      "evidence_kind": "path-restructure",
+      "confidence": "medium",
+      "matched_paths": [
+        "apps/web/src/components/KeybindingsToast.browser.tsx",
+        "apps/web/src/components/chat/providerIconUtils.ts",
+        "apps/web/src/components/settings/providerDriverMeta.ts"
+      ],
+      "matched_operations": [
+        "old_prefix=apps/web/src/components/",
+        "prefix_split_min_files=3",
+        "prefix_split_min_prefixes=2",
+        "prefix_move_min_files=5",
+        "moved_files=0",
+        "deleted_files=1"
+      ],
+      "match_origin": "upstream",
+      "upstream_commit_refs": [],
+      "pre_reconcile_presence": "absent",
+      "requires_confirmation": false,
+      "reason_code": "target-deleted"
+    },
+    {
+      "schema_version": 1,
+      "feature_slug": "copilot-cli-provider",
+      "attempt_id": "re_1a819b14cfa2",
+      "upstream_ref": "upstream/main",
+      "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
+      "base_commit": "48ea81c5421591f70192fa646654c6f564d95b46",
+      "raw_reconcile_verdict": "blocked",
+      "phase": "phase-4",
+      "evidence_kind": "blocked-classification",
+      "confidence": "medium",
+      "matched_paths": [],
+      "matched_operations": [
+        "primary=target-deleted",
+        "recommended_action=check-path-restructure-or-rewrite",
+        "secondary=edit-overlap: hunk-overlap edit-overlap nearby-window=3 apps/server/package.json:old:28,6-new:28,7:edit-overlap:nearby=2 apps/server/src/provider/builtInDrivers.ts:old:22,6-new:22,7:edit-overlap:nearby=1 apps/server/src/provider/builtInDrivers.ts:old:34,6-new:35,7:edit-overlap:nearby=1 apps/server/src/provider/builtInDrivers.ts:old:45,6-new:47,7:edit-overlap:nearby=1 apps/web/src/components/chat/providerIconUtils.ts:old:1,9-new:1,10:edit-overlap:nearby=1 apps/web/src/components/settings/providerDriverMeta.ts:old:1,12-new:1,13:edit-overlap:nearby=1 apps/web/src/components/settings/providerDriverMeta.ts:old:40,6-new:41,12:none:nearby=0 apps/web/src/session-logic.ts:old:32,6-new:32,7:none:nearby=0 packages/contracts/src/providerRuntime.ts:old:25,6-new:25,8:none:nearby=0 packages/contracts/src/settings.ts:old:331,6-new:331,33:context-only:nearby=1 packages/contracts/src/settings.ts:old:367,6-new:394,7:edit-overlap:nearby=1",
+        "secondary=clean-additive: file-novelty mixed-additive"
+      ],
+      "match_origin": "unknown",
+      "upstream_commit_refs": [],
+      "pre_reconcile_presence": "not-checked",
+      "requires_confirmation": false,
+      "reason_code": "target-deleted"
+    }
+  ],
+  "blocked_category": "target-deleted",
+  "recommended_action": "check-path-restructure-or-rewrite",
+  "blocked_evidence": [
+    "path-restructure target-deleted old_prefix=apps/web/src/components/ prefix_split_min_files=3 prefix_split_min_prefixes=2 prefix_move_min_files=5 moved_files=0 deleted_files=1"
   ]
 }
