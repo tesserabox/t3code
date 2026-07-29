@@ -127,3 +127,14 @@ After rebuilding a historical canonical patch, remove any pre-existing
 `artifacts/incremental.patch`. Reconcile prefers the incremental artifact when
 both exist, so a stale incremental patch can silently override the newly
 recorded canonical feature boundary and contaminate verdict evidence.
+
+Reconcile independent feature patches one slug per invocation. The current
+multi-slug path assumes later canonical patches are cumulative and derives
+cross-feature incremental deltas; that assumption is incompatible with scoped
+claims and one-feature-per-commit recording.
+
+When the upstreamed confirmation gate rejects a semantic candidate for missing
+commit evidence, record the human decision with `tpatch reconcile review add`.
+Do not manually edit lifecycle state if `confirm-upstreamed` still refuses the
+reviewed candidate; keep it blocked until tpatch provides an evidence-linked
+human transition.
