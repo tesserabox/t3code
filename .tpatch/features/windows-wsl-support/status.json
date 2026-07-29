@@ -2,21 +2,22 @@
   "id": "windows-wsl-support",
   "slug": "windows-wsl-support",
   "title": "Add Windows and WSL support for T3 Code. Support running projects from both Windows filesystem and WSL distros in the same desktop instance, with desktop-managed environment registration, isolated per-environment state, wsl.exe server spawning, wslpath translation, auto-install of the server binary inside WSL, and native file watching via inotify.",
-  "state": "applied",
+  "state": "blocked",
   "compatibility": "unknown",
   "requested_at": "2026-04-22T04:27:24Z",
-  "updated_at": "2026-07-29T16:36:09Z",
-  "last_command": "record",
-  "notes": "Patch recorded",
+  "updated_at": "2026-07-29T16:51:43Z",
+  "last_command": "reconcile",
+  "notes": "Reconciliation blocked — manual intervention needed",
   "apply": {
     "completed_at": "2026-05-05T03:25:03Z",
     "base_commit": "e42c13bf9b832d5800dd4c38a633a1343caf2d00",
     "has_patch": true
   },
   "reconcile": {
-    "attempted_at": "2026-05-13T08:00:34Z",
+    "attempted_at": "2026-07-29T16:51:43Z",
     "upstream_ref": "upstream/main",
-    "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
-    "outcome": "blocked"
+    "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
+    "outcome": "blocked",
+    "review_verdict": "rejected-upstreamed"
   }
 }

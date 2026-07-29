@@ -2,16 +2,133 @@
   "slug": "windows-wsl-support",
   "title": "Add Windows and WSL support for T3 Code. Support running projects from both Windows filesystem and WSL distros in the same desktop instance, with desktop-managed environment registration, isolated per-environment state, wsl.exe server spawning, wslpath translation, auto-install of the server binary inside WSL, and native file watching via inotify.",
   "outcome": "blocked",
-  "phase": "phase-4-blocked",
+  "phase": "phase-3-provider-semantic",
   "upstream_ref": "upstream/main",
-  "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+  "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
   "notes": [
-    "Operation-level: 29 present, 21 applicable, 34 conflicts",
-    "Provider semantic check error: generation request failed: Post \"http://localhost:4141/v1/messages\": context deadline exceeded",
-    "Patch cannot be applied cleanly — manual intervention needed",
-    "git: error: corrupt patch at line 1440"
+    "Provider determined upstream satisfies acceptance criteria",
+    "confirmation gate: upstreamed candidate blocked pending confirmation (missing upstream commit evidence)"
   ],
-  "conflicts": [
-    "Forward-apply failed — check for merge conflicts"
+  "evidence": [
+    {
+      "schema_version": 1,
+      "feature_slug": "windows-wsl-support",
+      "attempt_id": "re_1125ecf82225",
+      "upstream_ref": "upstream/main",
+      "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
+      "base_commit": "e42c13bf9b832d5800dd4c38a633a1343caf2d00",
+      "raw_reconcile_verdict": "upstreamed",
+      "phase": "phase-3",
+      "evidence_kind": "provider-semantic",
+      "confidence": "medium",
+      "matched_paths": [],
+      "matched_operations": [],
+      "match_origin": "unknown",
+      "upstream_commit_refs": [],
+      "pre_reconcile_presence": "not-checked",
+      "requires_confirmation": true,
+      "reason_code": "phase-3-provider-semantic"
+    },
+    {
+      "schema_version": 1,
+      "feature_slug": "windows-wsl-support",
+      "attempt_id": "re_6ccbc92579e9",
+      "upstream_ref": "upstream/main",
+      "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
+      "base_commit": "e42c13bf9b832d5800dd4c38a633a1343caf2d00",
+      "raw_reconcile_verdict": "upstreamed",
+      "phase": "phase-3.5",
+      "evidence_kind": "file-novelty",
+      "confidence": "medium",
+      "matched_paths": [
+        "apps/desktop/src/backendEnvironment.ts",
+        "apps/desktop/src/backendTarget.ts",
+        "apps/desktop/src/main.ts",
+        "apps/desktop/src/wslBackendTarget.ts",
+        "apps/desktop/src/wslServerBundle.ts",
+        "apps/server/src/cli-config.test.ts",
+        "apps/server/src/cli.ts"
+      ],
+      "matched_operations": [],
+      "match_origin": "unknown",
+      "upstream_commit_refs": [],
+      "pre_reconcile_presence": "unknown",
+      "requires_confirmation": true,
+      "reason_code": "mixed-additive"
+    },
+    {
+      "schema_version": 1,
+      "feature_slug": "windows-wsl-support",
+      "attempt_id": "re_16744535a0fc",
+      "upstream_ref": "upstream/main",
+      "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
+      "base_commit": "e42c13bf9b832d5800dd4c38a633a1343caf2d00",
+      "raw_reconcile_verdict": "upstreamed",
+      "phase": "phase-3.5",
+      "evidence_kind": "hunk-overlap",
+      "confidence": "high",
+      "matched_paths": [
+        "apps/desktop/src/main.ts",
+        "apps/desktop/src/main.ts",
+        "apps/desktop/src/main.ts",
+        "apps/desktop/src/main.ts",
+        "apps/desktop/src/main.ts"
+      ],
+      "matched_operations": [
+        "nearby-window=3",
+        "apps/desktop/src/main.ts:old:102,6-new:108,8:edit-overlap:nearby=1",
+        "apps/desktop/src/main.ts:old:1380,38-new:1399,29:edit-overlap:nearby=1",
+        "apps/desktop/src/main.ts:old:1865,6-new:1875,35:edit-overlap:nearby=2",
+        "apps/desktop/src/main.ts:old:218,6-new:226,17:edit-overlap:nearby=1",
+        "apps/desktop/src/main.ts:old:4,6-new:4,12:edit-overlap:nearby=1"
+      ],
+      "match_origin": "unknown",
+      "upstream_commit_refs": [],
+      "pre_reconcile_presence": "present",
+      "requires_confirmation": false,
+      "reason_code": "edit-overlap"
+    },
+    {
+      "schema_version": 1,
+      "feature_slug": "windows-wsl-support",
+      "attempt_id": "re_780bec956e2b",
+      "upstream_ref": "upstream/main",
+      "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
+      "base_commit": "e42c13bf9b832d5800dd4c38a633a1343caf2d00",
+      "raw_reconcile_verdict": "upstreamed",
+      "phase": "phase-3.5",
+      "evidence_kind": "manual-review",
+      "confidence": "low",
+      "matched_paths": [],
+      "matched_operations": [
+        "confirmation-gate"
+      ],
+      "match_origin": "unknown",
+      "upstream_commit_refs": [],
+      "pre_reconcile_presence": "not-checked",
+      "requires_confirmation": true,
+      "reason_code": "missing-upstream-commit-ref"
+    }
+  ],
+  "review_verdict": "rejected-upstreamed",
+  "revisions": [
+    {
+      "schema_version": 1,
+      "entry_id": "rr_07e748c1871d",
+      "feature_slug": "windows-wsl-support",
+      "evidence_attempt_id": "re_780bec956e2b",
+      "raw_reconcile_verdict": "upstreamed",
+      "review_verdict": "false-positive",
+      "final_feature_state": "blocked",
+      "action_taken": "none",
+      "reason_code": "missing-upstream-commit-ref",
+      "validation_refs": [
+        {
+          "kind": "upstream-commit",
+          "value": "85a89868703530e03c5e79797c7b952c684bd222",
+          "result": "referenced"
+        }
+      ]
+    }
   ]
 }
