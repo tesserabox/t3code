@@ -2,21 +2,21 @@
   "id": "session-search",
   "slug": "session-search",
   "title": "Add in-session search (Cmd/Ctrl+F) to find text within the current chat thread. Should search across all messages (user and assistant), tool outputs, and work log entries. Highlight matches and allow navigation between results. Similar to browser find-in-page but scoped to the thread content.",
-  "state": "applied",
+  "state": "blocked",
   "compatibility": "unknown",
   "requested_at": "2026-05-12T02:47:48Z",
-  "updated_at": "2026-07-29T16:32:00Z",
-  "last_command": "record",
-  "notes": "Patch recorded",
+  "updated_at": "2026-07-29T16:48:27Z",
+  "last_command": "reconcile",
+  "notes": "Reconciliation blocked — manual intervention needed",
   "apply": {
     "completed_at": "2026-05-12T05:17:19Z",
     "base_commit": "5032b49b3777368215b3f46049eed7863c0f98d8",
     "has_patch": true
   },
   "reconcile": {
-    "attempted_at": "2026-05-13T08:00:32Z",
+    "attempted_at": "2026-07-29T16:48:27Z",
     "upstream_ref": "upstream/main",
-    "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
-    "outcome": "false_positive_upstreamed"
+    "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
+    "outcome": "blocked"
   }
 }
