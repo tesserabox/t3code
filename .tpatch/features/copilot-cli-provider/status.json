@@ -1,0 +1,22 @@
+{
+  "id": "copilot-cli-provider",
+  "slug": "copilot-cli-provider",
+  "title": "Expand the providers so that not only claude and codex are\n supported, but add the ability to use the copilot cli, as requested in\n this github issue from the upstream\n https://github.com/pingdotgg/t3code/issues/193",
+  "state": "applied",
+  "compatibility": "unknown",
+  "requested_at": "2026-04-17T09:58:12Z",
+  "updated_at": "2026-07-29T19:26:03Z",
+  "last_command": "record",
+  "notes": "Patch recorded",
+  "apply": {
+    "completed_at": "2026-04-18T01:38:21Z",
+    "base_commit": "c6038b19cfed46c8ab13de58eff683002a04b0de",
+    "has_patch": true
+  },
+  "reconcile": {
+    "attempted_at": "2026-07-29T16:50:16Z",
+    "upstream_ref": "upstream/main",
+    "upstream_commit": "85a89868703530e03c5e79797c7b952c684bd222",
+    "outcome": "blocked"
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "feature": "copilot-turn-timing",
+  "version": 1,
+  "operations": [
+    {
+      "id": "01",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "  reasoningEffort: CodexReasoningEffort | undefined;\n  interactionMode: \"default\" | \"plan\" | undefined;\n  updatedAt: string;\n  lastError: string | undefined;\n  toolTitlesByCallId: Map<string, string>;\n  pendingApprovalResolvers: Map<string, PendingApprovalRequest>;",
+      "replace": "  reasoningEffort: CodexReasoningEffort | undefined;\n  interactionMode: \"default\" | \"plan\" | undefined;\n  updatedAt: string;\n  turnSentAt: string | undefined;\n  lastError: string | undefined;\n  toolTitlesByCallId: Map<string, string>;\n  pendingApprovalResolvers: Map<string, PendingApprovalRequest>;"
+    },
+    {
+      "id": "02",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "    reasoningEffort: input.reasoningEffort,\n    interactionMode: undefined,\n    updatedAt: new Date().toISOString(),\n    lastError: undefined,\n    currentTurnId: undefined,\n    currentProviderTurnId: undefined,",
+      "replace": "    reasoningEffort: input.reasoningEffort,\n    interactionMode: undefined,\n    updatedAt: new Date().toISOString(),\n    turnSentAt: undefined,\n    lastError: undefined,\n    currentTurnId: undefined,\n    currentProviderTurnId: undefined,"
+    },
+    {
+      "id": "03",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "              },\n            },\n          ];\n        case \"assistant.turn_start\":\n          return [\n            {\n              ...base({ providerTurnId: toTurnId(event.data.turnId) }),\n              type: \"turn.started\",\n              payload: record.model ? { model: record.model } : {},\n            },\n            {\n              ...base({ providerTurnId: toTurnId(event.data.turnId) }),\n              type: \"session.state.changed\",\n              payload: {\n                state: \"running\",",
+      "replace": "              },\n            },\n          ];\n        case \"assistant.turn_start\": {\n          // Use the timestamp from when sendTurn() was called (turnSentAt),\n          // not the SDK's event.timestamp, to ensure the \"Worked for X\" timer\n          // in the UI reflects actual elapsed time since the user sent their message.\n          const turnStartBase = (input?: {\n            readonly turnId?: TurnId | undefined;\n            readonly providerTurnId?: TurnId | undefined;\n          }) =>\n            withRefs({\n              threadId: record.threadId,\n              eventId: EventId.make(event.id),\n              createdAt: record.turnSentAt ?? event.timestamp,\n              turnId: resolveOrchestrationTurnId(input?.providerTurnId ?? input?.turnId),\n              providerTurnId: input?.providerTurnId ?? input?.turnId,\n              itemId: undefined,\n              requestId: undefined,\n              rawMethod: event.type,\n              rawPayload: event,\n            });\n          return [\n            {\n              ...turnStartBase({ providerTurnId: toTurnId(event.data.turnId) }),\n              type: \"turn.started\",\n              payload: record.model ? { model: record.model } : {},\n            },\n            {\n              ...turnStartBase({ providerTurnId: toTurnId(event.data.turnId) }),\n              type: \"session.state.changed\",\n              payload: {\n                state: \"running\","
+    },
+    {
+      "id": "04",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "              },\n            },\n          ];\n        case \"assistant.reasoning\":\n          return [\n            {",
+      "replace": "              },\n            },\n          ];\n        }\n        case \"assistant.reasoning\":\n          return [\n            {"
+    },
+    {
+      "id": "05",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "      }\n      if (event.type === \"abort\" || event.type === \"session.idle\") {\n        clearTurnTracking(record);\n      }\n    };\n",
+      "replace": "      }\n      if (event.type === \"abort\" || event.type === \"session.idle\") {\n        clearTurnTracking(record);\n        record.turnSentAt = undefined;\n      }\n    };\n"
+    },
+    {
+      "id": "06",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "        yield* syncInteractionMode(record, interactionMode);\n\n        const turnId = TurnId.make(`copilot-turn-${randomUUID()}`);\n        record.pendingTurnIds.push(turnId);\n        record.currentTurnId = turnId;\n        record.currentProviderTurnId = undefined;\n\n        yield* Effect.tryPromise({\n          try: () =>",
+      "replace": "        yield* syncInteractionMode(record, interactionMode);\n\n        const turnId = TurnId.make(`copilot-turn-${randomUUID()}`);\n        const turnSentAt = new Date().toISOString();\n        record.pendingTurnIds.push(turnId);\n        record.currentTurnId = turnId;\n        record.currentProviderTurnId = undefined;\n        record.turnSentAt = turnSentAt;\n\n        yield* Effect.tryPromise({\n          try: () =>"
+    }
+  ]
+}

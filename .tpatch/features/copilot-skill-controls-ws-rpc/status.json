@@ -1,0 +1,23 @@
+{
+  "id": "copilot-skill-controls-ws-rpc",
+  "slug": "copilot-skill-controls-ws-rpc",
+  "title": "Register WsServerSetSkillEnabledRpc in WsRpcGroup. The RPC was defined in contracts but never added to the group, causing RpcGroup iteration to crash on undefined.key during WS setup — blocking ALL WebSocket connections. Also restores VITE_HTTP_URL explicit define removed by upstream v0.0.23.",
+  "state": "applied",
+  "compatibility": "unknown",
+  "requested_at": "2026-05-20T00:55:19Z",
+  "updated_at": "2026-05-20T00:58:49Z",
+  "last_command": "record",
+  "notes": "Patch recorded",
+  "apply": {
+    "completed_at": "2026-05-20T00:58:49Z",
+    "base_commit": "3faaef87d334c1df5744604c2c634c15679efa5b",
+    "has_patch": true
+  },
+  "reconcile": {},
+  "depends_on": [
+    {
+      "slug": "copilot-skill-controls",
+      "kind": "hard"
+    }
+  ]
+}

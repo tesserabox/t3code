@@ -1,0 +1,33 @@
+diff --git a/apps/server/src/provider/Layers/CopilotAdapter.ts b/apps/server/src/provider/Layers/CopilotAdapter.ts
+index aa9fc1b1..c3f275e9 100644
+--- a/apps/server/src/provider/Layers/CopilotAdapter.ts
++++ b/apps/server/src/provider/Layers/CopilotAdapter.ts
+@@ -1179,15 +1179,24 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+       pendingUserInputResolvers: Map<string, PendingUserInputRequest>,
+     ) => {
+       const onPermissionRequest = (request: PermissionRequest) => {
+-        // In plan mode, deny write and shell operations — planning should not modify files
++        // In plan mode, restrict write/shell operations:
++        // - Supervised modes: let the request flow to the user for approval
++        //   (don't silently deny — the user should decide)
++        // - Full-access mode: auto-deny writes/shell since there's no user to ask
++        //   and plan mode should be read-only
+         const interactionMode = getInteractionMode();
++        const runtimeMode = getRuntimeMode();
+         if (
+           interactionMode === "plan" &&
+           (request.kind === "shell" || request.kind === "write")
+         ) {
+-          return Promise.resolve<PermissionRequestResult>({
+-            kind: "denied-interactively-by-user",
+-          });
++          if (runtimeMode === "full-access") {
++            return Promise.resolve<PermissionRequestResult>({
++              kind: "denied-interactively-by-user",
++            });
++          }
++          // In supervised/approval-required modes, fall through to the
++          // normal approval flow so the user sees the request
+         }
+ 
+         return getRuntimeMode() === "full-access"

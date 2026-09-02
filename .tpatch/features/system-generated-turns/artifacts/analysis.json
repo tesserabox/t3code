@@ -1,0 +1,52 @@
+{
+  "summary": "Add support for system-generated turns — external events (file watchers, CI callbacks, MCP notifications, webhooks) that automatically trigger a new model turn in a provider session without explicit user input. Introduces a new 'system-event' message role in the orchestration layer, with per-adapter mapping to each provider's best available mechanism. Enables autonomous agent workflows, background monitoring, and event-driven AI responses.",
+  "compatibility": {
+    "status": "compatible",
+    "reasoning": "The orchestration layer is fully event-sourced with a command/event/decider pattern. Adding a new command type (thread.turn.start-system) alongside the existing user-initiated turn commands is a natural extension. The OrchestrationMessageRole union already includes 'system' (unused), and adding 'system-event' is trivial. Provider sessions are persistent between turns, so ProviderService.sendTurn() can be called without a new session. The ProviderCommandReactor and RuntimeReceiptBus provide the event infrastructure needed. No existing flows are affected."
+  },
+  "affected_areas": [
+    "packages/contracts/src/orchestration.ts - Add 'system-event' to OrchestrationMessageRole, add source/triggerRef fields to OrchestrationMessage",
+    "apps/server/src/orchestration/ - New command type thread.turn.start-system in deciders, new events for system-initiated turns",
+    "apps/server/src/provider/ProviderCommandReactor.ts - Extend to handle system-initiated turn-start-requested events",
+    "apps/server/src/provider/Layers/ClaudeAdapter.ts - Map system-event role to SDKUserMessage with isSynthetic: true",
+    "apps/server/src/provider/Layers/CopilotAdapter.ts - Map system-event role to prompt string with [System Event] prefix",
+    "apps/server/src/provider/Layers/CodexAdapter.ts - Map system-event role to developer_instructions per-turn",
+    "apps/server/src/provider/Layers/OpenCodeAdapter.ts - Map system-event role to native system field on SessionPromptAsyncData",
+    "apps/web/src/components/MessagesTimeline.tsx - Render system-event messages with distinct styling (collapsible, different icon/color)",
+    "apps/web/src/ - New TriggerRuleManager UI (parallel to ProjectScriptsControl pattern for '+ Add trigger')",
+    "apps/server/src/ - New EventTriggerService for managing trigger sources and dispatching system turns"
+  ],
+  "acceptance_criteria": [
+    "A new 'system-event' role exists in OrchestrationMessageRole and is distinct from 'system' and 'user'",
+    "System-event messages can be injected into a thread and trigger a provider turn without user action",
+    "Each provider adapter maps system-event to its best available mechanism (Claude: isSynthetic user, Copilot: prefixed prompt, Codex: developer_instructions, OpenCode: native system field)",
+    "System-event messages render distinctly in the UI (different visual treatment from user/assistant messages)",
+    "A policy layer can block system-event turns pending user approval (opt-in gating)",
+    "Rate limiting prevents runaway loops (model response triggers file change triggers another turn)",
+    "Cost attribution separates user-initiated vs system-initiated token spend",
+    "Compaction/projection retains system-event messages (extend existing system message retention logic)",
+    "Existing user-initiated turn flows are completely unaffected"
+  ],
+  "implementation_notes": [
+    "Option B (new role) chosen over Option A (map to user) for semantic clarity, UI differentiation, and policy/blocking support",
+    "Option C (tool call/result encoding) was investigated and rejected — SDKs don't allow fabricating assistant tool_use blocks, and only Claude has tool-level APIs; other SDKs are opaque",
+    "Claude SDK: use SDKUserMessage { isSynthetic: true, shouldQuery: false, priority: 'now' } for context injection, or with shouldQuery: true to trigger a turn",
+    "OpenCode SDK has a native system field on promptAsync that the adapter doesn't use yet — lowest friction path",
+    "Codex SDK supports per-turn developer_instructions via collaborationMode.settings — good semantic fit",
+    "Copilot SDK is most limited — string prompt only, no role control; prepend [System Event] marker to prompt",
+    "MCP's sampling/createMessage is the only standardized protocol for server-initiated model invocation — could serve as a trigger source",
+    "The '+ Add action' button (ProjectScriptsControl) is a UX precedent for an '+ Add trigger' feature",
+    "Event sources to support: file watchers (fs.watch), MCP notifications (resources/updated), webhooks (HTTP endpoint), git hooks, CI callbacks"
+  ],
+  "unresolved_questions": [
+    "Should system-event turns require explicit user approval by default, or be opt-in to auto-mode?",
+    "What is the rate limit / budget policy for auto-triggered turns? Per-minute? Per-session token cap?",
+    "Should system-event messages appear inline in the chat timeline or in a separate panel/sidebar?",
+    "How should loop detection work — track event→turn→event chains and break at depth N?",
+    "Should triggers be scoped per-thread or global across all threads?",
+    "Should we support 'quiet' system events that inject context without triggering a turn (using Claude's shouldQuery: false)?",
+    "How does this interact with the existing hook system (PreToolUse, PostToolUse) — are hooks a trigger source?",
+    "Should the feature support conditional triggers (only fire if pattern matches, file is in scope, etc.)?"
+  ],
+  "heuristic_mode": false
+}

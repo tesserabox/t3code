@@ -1,0 +1,28 @@
+{
+  "feature": "copilot-resource-events",
+  "version": 1,
+  "description": "Extract image content blocks from tool results as image_view events.",
+  "operations": [
+    {
+      "id": "01",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "              },\n            },\n          ];\n        case \"tool.execution_complete\":\n          return [\n            {\n              ...base({ itemId: event.data.toolCallId }),\n              type: \"item.completed\",\n              payload: {\n                itemType: event.data.result?.contents?.some(\n                  (content) => content.type === \"terminal\",\n                )\n                  ? \"command_execution\"\n                  : \"dynamic_tool_call\",\n                status: event.data.success ? \"completed\" : \"failed\",",
+      "replace": "              },\n            },\n          ];\n        case \"tool.execution_complete\": {\n          const contents = event.data.result?.contents ?? [];\n          const hasTerminal = contents.some(\n            (content: { type: string }) => content.type === \"terminal\",\n          );\n          // Extract image content blocks as separate image_view events\n          const imageEvents: ProviderRuntimeEvent[] = contents\n            .filter((content: { type: string }) => content.type === \"image\")\n            .map((content: { type: string; data?: string; mimeType?: string; description?: string }) => ({\n              ...base({ itemId: event.data.toolCallId }),\n              type: \"item.completed\" as const,\n              payload: {\n                itemType: \"image_view\" as const,\n                status: \"completed\" as const,\n                title: trimToUndefined(content.description) ?? \"Image\",\n                data: {\n                  base64: content.data,\n                  mimeType: content.mimeType,\n                  description: content.description,\n                },\n              },\n            }));\n          return [\n            {\n              ...base({ itemId: event.data.toolCallId }),\n              type: \"item.completed\",\n              payload: {\n                itemType: hasTerminal\n                  ? \"command_execution\"\n                  : \"dynamic_tool_call\",\n                status: event.data.success ? \"completed\" : \"failed\","
+    },
+    {
+      "id": "02",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "                data: event.data,\n              },\n            },\n            ...(trimToUndefined(event.data.result?.content)\n              ? [\n                  {",
+      "replace": "                data: event.data,\n              },\n            },\n            ...imageEvents,\n            ...(trimToUndefined(event.data.result?.content)\n              ? [\n                  {"
+    },
+    {
+      "id": "03",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "                ]\n              : []),\n          ];\n        case \"skill.invoked\":\n          return [\n            {",
+      "replace": "                ]\n              : []),\n          ];\n        }\n        case \"skill.invoked\":\n          return [\n            {"
+    }
+  ]
+}

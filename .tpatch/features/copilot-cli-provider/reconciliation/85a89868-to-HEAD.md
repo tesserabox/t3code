@@ -1,0 +1,35 @@
+# Reconciliation: copilot-cli-provider
+
+**Outcome**: blocked
+**Phase**: phase-4-blocked
+**Upstream Ref**: upstream/main
+**Upstream Commit**: 85a89868703530e03c5e79797c7b952c684bd222
+**Timestamp**: 2026-07-29T16:50:27Z
+
+## Notes
+
+- Operation-level: 0 present, 11 applicable, 7 conflicts
+- Provider semantic check: still_needed
+- Patch cannot be applied cleanly — manual intervention needed
+- git: Applied patch to 'apps/server/package.json' with conflicts.
+  Falling back to direct application...
+  Falling back to direct application...
+  Falling back to direct application...
+  Falling back to direct application...
+  Falling back to direct application...
+  Falling back to direct application...
+  Falling back to direct application...
+  Falling back to direct application...
+  Applied patch to 'apps/server/src/provider/builtInDrivers.ts' cleanly.
+  Falling back to direct application...
+  error: apps/web/src/components/KeybindingsToast.browser.tsx: does not exist in index
+  Applied patch to 'apps/web/src/components/chat/providerIconUtils.ts' with conflicts.
+  Applied patch to 'apps/web/src/components/settings/providerDriverMeta.ts' with conflicts.
+  Applied patch to 'apps/web/src/session-logic.ts' cleanly.
+  error: bun.lock: does not exist in index
+  Applied patch to 'packages/contracts/src/providerRuntime.ts' cleanly.
+  Applied patch to 'packages/contracts/src/settings.ts' cleanly.
+
+## Conflicts
+
+- Forward-apply failed — check for merge conflicts

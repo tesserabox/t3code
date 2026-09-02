@@ -1,0 +1,49 @@
+{
+  "feature": "copilot-skill-discovery",
+  "version": 1,
+  "description": "Surface SDK-discovered skills with merge-by-name, userInvocable filtering, and typed RPC.",
+  "operations": [
+    {
+      "id": "01",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "import {\n  type CodexReasoningEffort,\n  type ModelSelection,\n  EventId,\n  type ProviderApprovalDecision,\n  ProviderItemId,",
+      "replace": "import {\n  type CodexReasoningEffort,\n  type ModelSelection,\n  type ServerProviderSkill,\n  EventId,\n  type ProviderApprovalDecision,\n  ProviderItemId,"
+    },
+    {
+      "id": "02",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "  unsubscribe: () => void;\n}\n\ninterface CopilotSessionHandle {\n  readonly sessionId: string;\n  readonly rpc: {",
+      "replace": "  unsubscribe: () => void;\n}\n\n// ── Copilot Skill Discovery ─────────────────────────────────────────────\n\n/**\n * Module-level store for discovered Copilot skills.\n * Populated from `session.skills_loaded` events and `rpc.skills.list()`.\n * Read by `CopilotProvider.ts` during snapshot enrichment.\n * Merged by name to support multi-session and event/RPC race tolerance.\n */\nlet discoveredCopilotSkills: ReadonlyArray<ServerProviderSkill> = [];\n\n/** Get the most recently discovered skills (read by CopilotProvider). */\nexport function getCopilotDiscoveredSkills(): ReadonlyArray<ServerProviderSkill> {\n  return discoveredCopilotSkills;\n}\n\n/** Expected response shape from rpc.skills.list() */\ninterface CopilotSkillsListResponse {\n  skills: ReadonlyArray<{\n    name: string;\n    description?: string;\n    source?: string;\n    userInvocable?: boolean;\n    enabled?: boolean;\n    path?: string;\n  }>;\n}\n\n/**\n * Merge incoming skills with existing discovered skills by name.\n * Incoming skills replace existing ones with the same name; skills\n * from other sessions/sources are preserved.\n */\nfunction mergeDiscoveredSkills(incoming: ReadonlyArray<ServerProviderSkill>): void {\n  const byName = new Map(discoveredCopilotSkills.map((s) => [s.name, s]));\n  for (const skill of incoming) {\n    byName.set(skill.name, skill);\n  }\n  discoveredCopilotSkills = Array.from(byName.values());\n}\n\nfunction mapSdkSkillToServerProviderSkill(skill: {\n  name: string;\n  description?: string;\n  source?: string;\n  userInvocable?: boolean;\n  enabled?: boolean;\n  path?: string;\n}): ServerProviderSkill | null {\n  // Filter out non-user-invocable skills — they shouldn't appear in $ autocomplete\n  if (skill.userInvocable === false) {\n    return null;\n  }\n  const name = skill.name.trim();\n  const displayName = name\n    .replace(/[-_]/g, \" \")\n    .replace(/\\b\\w/g, (c) => c.toUpperCase());\n  return {\n    name,\n    path: skill.path?.trim() || name,\n    enabled: skill.enabled !== false,\n    ...(skill.description ? { description: skill.description, shortDescription: skill.description } : {}),\n    ...(skill.source ? { scope: skill.source } : {}),\n    ...(displayName !== name ? { displayName } : {}),\n  };\n}\n\ninterface CopilotSessionHandle {\n  readonly sessionId: string;\n  readonly rpc: {"
+    },
+    {
+      "id": "03",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "              },\n            },\n          ];\n        case \"exit_plan_mode.requested\":\n          return [\n            {",
+      "replace": "              },\n            },\n          ];\n        case \"session.skills_loaded\": {\n          const skills = (event.data.skills ?? [])\n            .map(mapSdkSkillToServerProviderSkill)\n            .filter((s): s is ServerProviderSkill => s !== null);\n          mergeDiscoveredSkills(skills);\n          return [];\n        }\n        case \"exit_plan_mode.requested\":\n          return [\n            {"
+    },
+    {
+      "id": "04",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "          }),\n        ]);\n\n        return {\n          provider: PROVIDER,\n          status: \"ready\",",
+      "replace": "          }),\n        ]);\n\n        // Non-blocking skill discovery fallback — belt-and-suspenders alongside\n        // the session.skills_loaded event handler. Fire-and-forget.\n        void (async () => {\n          try {\n            const skillsResult = await (\n              session.rpc as { skills?: { list?: () => Promise<CopilotSkillsListResponse> } }\n            ).skills?.list?.();\n            if (Array.isArray(skillsResult?.skills) && skillsResult.skills.length > 0) {\n              const mapped = skillsResult.skills\n                .map(mapSdkSkillToServerProviderSkill)\n                .filter((s): s is ServerProviderSkill => s !== null);\n              mergeDiscoveredSkills(mapped);\n            }\n          } catch (err: unknown) {\n            const message = err instanceof Error ? err.message : String(err);\n            console.warn(\"[CopilotAdapter] rpc.skills.list() failed:\", message);\n          }\n        })();\n\n        return {\n          provider: PROVIDER,\n          status: \"ready\","
+    },
+    {
+      "id": "05",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotProvider.ts",
+      "search": " * @module CopilotProviderLive\n */\nimport { normalizeCopilotCliPathOverride, resolveBundledCopilotCliPath } from \"./copilotCliPath.ts\";\nimport type {\n  ModelCapabilities,\n  ServerProvider,",
+      "replace": " * @module CopilotProviderLive\n */\nimport { normalizeCopilotCliPathOverride, resolveBundledCopilotCliPath } from \"./copilotCliPath.ts\";\nimport { getCopilotDiscoveredSkills } from \"./CopilotAdapter.ts\";\nimport type {\n  ModelCapabilities,\n  ServerProvider,"
+    },
+    {
+      "id": "06",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotProvider.ts",
+      "search": "      enabled: true,\n      checkedAt: now,\n      models: runtimeModels,\n      probe: {\n        installed: true,\n        version: null,",
+      "replace": "      enabled: true,\n      checkedAt: now,\n      models: runtimeModels,\n      skills: [...getCopilotDiscoveredSkills()],\n      probe: {\n        installed: true,\n        version: null,"
+    }
+  ]
+}

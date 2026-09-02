@@ -1,0 +1,49 @@
+{
+  "feature": "copilot-plan-compaction",
+  "version": 1,
+  "description": "Plan mode enforcement (supervised-aware) + compaction/truncation event mapping.",
+  "operations": [
+    {
+      "id": "01",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "              },\n            },\n          ];\n        default:\n          return [];\n      }",
+      "replace": "              },\n            },\n          ];\n        case \"session.compaction_start\":\n          return [\n            {\n              ...base(),\n              type: \"session.state.changed\",\n              payload: {\n                state: \"waiting\",\n                reason: \"session.compaction_start\",\n                detail: event.data,\n              },\n            },\n          ];\n        case \"session.compaction_complete\": {\n          const compactionEvents: ProviderRuntimeEvent[] = [\n            {\n              ...base(),\n              type: \"thread.state.changed\",\n              payload: {\n                state: \"compacted\",\n                detail: event.data,\n              },\n            },\n          ];\n          if (event.data.success === false && trimToUndefined(event.data.error)) {\n            compactionEvents.push({\n              ...base(),\n              type: \"runtime.warning\",\n              payload: {\n                message: `Context compaction failed: ${event.data.error}`,\n                detail: event.data,\n              },\n            });\n          }\n          return compactionEvents;\n        }\n        case \"session.truncation\":\n          return [\n            {\n              ...base(),\n              type: \"runtime.warning\",\n              payload: {\n                message: `Context truncated: ${event.data.tokensRemovedDuringTruncation} tokens removed (${event.data.messagesRemovedDuringTruncation} messages), ${event.data.postTruncationTokensInMessages}/${event.data.tokenLimit} tokens remaining.`,\n                detail: event.data,\n              },\n            },\n          ];\n        case \"exit_plan_mode.requested\":\n          return [\n            {\n              ...base({ turnId: currentSyntheticTurnId(record) }),\n              type: \"turn.proposed.completed\",\n              payload: {\n                planMarkdown: event.data.planContent ?? event.data.summary ?? \"\",\n              },\n            },\n          ];\n        case \"exit_plan_mode.completed\":\n          return [];\n        default:\n          return [];\n      }"
+    },
+    {
+      "id": "02",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "      threadId: ThreadId,\n      getCurrentTurnId: () => TurnId | undefined,\n      getRuntimeMode: () => ProviderSession[\"runtimeMode\"],\n      pendingApprovalResolvers: Map<string, PendingApprovalRequest>,\n      pendingUserInputResolvers: Map<string, PendingUserInputRequest>,\n    ) => {\n      const onPermissionRequest = (request: PermissionRequest) =>\n        getRuntimeMode() === \"full-access\"\n          ? Promise.resolve<PermissionRequestResult>({ kind: \"approved\" })\n          : new Promise<PermissionRequestResult>((resolve) => {\n              const requestId = `copilot-approval-${randomUUID()}`;",
+      "replace": "      threadId: ThreadId,\n      getCurrentTurnId: () => TurnId | undefined,\n      getRuntimeMode: () => ProviderSession[\"runtimeMode\"],\n      getInteractionMode: () => \"default\" | \"plan\" | undefined,\n      pendingApprovalResolvers: Map<string, PendingApprovalRequest>,\n      pendingUserInputResolvers: Map<string, PendingUserInputRequest>,\n    ) => {\n      const onPermissionRequest = (request: PermissionRequest) => {\n        // In plan mode, deny write and shell operations — planning should not modify files\n        const interactionMode = getInteractionMode();\n        if (\n          interactionMode === \"plan\" &&\n          (request.kind === \"shell\" || request.kind === \"write\")\n        ) {\n          return Promise.resolve<PermissionRequestResult>({\n            kind: \"denied-interactively-by-user\",\n          });\n        }\n\n        return getRuntimeMode() === \"full-access\"\n          ? Promise.resolve<PermissionRequestResult>({ kind: \"approved\" })\n          : new Promise<PermissionRequestResult>((resolve) => {\n              const requestId = `copilot-approval-${randomUUID()}`;"
+    },
+    {
+      "id": "03",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "                ),\n              ]);\n            });\n\n      const onUserInputRequest = (request: CopilotUserInputRequest) =>\n        new Promise<CopilotUserInputResponse>((resolve) => {",
+      "replace": "                ),\n              ]);\n            });\n      };\n\n      const onUserInputRequest = (request: CopilotUserInputRequest) =>\n        new Promise<CopilotUserInputResponse>((resolve) => {"
+    },
+    {
+      "id": "04",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "            record.threadId,\n            () => record.currentTurnId,\n            () => record.runtimeMode,\n            record.pendingApprovalResolvers,\n            record.pendingUserInputResolvers,\n          );",
+      "replace": "            record.threadId,\n            () => record.currentTurnId,\n            () => record.runtimeMode,\n            () => record.interactionMode,\n            record.pendingApprovalResolvers,\n            record.pendingUserInputResolvers,\n          );"
+    },
+    {
+      "id": "05",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "          input.threadId,\n          () => sessionRecord?.currentTurnId,\n          () => sessionRecord?.runtimeMode ?? input.runtimeMode,\n          pendingApprovalResolvers,\n          pendingUserInputResolvers,\n        );",
+      "replace": "          input.threadId,\n          () => sessionRecord?.currentTurnId,\n          () => sessionRecord?.runtimeMode ?? input.runtimeMode,\n          () => sessionRecord?.interactionMode,\n          pendingApprovalResolvers,\n          pendingUserInputResolvers,\n        );"
+    },
+    {
+      "id": "06",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotAdapter.ts",
+      "search": "      pendingUserInputResolvers: Map<string, PendingUserInputRequest>,\n    ) => {\n      const onPermissionRequest = (request: PermissionRequest) => {\n        // In plan mode, deny write and shell operations — planning should not modify files\n        const interactionMode = getInteractionMode();\n        if (\n          interactionMode === \"plan\" &&\n          (request.kind === \"shell\" || request.kind === \"write\")\n        ) {\n          return Promise.resolve<PermissionRequestResult>({\n            kind: \"denied-interactively-by-user\",\n          });\n        }\n\n        return getRuntimeMode() === \"full-access\"",
+      "replace": "      pendingUserInputResolvers: Map<string, PendingUserInputRequest>,\n    ) => {\n      const onPermissionRequest = (request: PermissionRequest) => {\n        // In plan mode, restrict write/shell operations:\n        // - Supervised modes: let the request flow to the user for approval\n        //   (don't silently deny — the user should decide)\n        // - Full-access mode: auto-deny writes/shell since there's no user to ask\n        //   and plan mode should be read-only\n        const interactionMode = getInteractionMode();\n        const runtimeMode = getRuntimeMode();\n        if (\n          interactionMode === \"plan\" &&\n          (request.kind === \"shell\" || request.kind === \"write\")\n        ) {\n          if (runtimeMode === \"full-access\") {\n            return Promise.resolve<PermissionRequestResult>({\n              kind: \"denied-interactively-by-user\",\n            });\n          }\n          // In supervised/approval-required modes, fall through to the\n          // normal approval flow so the user sees the request\n        }\n\n        return getRuntimeMode() === \"full-access\""
+    }
+  ]
+}

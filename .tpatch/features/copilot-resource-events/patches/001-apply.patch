@@ -1,0 +1,59 @@
+diff --git a/apps/server/src/provider/Layers/CopilotAdapter.ts b/apps/server/src/provider/Layers/CopilotAdapter.ts
+index 75611ea5..9e238767 100644
+--- a/apps/server/src/provider/Layers/CopilotAdapter.ts
++++ b/apps/server/src/provider/Layers/CopilotAdapter.ts
+@@ -1023,15 +1023,34 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+               },
+             },
+           ];
+-        case "tool.execution_complete":
++        case "tool.execution_complete": {
++          const contents = event.data.result?.contents ?? [];
++          const hasTerminal = contents.some(
++            (content: { type: string }) => content.type === "terminal",
++          );
++          // Extract image content blocks as separate image_view events
++          const imageEvents: ProviderRuntimeEvent[] = contents
++            .filter((content: { type: string }) => content.type === "image")
++            .map((content: { type: string; data?: string; mimeType?: string; description?: string }) => ({
++              ...base({ itemId: event.data.toolCallId }),
++              type: "item.completed" as const,
++              payload: {
++                itemType: "image_view" as const,
++                status: "completed" as const,
++                title: trimToUndefined(content.description) ?? "Image",
++                data: {
++                  base64: content.data,
++                  mimeType: content.mimeType,
++                  description: content.description,
++                },
++              },
++            }));
+           return [
+             {
+               ...base({ itemId: event.data.toolCallId }),
+               type: "item.completed",
+               payload: {
+-                itemType: event.data.result?.contents?.some(
+-                  (content) => content.type === "terminal",
+-                )
++                itemType: hasTerminal
+                   ? "command_execution"
+                   : "dynamic_tool_call",
+                 status: event.data.success ? "completed" : "failed",
+@@ -1042,6 +1061,7 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+                 data: event.data,
+               },
+             },
++            ...imageEvents,
+             ...(trimToUndefined(event.data.result?.content)
+               ? [
+                   {
+@@ -1055,6 +1075,7 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+                 ]
+               : []),
+           ];
++        }
+         case "skill.invoked":
+           return [
+             {

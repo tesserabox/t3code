@@ -1,0 +1,28 @@
+{
+  "feature": "toast-close-button",
+  "version": 1,
+  "description": "Add close button to toast notifications.",
+  "operations": [
+    {
+      "id": "01",
+      "type": "replace-in-file",
+      "path": "apps/web/src/components/ui/toast.tsx",
+      "search": "  InfoIcon,\n  LoaderCircleIcon,\n  TriangleAlertIcon,\n} from \"lucide-react\";\n\nimport { cn } from \"~/lib/utils\";",
+      "replace": "  InfoIcon,\n  LoaderCircleIcon,\n  TriangleAlertIcon,\n  XIcon,\n} from \"lucide-react\";\n\nimport { cn } from \"~/lib/utils\";"
+    },
+    {
+      "id": "02",
+      "type": "replace-in-file",
+      "path": "apps/web/src/components/ui/toast.tsx",
+      "search": "          return (\n            <Toast.Root\n              className={cn(\n                \"absolute z-[calc(9999-var(--toast-index))] h-(--toast-calc-height) w-full select-none rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s] before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]\",\n                // Base positioning using data-position\n                \"data-[position*=right]:right-0 data-[position*=right]:left-auto\",\n                \"data-[position*=left]:right-auto data-[position*=left]:left-0\",",
+      "replace": "          return (\n            <Toast.Root\n              className={cn(\n                \"group/toast absolute z-[calc(9999-var(--toast-index))] h-(--toast-calc-height) w-full select-none rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s] before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]\",\n                // Base positioning using data-position\n                \"data-[position*=right]:right-0 data-[position*=right]:left-auto\",\n                \"data-[position*=left]:right-auto data-[position*=left]:left-0\","
+    },
+    {
+      "id": "03",
+      "type": "replace-in-file",
+      "path": "apps/web/src/components/ui/toast.tsx",
+      "search": "                  </Toast.Action>\n                )}\n              </Toast.Content>\n            </Toast.Root>\n          );\n        })}",
+      "replace": "                  </Toast.Action>\n                )}\n              </Toast.Content>\n              <Toast.Close\n                className=\"absolute right-1.5 top-1.5 rounded-md p-0.5 text-muted-foreground/40 opacity-0 transition-opacity hover:text-foreground/70 group-hover/toast:opacity-100 data-expanded:opacity-100\"\n                aria-label=\"Close notification\"\n              >\n                <XIcon className=\"size-3.5\" />\n              </Toast.Close>\n            </Toast.Root>\n          );\n        })}"
+    }
+  ]
+}

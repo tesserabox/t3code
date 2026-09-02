@@ -1,0 +1,243 @@
+diff --git a/apps/server/src/git/Layers/CopilotTextGeneration.ts b/apps/server/src/git/Layers/CopilotTextGeneration.ts
+new file mode 100644
+index 00000000..284a406d
+--- /dev/null
++++ b/apps/server/src/git/Layers/CopilotTextGeneration.ts
+@@ -0,0 +1,184 @@
++/**
++ * CopilotTextGeneration – Text generation layer using the Copilot SDK.
++ *
++ * Implements the TextGenerationShape contract by creating a one-shot
++ * Copilot SDK session, sending the prompt, collecting the response,
++ * and parsing JSON output.
++ *
++ * @module CopilotTextGeneration
++ */
++import { Effect, Layer } from "effect";
++
++import { TextGenerationError } from "@t3tools/contracts";
++import {
++  type BranchNameGenerationInput,
++  type TextGenerationShape,
++  type ThreadTitleGenerationResult,
++  TextGeneration,
++} from "../Services/TextGeneration.ts";
++import {
++  buildBranchNamePrompt,
++  buildCommitMessagePrompt,
++  buildPrContentPrompt,
++  buildThreadTitlePrompt,
++} from "../Prompts.ts";
++import {
++  sanitizeCommitSubject,
++  sanitizePrTitle,
++  sanitizeThreadTitle,
++} from "../Utils.ts";
++import { resolveBundledCopilotCliPath } from "../../provider/Layers/copilotCliPath.ts";
++
++function normalizeCliError(
++  operation: string,
++  cause: unknown,
++  fallback: string,
++): TextGenerationError {
++  const detail = cause instanceof Error ? cause.message : fallback;
++  return new TextGenerationError({ operation: `CopilotTextGeneration.${operation}`, detail });
++}
++
++function extractJsonFromResponse(text: string): string {
++  const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
++  if (fenceMatch?.[1]) return fenceMatch[1].trim();
++  const braceMatch = text.match(/\{[\s\S]*\}/);
++  if (braceMatch) return braceMatch[0];
++  return text.trim();
++}
++
++async function runCopilotGeneration(
++  prompt: string,
++  model: string | undefined,
++  cliPath: string | undefined,
++): Promise<string> {
++  const { CopilotClient } = await import("@github/copilot-sdk");
++  const clientOptions: Record<string, unknown> = { logLevel: "error" };
++  if (cliPath) clientOptions.cliPath = cliPath;
++  const client = new CopilotClient(clientOptions as any);
++  await client.start();
++
++  try {
++    const session = await client.createSession({
++      ...(model ? { model } : { model: undefined }),
++      streaming: false,
++    } as any);
++
++    let response = "";
++    session.on((event) => {
++      if (event.type === "assistant.message") response += (event as any).data?.content ?? "";
++      if (event.type === "assistant.message_delta") response += (event as any).data?.delta ?? "";
++    });
++
++    await session.send({ prompt, mode: "immediate" });
++    await new Promise<void>((resolve) => {
++      session.on((event) => {
++        if (event.type === "session.idle" || event.type === "abort") {
++          setTimeout(resolve, 500);
++        }
++      });
++      setTimeout(resolve, 30000);
++    });
++
++    await session.destroy().catch(() => {});
++    return response;
++  } finally {
++    await client.stop().catch(() => {});
++  }
++}
++
++export const CopilotTextGenerationLive = Layer.effect(
++  TextGeneration,
++  Effect.gen(function* () {
++    const cliPath = resolveBundledCopilotCliPath();
++
++    const runGeneration = (
++      operation: string,
++      prompt: string,
++      model: string | undefined,
++    ): Effect.Effect<Record<string, unknown>, TextGenerationError> =>
++      Effect.gen(function* () {
++        const raw = yield* Effect.tryPromise({
++          try: () => runCopilotGeneration(prompt, model, cliPath),
++          catch: (cause) => normalizeCliError(operation, cause, "Copilot generation failed"),
++        });
++        const jsonStr = extractJsonFromResponse(raw);
++        try {
++          return JSON.parse(jsonStr) as Record<string, unknown>;
++        } catch {
++          return yield* new TextGenerationError({
++            operation: `CopilotTextGeneration.${operation}`,
++            detail: `Failed to parse JSON: ${raw.slice(0, 200)}`,
++          });
++        }
++      });
++
++    const generateCommitMessage: TextGenerationShape["generateCommitMessage"] = Effect.fn(
++      "CopilotTextGeneration.generateCommitMessage",
++    )(function* (input) {
++      const { prompt } = buildCommitMessagePrompt({
++        branch: input.branch,
++        stagedSummary: input.stagedSummary,
++        stagedPatch: input.stagedPatch,
++        includeBranch: input.includeBranch === true,
++      });
++      const model = input.modelSelection?.model;
++      const result = yield* runGeneration("generateCommitMessage", prompt, model);
++      return {
++        subject: sanitizeCommitSubject(String(result.subject ?? "")),
++        body: typeof result.body === "string" ? result.body.trim() : "",
++        ...(typeof result.branch === "string" ? { branch: result.branch } : {}),
++      };
++    });
++
++    const generatePrContent: TextGenerationShape["generatePrContent"] = Effect.fn(
++      "CopilotTextGeneration.generatePrContent",
++    )(function* (input) {
++      const { prompt } = buildPrContentPrompt({
++        baseBranch: input.baseBranch,
++        headBranch: input.headBranch,
++        commitSummary: input.commitSummary,
++        diffSummary: input.diffSummary,
++        diffPatch: input.diffPatch,
++      });
++      const model = input.modelSelection?.model;
++      const result = yield* runGeneration("generatePrContent", prompt, model);
++      return {
++        title: sanitizePrTitle(String(result.title ?? "")),
++        body: typeof result.body === "string" ? result.body.trim() : "",
++      };
++    });
++
++    const generateBranchName: TextGenerationShape["generateBranchName"] = Effect.fn(
++      "CopilotTextGeneration.generateBranchName",
++    )(function* (input: BranchNameGenerationInput) {
++      const { prompt } = buildBranchNamePrompt({
++        message: input.message,
++        attachments: input.attachments,
++      });
++      const model = input.modelSelection?.model;
++      const result = yield* runGeneration("generateBranchName", prompt, model);
++      return { branch: String(result.branch ?? "") };
++    });
++
++    const generateThreadTitle: TextGenerationShape["generateThreadTitle"] = Effect.fn(
++      "CopilotTextGeneration.generateThreadTitle",
++    )(function* (input) {
++      const { prompt } = buildThreadTitlePrompt({
++        message: input.message,
++        attachments: input.attachments,
++      });
++      const model = input.modelSelection?.model;
++      const result = yield* runGeneration("generateThreadTitle", prompt, model);
++      return {
++        title: sanitizeThreadTitle(String(result.title ?? "")),
++      } satisfies ThreadTitleGenerationResult;
++    });
++
++    return {
++      generateCommitMessage,
++      generatePrContent,
++      generateBranchName,
++      generateThreadTitle,
++    } satisfies TextGenerationShape;
++  }),
++);
+diff --git a/apps/server/src/git/Layers/RoutingTextGeneration.ts b/apps/server/src/git/Layers/RoutingTextGeneration.ts
+index f04ea43f..79a3518c 100644
+--- a/apps/server/src/git/Layers/RoutingTextGeneration.ts
++++ b/apps/server/src/git/Layers/RoutingTextGeneration.ts
+@@ -16,6 +16,7 @@ import { CodexTextGenerationLive } from "./CodexTextGeneration.ts";
+ import { ClaudeTextGenerationLive } from "./ClaudeTextGeneration.ts";
+ import { CursorTextGenerationLive } from "./CursorTextGeneration.ts";
+ import { OpenCodeTextGenerationLive } from "./OpenCodeTextGeneration.ts";
++import { CopilotTextGenerationLive } from "./CopilotTextGeneration.ts";
+ 
+ // ---------------------------------------------------------------------------
+ // Internal service tags so both concrete layers can coexist.
+@@ -37,6 +38,10 @@ class OpenCodeTextGen extends Context.Service<OpenCodeTextGen, TextGenerationSha
+   "t3/git/Layers/RoutingTextGeneration/OpenCodeTextGen",
+ ) {}
+ 
++class CopilotTextGenTag extends Context.Service<CopilotTextGenTag, TextGenerationShape>()(
++  "t3/git/Layers/RoutingTextGeneration/CopilotTextGen",
++) {}
++
+ // ---------------------------------------------------------------------------
+ // Routing implementation
+ // ---------------------------------------------------------------------------
+@@ -45,7 +50,7 @@ const makeRoutingTextGeneration = Effect.gen(function* () {
+   const codexTextGen = yield* CodexTextGen;
+   const byProvider: Record<string, TextGenerationShape> = {
+     codex: codexTextGen,
+-    copilot: codexTextGen,
++    copilot: yield* CopilotTextGenTag,
+     claudeAgent: yield* ClaudeTextGen,
+     cursor: yield* CursorTextGen,
+     opencode: yield* OpenCodeTextGen,
+@@ -95,6 +100,14 @@ const InternalOpenCodeLayer = Layer.effect(
+   }),
+ ).pipe(Layer.provide(OpenCodeTextGenerationLive));
+ 
++const InternalCopilotLayer = Layer.effect(
++  CopilotTextGenTag,
++  Effect.gen(function* () {
++    const svc = yield* TextGeneration;
++    return svc;
++  }),
++).pipe(Layer.provide(CopilotTextGenerationLive));
++
+ export const RoutingTextGenerationLive = Layer.effect(
+   TextGeneration,
+   makeRoutingTextGeneration,
+@@ -103,4 +116,5 @@ export const RoutingTextGenerationLive = Layer.effect(
+   Layer.provide(InternalClaudeLayer),
+   Layer.provide(InternalCursorLayer),
+   Layer.provide(InternalOpenCodeLayer),
++  Layer.provide(InternalCopilotLayer),
+ );

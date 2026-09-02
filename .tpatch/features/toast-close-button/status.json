@@ -1,0 +1,17 @@
+{
+  "id": "toast-close-button",
+  "slug": "toast-close-button",
+  "title": "Add an (x) close button to toast notifications in addition to the existing swipe-to-dismiss. Small clickable icon in the top-right corner of each toast.",
+  "state": "upstream_merged",
+  "compatibility": "unknown",
+  "requested_at": "2026-04-21T05:47:22Z",
+  "updated_at": "2026-04-21T06:53:59Z",
+  "last_command": "record",
+  "notes": "Upstreamed in PR #2023 (commit 3a1daa87). Feature dropped from fork.",
+  "apply": {
+    "completed_at": "2026-04-21T06:53:06Z",
+    "base_commit": "f6e4378f583a2f332dc634c3b6806576276a8d6f",
+    "has_patch": true
+  },
+  "reconcile": {}
+}

@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "feature": "session-search",
+  "current_generation": 2,
+  "generations": [
+    {
+      "generation": 1,
+      "generation_id": "pg_2150a1501373",
+      "kind": "record",
+      "patch_sha256": "44923b9a77c712f6d2ac90d01404cdc73964146cea70122298b0b86d4315b830",
+      "git_patch_id": "5b120b02a2e62c36e1727786fe9fd2cf2ab1ef78",
+      "git_patch_id_algorithm": "git-patch-id-stable",
+      "recipe_sha256": "66c279f7716bb8d86b5026e539cc9ced95da1d722a43a9d83fe4c54cc63b4f2d",
+      "canonical_patch": "",
+      "audit_patch": "patches/004-record.patch",
+      "base_commit": "5032b49b3",
+      "upper": {
+        "kind": "commit",
+        "ref": "cf2d66b18",
+        "commit": "cf2d66b1836b8cf5f310de07e288b03a9dca68fb"
+      },
+      "capture": {
+        "mode": "committed-range",
+        "pathspecs": [
+          "apps/web/src/components/ChatView.tsx",
+          "apps/web/src/components/chat/SessionSearchBar.tsx",
+          "packages/contracts/src/keybindings.ts",
+          "packages/shared/src/keybindings.ts"
+        ],
+        "claim_ids": []
+      },
+      "touched_paths": [
+        "apps/web/src/components/ChatView.tsx",
+        "apps/web/src/components/chat/SessionSearchBar.tsx",
+        "packages/contracts/src/keybindings.ts",
+        "packages/shared/src/keybindings.ts"
+      ],
+      "dependencies": [],
+      "refs": {
+        "anchors": "",
+        "fingerprints": "",
+        "relations": "",
+        "vector_manifest": ""
+      }
+    },
+    {
+      "generation": 2,
+      "generation_id": "pg_e823b226a86a",
+      "kind": "amend-refresh",
+      "patch_sha256": "4b9f09230e6c8e7283977c884c112a4de6c71d7c1fb395abaf9a4f7d1507d24a",
+      "git_patch_id": "3fe91bb71ea1ad1d5b61b2f40818eac95b59d0a9",
+      "git_patch_id_algorithm": "git-patch-id-stable",
+      "recipe_sha256": "e0ea44f4d387dbc6a380e554a129ce3f47518bf04fd05e3ed73081eedb486d1a",
+      "canonical_patch": "artifacts/post-apply.patch",
+      "audit_patch": "patches/005-record.patch",
+      "base_commit": "HEAD~1",
+      "upper": {
+        "kind": "commit",
+        "ref": "HEAD",
+        "commit": "88611ac0cb7265055639f7a71d12d58bd749e2dd"
+      },
+      "capture": {
+        "mode": "committed-range",
+        "pathspecs": [
+          "apps/web/src/components/ChatView.tsx",
+          "apps/web/src/components/chat/MessagesTimeline.logic.ts",
+          "apps/web/src/components/chat/MessagesTimeline.tsx",
+          "apps/web/src/components/chat/SessionSearchBar.tsx",
+          "apps/web/src/components/chat/sessionSearch.test.ts",
+          "apps/web/src/components/chat/sessionSearch.ts",
+          "packages/contracts/src/keybindings.ts",
+          "packages/shared/src/keybindings.ts"
+        ],
+        "claim_ids": []
+      },
+      "touched_paths": [
+        "apps/web/src/components/ChatView.tsx",
+        "apps/web/src/components/chat/MessagesTimeline.logic.ts",
+        "apps/web/src/components/chat/MessagesTimeline.tsx",
+        "apps/web/src/components/chat/SessionSearchBar.tsx",
+        "apps/web/src/components/chat/sessionSearch.test.ts",
+        "apps/web/src/components/chat/sessionSearch.ts",
+        "packages/contracts/src/keybindings.ts",
+        "packages/shared/src/keybindings.ts"
+      ],
+      "dependencies": [],
+      "refs": {
+        "anchors": "",
+        "fingerprints": "",
+        "relations": "",
+        "vector_manifest": ""
+      }
+    }
+  ]
+}

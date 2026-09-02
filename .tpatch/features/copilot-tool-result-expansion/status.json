@@ -1,0 +1,18 @@
+{
+  "id": "copilot-tool-result-expansion",
+  "slug": "copilot-tool-result-expansion",
+  "title": "Store full tool results server-side and serve them on expand. Currently truncateDetail() caps output at 180 chars. Instead, store the full result and let the UI fetch it when the user expands a work log entry. Requires server (storage + API endpoint) and web (fetch-on-expand) changes.",
+  "state": "requested",
+  "compatibility": "unknown",
+  "requested_at": "2026-05-13T07:15:47Z",
+  "updated_at": "2026-05-13T07:15:47Z",
+  "last_command": "add",
+  "apply": {},
+  "reconcile": {},
+  "depends_on": [
+    {
+      "slug": "copilot-cli-provider",
+      "kind": "hard"
+    }
+  ]
+}

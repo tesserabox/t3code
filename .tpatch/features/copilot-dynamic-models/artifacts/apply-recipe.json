@@ -1,0 +1,38 @@
+{
+  "feature": "copilot-dynamic-models",
+  "description": "Apply copilot-dynamic-models feature",
+  "operations": [
+    {
+      "id": "01-modify-CopilotProvider",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotProvider.ts",
+      "description": "Modify CopilotProvider.ts",
+      "search": "  promptInjectedEffortLevels: [],\n};\n\nconst BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [\n  {\n    slug: \"gpt-5\",\n    name: \"GPT-5\",\n    isCustom: false,\n    capabilities: GPT_MODEL_CAPABILITIES,\n  },\n  {\n    slug: \"gpt-5-mini\",\n    name: \"GPT-5 Mini\",\n    isCustom: false,\n    capabilities: GPT_MODEL_CAPABILITIES,\n  },\n  {\n    slug: \"gpt-5.4\",\n    name: \"GPT-5.4\",\n    isCustom: false,\n    capabilities: GPT_MODEL_CAPABILITIES,\n  },\n  {\n    slug: \"gpt-5.4-mini\",\n    name: \"GPT-5.4 Mini\",\n    isCustom: false,\n    capabilities: GPT_MODEL_CAPABILITIES,\n  },",
+      "replace": "  promptInjectedEffortLevels: [],\n};\n\nconst EFFORT_LABEL_MAP: Record<string, string> = {\n  xhigh: \"Extra High\",\n  high: \"High\",\n  medium: \"Medium\",\n  low: \"Low\",\n};\n\nconst DEFAULT_EFFORT = \"high\";\n\n/**\n * Build ModelCapabilities dynamically from SDK model info.\n * Uses `supportedReasoningEfforts` from the SDK response to populate\n * effort levels, instead of hardcoding per model family.\n */\nfunction buildCapabilitiesFromSdkModel(info: any): ModelCapabilities {\n  const efforts: string[] = info.supportedReasoningEfforts ?? [];\n  const defaultEffort: string | undefined = info.defaultReasoningEffort;\n\n  if (efforts.length === 0) {\n    return DEFAULT_COPILOT_MODEL_CAPABILITIES;\n  }\n\n  return {\n    reasoningEffortLevels: efforts.map((value: string) => ({\n      value,\n      label: EFFORT_LABEL_MAP[value] ?? value.charAt(0).toUpperCase() + value.slice(1),\n      ...(value === (defaultEffort ?? DEFAULT_EFFORT) ? { isDefault: true } : {}),\n    })),\n    supportsFastMode: false,\n    supportsThinkingToggle: false,\n    contextWindowOptions: [],\n    promptInjectedEffortLevels: [],\n  };\n}\n\nconst CLAUDE_EFFORT_CAPABILITIES: ModelCapabilities = {\n  reasoningEffortLevels: [\n    { value: \"high\", label: \"High\", isDefault: true },\n    { value: \"medium\", label: \"Medium\" },\n    { value: \"low\", label: \"Low\" },\n  ],\n  supportsFastMode: false,\n  supportsThinkingToggle: false,\n  contextWindowOptions: [],\n  promptInjectedEffortLevels: [],\n};\n\nconst CLAUDE_OPUS_47_CAPABILITIES: ModelCapabilities = {\n  reasoningEffortLevels: [\n    { value: \"medium\", label: \"Medium\", isDefault: true },\n  ],\n  supportsFastMode: false,\n  supportsThinkingToggle: false,\n  contextWindowOptions: [],\n  promptInjectedEffortLevels: [],\n};\n\nconst BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [\n  {\n    slug: \"gpt-5.4\",\n    name: \"GPT-5.4\",\n    isCustom: false,\n    capabilities: GPT_MODEL_CAPABILITIES,\n  },\n  {\n    slug: \"gpt-5.4-mini\",\n    name: \"GPT-5.4 Mini\",\n    isCustom: false,\n    capabilities: GPT_MODEL_CAPABILITIES,\n  },\n  {\n    slug: \"gpt-5.3-codex\",\n    name: \"GPT-5.3 Codex\",\n    isCustom: false,\n    capabilities: GPT_MODEL_CAPABILITIES,\n  },\n  {\n    slug: \"gpt-5.2-codex\",\n    name: \"GPT-5.2 Codex\",\n    isCustom: false,\n    capabilities: GPT_MODEL_CAPABILITIES,\n  },\n  {\n    slug: \"gpt-5.2\",\n    name: \"GPT-5.2\",\n    isCustom: false,\n    capabilities: GPT_MODEL_CAPABILITIES,\n  },\n  {\n    slug: \"gpt-5-mini\",\n    name: \"GPT-5 Mini\",\n    isCustom: false,\n    capabilities: GPT_MODEL_CAPABILITIES,\n  },"
+    },
+    {
+      "id": "02-modify-CopilotProvider",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotProvider.ts",
+      "description": "Modify CopilotProvider.ts",
+      "search": "    slug: \"gpt-4.1\",\n    name: \"GPT-4.1\",\n    isCustom: false,\n    capabilities: GPT_MODEL_CAPABILITIES,\n  },\n  {\n    slug: \"claude-sonnet-4.6\",\n    name: \"Claude Sonnet 4.6\",\n    isCustom: false,\n    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,\n  },\n  {\n    slug: \"claude-opus-4.7\",\n    name: \"Claude Opus 4.7\",\n    isCustom: false,\n    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,\n  },\n  {",
+      "replace": "    slug: \"gpt-4.1\",\n    name: \"GPT-4.1\",\n    isCustom: false,\n    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,\n  },\n  {\n    slug: \"claude-sonnet-4.6\",\n    name: \"Claude Sonnet 4.6\",\n    isCustom: false,\n    capabilities: CLAUDE_EFFORT_CAPABILITIES,\n  },\n  {\n    slug: \"claude-opus-4.7\",\n    name: \"Claude Opus 4.7\",\n    isCustom: false,\n    capabilities: CLAUDE_OPUS_47_CAPABILITIES,\n  },\n  {\n    slug: \"claude-opus-4.6\",\n    name: \"Claude Opus 4.6\",\n    isCustom: false,\n    capabilities: CLAUDE_EFFORT_CAPABILITIES,\n  },\n  {\n    slug: \"claude-opus-4.6-1m\",\n    name: \"Claude Opus 4.6 (1M context)\",\n    isCustom: false,\n    capabilities: CLAUDE_EFFORT_CAPABILITIES,\n  },\n  {\n    slug: \"claude-opus-4.5\",\n    name: \"Claude Opus 4.5\",\n    isCustom: false,\n    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,\n  },\n  {\n    slug: \"claude-sonnet-4.5\",\n    name: \"Claude Sonnet 4.5\",\n    isCustom: false,\n    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,\n  },\n  {"
+    },
+    {
+      "id": "03-modify-CopilotProvider",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotProvider.ts",
+      "description": "Modify CopilotProvider.ts",
+      "search": "    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,\n  },\n  {\n    slug: \"gemini-3.1-pro\",\n    name: \"Gemini 3.1 Pro\",\n    isCustom: false,\n    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,\n  },\n  {\n    slug: \"gemini-3-pro-preview\",\n    name: \"Gemini 3 Pro Preview\",\n    isCustom: false,\n    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,\n  },",
+      "replace": "    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,\n  },\n  {\n    slug: \"claude-sonnet-4\",\n    name: \"Claude Sonnet 4\",\n    isCustom: false,\n    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,\n  },\n  {\n    slug: \"gemini-3.1-pro\",\n    name: \"Gemini 3.1 Pro\",\n    isCustom: false,\n    capabilities: DEFAULT_COPILOT_MODEL_CAPABILITIES,\n  },"
+    },
+    {
+      "id": "04-modify-CopilotProvider",
+      "type": "replace-in-file",
+      "path": "apps/server/src/provider/Layers/CopilotProvider.ts",
+      "description": "Modify CopilotProvider.ts",
+      "search": "          slug: info.id ?? info.slug ?? info.name,\n          name: info.name ?? info.id ?? info.slug,\n          isCustom: false,\n          capabilities: (info.id ?? \"\").startsWith(\"gpt-\")\n            ? GPT_MODEL_CAPABILITIES\n            : DEFAULT_COPILOT_MODEL_CAPABILITIES,\n        }))\n      : [...BUILT_IN_MODELS];\n",
+      "replace": "          slug: info.id ?? info.slug ?? info.name,\n          name: info.name ?? info.id ?? info.slug,\n          isCustom: false,\n          capabilities: buildCapabilitiesFromSdkModel(info),\n        }))\n      : [...BUILT_IN_MODELS];\n"
+    }
+  ]
+}

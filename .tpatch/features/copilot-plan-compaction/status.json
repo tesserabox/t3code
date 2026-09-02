@@ -1,0 +1,29 @@
+{
+  "id": "copilot-plan-compaction",
+  "slug": "copilot-plan-compaction",
+  "title": "Block write tools in plan mode (Fix 1), handle compaction/truncation events (Fix 3), and surface exit_plan_mode events as proposed plans. Plan mode enforcement: auto-deny write permissions when interactionMode is plan. Compaction: map session.compaction_start, session.compaction_complete, session.truncation to canonical runtime events.",
+  "state": "blocked",
+  "compatibility": "unknown",
+  "requested_at": "2026-04-20T09:31:15Z",
+  "updated_at": "2026-05-13T08:00:25Z",
+  "last_command": "reconcile",
+  "notes": "Reconciliation blocked — manual intervention needed",
+  "apply": {
+    "completed_at": "2026-04-28T05:39:54Z",
+    "base_commit": "fc8a225a788a0590f38d2c2e9494cfb68a342fe0",
+    "has_patch": true
+  },
+  "reconcile": {
+    "attempted_at": "2026-05-13T08:00:25Z",
+    "upstream_ref": "upstream/main",
+    "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+    "outcome": "blocked",
+    "labels": ["blocked-by-parent"]
+  },
+  "depends_on": [
+    {
+      "slug": "copilot-cli-provider",
+      "kind": "hard"
+    }
+  ]
+}

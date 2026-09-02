@@ -1,0 +1,77 @@
+diff --git a/apps/web/src/components/chat/composerProviderRegistry.tsx b/apps/web/src/components/chat/composerProviderRegistry.tsx
+index 9f31e5f6..50c93aed 100644
+--- a/apps/web/src/components/chat/composerProviderRegistry.tsx
++++ b/apps/web/src/components/chat/composerProviderRegistry.tsx
+@@ -124,6 +124,10 @@ function getProviderStateFromCapabilities(
+       : (resolveEffort(caps, rawEffort) ?? null);
+   const ultrathinkActive =
+     caps.promptInjectedEffortLevels.length > 0 && isClaudeUltrathinkPrompt(prompt);
++  const xhighActive =
++    !ultrathinkActive &&
++    promptEffort === "xhigh" &&
++    (provider === "codex" || provider === "copilot");
+ 
+   return {
+     provider,
+@@ -134,6 +138,11 @@ function getProviderStateFromCapabilities(
+       ? { composerSurfaceClassName: "shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset]" }
+       : {}),
+     ...(ultrathinkActive ? { modelPickerIconClassName: "ultrathink-chroma" } : {}),
++    ...(xhighActive ? { composerFrameClassName: "xhigh-frame" } : {}),
++    ...(xhighActive
++      ? { composerSurfaceClassName: "shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset]" }
++      : {}),
++    ...(xhighActive ? { modelPickerIconClassName: "xhigh-chroma" } : {}),
+   };
+ }
+ 
+diff --git a/apps/web/src/index.css b/apps/web/src/index.css
+index 6a4db398..9f18fd20 100644
+--- a/apps/web/src/index.css
++++ b/apps/web/src/index.css
+@@ -534,3 +534,45 @@ label:has(> select#reasoning-effort) select {
+   -webkit-background-clip: text;
+   animation: ultrathink-rainbow 10s linear infinite;
+ }
++
++/* ── xhigh effort theming (GPT/Copilot Extra High) ─────────────── */
++
++@keyframes xhigh-pulse {
++  0% {
++    background-position: 0% 50%;
++  }
++  100% {
++    background-position: 200% 50%;
++  }
++}
++
++@keyframes xhigh-glow {
++  0% {
++    filter: hue-rotate(0deg) brightness(1.1);
++  }
++  50% {
++    filter: hue-rotate(15deg) brightness(1.25);
++  }
++  100% {
++    filter: hue-rotate(0deg) brightness(1.1);
++  }
++}
++
++.xhigh-frame {
++  --xhigh-spectrum: linear-gradient(
++    120deg,
++    #0ea5e9 0%,
++    #06b6d4 20%,
++    #14b8a6 40%,
++    #10b981 60%,
++    #06b6d4 80%,
++    #0ea5e9 100%
++  );
++  background-image: var(--xhigh-spectrum);
++  background-size: 220% 220%;
++  animation: xhigh-pulse 8s linear infinite;
++}
++
++.xhigh-chroma {
++  animation: xhigh-glow 4s ease-in-out infinite;
++}

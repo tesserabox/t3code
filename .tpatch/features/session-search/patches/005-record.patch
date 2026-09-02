@@ -1,0 +1,529 @@
+diff --git a/apps/web/src/components/ChatView.tsx b/apps/web/src/components/ChatView.tsx
+index d532c8b12..de0d34b1b 100644
+--- a/apps/web/src/components/ChatView.tsx
++++ b/apps/web/src/components/ChatView.tsx
+@@ -225,6 +225,8 @@ import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
+ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
+ import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
+ import { MessagesTimeline } from "./chat/MessagesTimeline";
++import { SessionSearchBar } from "./chat/SessionSearchBar";
++import { deriveSessionSearchMatches } from "./chat/sessionSearch";
+ import { ChatHeader } from "./chat/ChatHeader";
+ import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
+ import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
+@@ -1266,6 +1268,9 @@ function ChatViewContent(props: ChatViewProps) {
+   const composerRef = useComposerHandleContext() ?? localComposerRef;
+   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
++  const [isSessionSearchOpen, setIsSessionSearchOpen] = useState(false);
++  const [sessionSearchQuery, setSessionSearchQuery] = useState("");
++  const [sessionSearchMatchIndex, setSessionSearchMatchIndex] = useState(0);
+   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
+   const optimisticUserMessagesRef = useRef(optimisticUserMessages);
+   optimisticUserMessagesRef.current = optimisticUserMessages;
+@@ -2311,6 +2316,31 @@ function ChatViewContent(props: ChatViewProps) {
+       deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
+     [activeThread?.proposedPlans, timelineMessages, workLogEntries],
+   );
++  const sessionSearchMatches = useMemo(
++    () => deriveSessionSearchMatches(timelineEntries, sessionSearchQuery),
++    [sessionSearchQuery, timelineEntries],
++  );
++  const activeSessionSearchMatch =
++    sessionSearchMatches.length === 0
++      ? null
++      : sessionSearchMatches[sessionSearchMatchIndex % sessionSearchMatches.length];
++  const sessionSearchMatchEntryIds = useMemo(
++    () => new Set(sessionSearchMatches.map((match) => match.entryId)),
++    [sessionSearchMatches],
++  );
++  const closeSessionSearch = useCallback(() => {
++    setIsSessionSearchOpen(false);
++    setSessionSearchQuery("");
++    setSessionSearchMatchIndex(0);
++  }, []);
++  useEffect(() => {
++    setSessionSearchMatchIndex((current) =>
++      sessionSearchMatches.length === 0 ? 0 : Math.min(current, sessionSearchMatches.length - 1),
++    );
++  }, [sessionSearchMatches.length]);
++  useEffect(() => {
++    closeSessionSearch();
++  }, [activeThreadKey, closeSessionSearch]);
+   const [dockedDraftHeroThreadKey, setDockedDraftHeroThreadKey] = useState<string | null>(null);
+   const draftHeroDockRequested =
+     activeThreadKey !== null && dockedDraftHeroThreadKey === activeThreadKey;
+@@ -4325,6 +4355,17 @@ function ChatViewContent(props: ChatViewProps) {
+         return;
+       }
+ 
++      if (command === "chat.search") {
++        event.preventDefault();
++        event.stopPropagation();
++        if (isSessionSearchOpen) {
++          closeSessionSearch();
++        } else {
++          setIsSessionSearchOpen(true);
++        }
++        return;
++      }
++
+       if (command === "terminal.split") {
+         event.preventDefault();
+         event.stopPropagation();
+@@ -4422,6 +4463,8 @@ function ChatViewContent(props: ChatViewProps) {
+     toggleRightPanel,
+     toggleTerminalVisibility,
+     composerRef,
++    closeSessionSearch,
++    isSessionSearchOpen,
+   ]);
+ 
+   const onRevertToTurnCount = useCallback(
+@@ -5723,6 +5766,32 @@ function ChatViewContent(props: ChatViewProps) {
+             </div>
+             {/* Messages Wrapper */}
+             <div className="relative flex min-h-0 flex-1 flex-col">
++              {isSessionSearchOpen ? (
++                <SessionSearchBar
++                  query={sessionSearchQuery}
++                  onQueryChange={(query) => {
++                    setSessionSearchQuery(query);
++                    setSessionSearchMatchIndex(0);
++                  }}
++                  matchCount={sessionSearchMatches.length}
++                  currentMatchIndex={sessionSearchMatchIndex}
++                  onNext={() =>
++                    setSessionSearchMatchIndex((index) =>
++                      sessionSearchMatches.length > 0
++                        ? (index + 1) % sessionSearchMatches.length
++                        : 0,
++                    )
++                  }
++                  onPrevious={() =>
++                    setSessionSearchMatchIndex((index) =>
++                      sessionSearchMatches.length > 0
++                        ? (index - 1 + sessionSearchMatches.length) % sessionSearchMatches.length
++                        : 0,
++                    )
++                  }
++                  onClose={closeSessionSearch}
++                />
++              ) : null}
+               {/* Messages — LegendList handles virtualization and scrolling internally */}
+               <MessagesTimeline
+                 key={activeThread.id}
+@@ -5758,6 +5827,8 @@ function ChatViewContent(props: ChatViewProps) {
+                 onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
+                 hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
+                 topFadeEnabled={!hasTimelineTopBanner}
++                searchMatchEntryIds={sessionSearchMatchEntryIds}
++                activeSearchEntryId={activeSessionSearchMatch?.entryId ?? null}
+               />
+ 
+               {/* scroll to end pill — shown when user has scrolled away from the live edge */}
+diff --git a/apps/web/src/components/chat/MessagesTimeline.logic.ts b/apps/web/src/components/chat/MessagesTimeline.logic.ts
+index 3227bac24..638f6d129 100644
+--- a/apps/web/src/components/chat/MessagesTimeline.logic.ts
++++ b/apps/web/src/components/chat/MessagesTimeline.logic.ts
+@@ -408,6 +408,7 @@ export function deriveMessagesTimelineRows(input: {
+   runningTurnId?: TurnId | null;
+   expandedTurnIds?: ReadonlySet<TurnId>;
+   expandedWorkGroupIds?: ReadonlySet<string>;
++  expandAll?: boolean;
+   isWorking: boolean;
+   activeTurnStartedAt: string | null;
+   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
+@@ -430,7 +431,7 @@ export function deriveMessagesTimelineRows(input: {
+   });
+   const collapsedEntryIds = new Set<string>();
+   for (const fold of foldsByAnchorEntryId.values()) {
+-    if (!input.expandedTurnIds?.has(fold.turnId)) {
++    if (!input.expandAll && !input.expandedTurnIds?.has(fold.turnId)) {
+       for (const entryId of fold.hiddenEntryIds) {
+         collapsedEntryIds.add(entryId);
+       }
+@@ -451,7 +452,7 @@ export function deriveMessagesTimelineRows(input: {
+         createdAt: turnFold.createdAt,
+         turnId: turnFold.turnId,
+         label: turnFold.label,
+-        expanded: input.expandedTurnIds?.has(turnFold.turnId) ?? false,
++        expanded: input.expandAll || input.expandedTurnIds?.has(turnFold.turnId) || false,
+       });
+     }
+ 
+@@ -488,7 +489,7 @@ export function deriveMessagesTimelineRows(input: {
+           });
+         } else {
+           const groupId = `work-group:${timelineEntry.id}`;
+-          const expanded = input.expandedWorkGroupIds?.has(groupId) ?? false;
++          const expanded = input.expandAll || input.expandedWorkGroupIds?.has(groupId) || false;
+           const hiddenEntries = visibleGroupedEntries.slice(0, -MAX_VISIBLE_WORK_LOG_ENTRIES);
+           const visibleEntries = visibleGroupedEntries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES);
+           const renderedEntries = expanded ? [...hiddenEntries, ...visibleEntries] : visibleEntries;
+diff --git a/apps/web/src/components/chat/MessagesTimeline.tsx b/apps/web/src/components/chat/MessagesTimeline.tsx
+index a429b54de..d3658dc2b 100644
+--- a/apps/web/src/components/chat/MessagesTimeline.tsx
++++ b/apps/web/src/components/chat/MessagesTimeline.tsx
+@@ -135,6 +135,8 @@ interface TimelineRowSharedState {
+   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
+   onToggleTurnFold: (turnId: TurnId) => void;
+   onToggleWorkGroup: (groupId: string, anchorElement?: HTMLElement) => void;
++  searchMatchEntryIds: ReadonlySet<string>;
++  activeSearchEntryId: string | null;
+ }
+ 
+ interface TimelineRowActivityState {
+@@ -184,6 +186,8 @@ interface MessagesTimelineProps {
+   onManualNavigation: () => void;
+   hideEmptyPlaceholder?: boolean;
+   topFadeEnabled?: boolean;
++  searchMatchEntryIds?: ReadonlySet<string>;
++  activeSearchEntryId?: string | null;
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -219,6 +223,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
+   onManualNavigation,
+   hideEmptyPlaceholder = false,
+   topFadeEnabled = false,
++  searchMatchEntryIds = new Set(),
++  activeSearchEntryId = null,
+ }: MessagesTimelineProps) {
+   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
+   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
+@@ -306,6 +312,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
+         runningTurnId,
+         expandedTurnIds,
+         expandedWorkGroupIds,
++        expandAll: searchMatchEntryIds.size > 0,
+         isWorking,
+         activeTurnStartedAt,
+         turnDiffSummaryByAssistantMessageId,
+@@ -317,6 +324,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
+       runningTurnId,
+       expandedTurnIds,
+       expandedWorkGroupIds,
++      searchMatchEntryIds,
+       isWorking,
+       activeTurnStartedAt,
+       turnDiffSummaryByAssistantMessageId,
+@@ -324,6 +332,19 @@ export const MessagesTimeline = memo(function MessagesTimeline({
+     ],
+   );
+   const rows = useStableRows(rawRows);
++  const activeSearchRowIndex = useMemo(() => {
++    if (activeSearchEntryId === null) {
++      return -1;
++    }
++    return rows.findIndex((row) => {
++      if (row.kind === "message") return row.message.id === activeSearchEntryId;
++      if (row.kind === "proposed-plan") return row.proposedPlan.id === activeSearchEntryId;
++      if (row.kind === "work") {
++        return row.groupedEntries.some((entry) => entry.id === activeSearchEntryId);
++      }
++      return false;
++    });
++  }, [activeSearchEntryId, rows]);
+   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
+   const [timelineViewportElement, setTimelineViewportElement] = useState<HTMLDivElement | null>(
+     null,
+@@ -390,6 +411,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
+     return () => cancelAnimationFrame(frame);
+   }, [handleScroll, rows.length]);
+ 
++  useEffect(() => {
++    if (activeSearchRowIndex < 0) {
++      return;
++    }
++    onManualNavigation();
++    void listRef.current?.scrollToIndex({
++      index: activeSearchRowIndex,
++      animated: true,
++      viewOffset: 72,
++    });
++  }, [activeSearchRowIndex, listRef, onManualNavigation]);
++
+   useEffect(() => {
+     if (!timelineViewportElement) {
+       return;
+@@ -430,6 +463,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
+       onOpenTurnDiff,
+       onToggleTurnFold,
+       onToggleWorkGroup,
++      searchMatchEntryIds,
++      activeSearchEntryId,
+     }),
+     [
+       timestampFormat,
+@@ -444,6 +479,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
+       onOpenTurnDiff,
+       onToggleTurnFold,
+       onToggleWorkGroup,
++      searchMatchEntryIds,
++      activeSearchEntryId,
+     ],
+   );
+   const activityState = useMemo<TimelineRowActivityState>(
+@@ -836,6 +873,17 @@ type TimelineWorkEntry = Extract<MessagesTimelineRow, { kind: "work" }>["grouped
+ type TimelineRow = MessagesTimelineRow;
+ 
+ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: TimelineRow }) {
++  const { activeSearchEntryId, searchMatchEntryIds } = use(TimelineRowCtx);
++  const searchEntryIds =
++    row.kind === "message"
++      ? [row.message.id]
++      : row.kind === "proposed-plan"
++        ? [row.proposedPlan.id]
++        : row.kind === "work"
++          ? row.groupedEntries.map((entry) => entry.id)
++          : [];
++  const matchesSearch = searchEntryIds.some((entryId) => searchMatchEntryIds.has(entryId));
++  const isActiveSearchMatch = searchEntryIds.includes(activeSearchEntryId ?? "");
+   return (
+     <div
+       className={cn(
+@@ -847,6 +895,8 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
+           ? "pb-2"
+           : "pb-4",
+         row.kind === "message" && row.message.role === "assistant" ? "group/assistant" : null,
++        matchesSearch && "rounded-md bg-yellow-500/10",
++        isActiveSearchMatch && "ring-2 ring-yellow-500/70 ring-offset-2 ring-offset-background",
+       )}
+       data-timeline-row-id={row.id}
+       data-timeline-row-kind={row.kind}
+diff --git a/apps/web/src/components/chat/SessionSearchBar.tsx b/apps/web/src/components/chat/SessionSearchBar.tsx
+new file mode 100644
+index 000000000..e29c4a8af
+--- /dev/null
++++ b/apps/web/src/components/chat/SessionSearchBar.tsx
+@@ -0,0 +1,88 @@
++import { ChevronDownIcon, ChevronUpIcon, XIcon } from "lucide-react";
++import { memo, useCallback, useEffect, useRef } from "react";
++
++export interface SessionSearchBarProps {
++  readonly query: string;
++  readonly onQueryChange: (query: string) => void;
++  readonly matchCount: number;
++  readonly currentMatchIndex: number;
++  readonly onNext: () => void;
++  readonly onPrevious: () => void;
++  readonly onClose: () => void;
++}
++
++export const SessionSearchBar = memo(function SessionSearchBar(props: SessionSearchBarProps) {
++  const inputRef = useRef<HTMLInputElement>(null);
++
++  useEffect(() => {
++    inputRef.current?.focus({ preventScroll: true });
++  }, []);
++
++  const handleKeyDown = useCallback(
++    (event: React.KeyboardEvent) => {
++      if (event.key === "Escape") {
++        event.preventDefault();
++        props.onClose();
++      } else if (event.key === "Enter" && event.shiftKey) {
++        event.preventDefault();
++        props.onPrevious();
++      } else if (event.key === "Enter") {
++        event.preventDefault();
++        props.onNext();
++      }
++    },
++    [props],
++  );
++
++  const trimmedQuery = props.query.trim();
++  const matchLabel =
++    trimmedQuery.length > 0 && props.matchCount > 0
++      ? `${props.currentMatchIndex + 1} of ${props.matchCount}`
++      : trimmedQuery.length > 0
++        ? "No matches"
++        : "";
++
++  return (
++    <div className="absolute top-2 right-4 z-50 flex items-center gap-1 rounded-lg border bg-popover px-2 py-1.5 shadow-lg">
++      <input
++        ref={inputRef}
++        type="search"
++        className="h-6 w-48 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground/50"
++        placeholder="Search in thread..."
++        value={props.query}
++        onChange={(event) => props.onQueryChange(event.target.value)}
++        onKeyDown={handleKeyDown}
++        aria-label="Search in thread"
++      />
++      {matchLabel ? (
++        <span className="shrink-0 text-xs text-muted-foreground/70 tabular-nums">{matchLabel}</span>
++      ) : null}
++      <button
++        type="button"
++        className="flex size-6 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:text-foreground disabled:opacity-30"
++        onClick={props.onPrevious}
++        disabled={props.matchCount === 0}
++        aria-label="Previous match"
++      >
++        <ChevronUpIcon className="size-3.5" />
++      </button>
++      <button
++        type="button"
++        className="flex size-6 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:text-foreground disabled:opacity-30"
++        onClick={props.onNext}
++        disabled={props.matchCount === 0}
++        aria-label="Next match"
++      >
++        <ChevronDownIcon className="size-3.5" />
++      </button>
++      <button
++        type="button"
++        className="flex size-6 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:text-foreground"
++        onClick={props.onClose}
++        aria-label="Close search"
++      >
++        <XIcon className="size-3.5" />
++      </button>
++    </div>
++  );
++});
+diff --git a/apps/web/src/components/chat/sessionSearch.test.ts b/apps/web/src/components/chat/sessionSearch.test.ts
+new file mode 100644
+index 000000000..dc9697ba0
+--- /dev/null
++++ b/apps/web/src/components/chat/sessionSearch.test.ts
+@@ -0,0 +1,52 @@
++import { describe, expect, it } from "vitest";
++
++import { MessageId } from "@t3tools/contracts";
++
++import type { TimelineEntry } from "../../session-logic";
++import { deriveSessionSearchMatches } from "./sessionSearch";
++
++const ENTRIES: ReadonlyArray<TimelineEntry> = [
++  {
++    id: "message-1",
++    kind: "message",
++    createdAt: "2026-07-29T00:00:00.000Z",
++    message: {
++      id: MessageId.make("message-1"),
++      role: "user",
++      text: "Alpha beta alpha",
++      turnId: null,
++      streaming: false,
++      createdAt: "2026-07-29T00:00:00.000Z",
++      updatedAt: "2026-07-29T00:00:00.000Z",
++    },
++  },
++  {
++    id: "work-1",
++    kind: "work",
++    createdAt: "2026-07-29T00:00:01.000Z",
++    entry: {
++      id: "work-1",
++      createdAt: "2026-07-29T00:00:01.000Z",
++      label: "Read file",
++      detail: "Found beta in output",
++      tone: "tool",
++    },
++  },
++];
++
++describe("deriveSessionSearchMatches", () => {
++  it("finds every case-insensitive occurrence across messages and work entries", () => {
++    expect(deriveSessionSearchMatches(ENTRIES, "ALPHA")).toEqual([
++      { entryId: "message-1", occurrence: 0 },
++      { entryId: "message-1", occurrence: 1 },
++    ]);
++    expect(deriveSessionSearchMatches(ENTRIES, "beta")).toEqual([
++      { entryId: "message-1", occurrence: 0 },
++      { entryId: "work-1", occurrence: 0 },
++    ]);
++  });
++
++  it("returns no matches for an empty query", () => {
++    expect(deriveSessionSearchMatches(ENTRIES, "   ")).toEqual([]);
++  });
++});
+diff --git a/apps/web/src/components/chat/sessionSearch.ts b/apps/web/src/components/chat/sessionSearch.ts
+new file mode 100644
+index 000000000..de43d4678
+--- /dev/null
++++ b/apps/web/src/components/chat/sessionSearch.ts
+@@ -0,0 +1,53 @@
++import type { TimelineEntry } from "../../session-logic";
++
++export interface SessionSearchMatch {
++  readonly entryId: string;
++  readonly occurrence: number;
++}
++
++function searchableFields(entry: TimelineEntry): ReadonlyArray<string> {
++  switch (entry.kind) {
++    case "message":
++      return [entry.message.text];
++    case "proposed-plan":
++      return [entry.proposedPlan.planMarkdown];
++    case "work":
++      return [
++        entry.entry.label,
++        entry.entry.detail ?? "",
++        entry.entry.command ?? "",
++        entry.entry.rawCommand ?? "",
++        entry.entry.toolTitle ?? "",
++        ...(entry.entry.changedFiles ?? []),
++      ];
++  }
++}
++
++export function deriveSessionSearchMatches(
++  entries: ReadonlyArray<TimelineEntry>,
++  rawQuery: string,
++): SessionSearchMatch[] {
++  const query = rawQuery.trim().toLocaleLowerCase();
++  if (query.length === 0) {
++    return [];
++  }
++
++  const matches: SessionSearchMatch[] = [];
++  for (const entry of entries) {
++    let occurrence = 0;
++    for (const field of searchableFields(entry)) {
++      const text = field.toLocaleLowerCase();
++      let searchFrom = 0;
++      while (searchFrom <= text.length - query.length) {
++        const index = text.indexOf(query, searchFrom);
++        if (index < 0) {
++          break;
++        }
++        matches.push({ entryId: entry.id, occurrence });
++        occurrence += 1;
++        searchFrom = index + query.length;
++      }
++    }
++  }
++  return matches;
++}
+diff --git a/packages/contracts/src/keybindings.ts b/packages/contracts/src/keybindings.ts
+index d966c1e7e..ba5188acc 100644
+--- a/packages/contracts/src/keybindings.ts
++++ b/packages/contracts/src/keybindings.ts
+@@ -64,6 +64,7 @@ const STATIC_KEYBINDING_COMMANDS = [
+   "preview.resetZoom",
+   "commandPalette.toggle",
+   "composer.stash",
++  "chat.search",
+   "chat.new",
+   "chat.newLocal",
+   "editor.openFavorite",
+diff --git a/packages/shared/src/keybindings.ts b/packages/shared/src/keybindings.ts
+index 0688cf072..249f024f2 100644
+--- a/packages/shared/src/keybindings.ts
++++ b/packages/shared/src/keybindings.ts
+@@ -36,6 +36,7 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
+   { key: "mod+0", command: "preview.resetZoom", when: "previewFocus" },
+   { key: "mod+k", command: "commandPalette.toggle", when: "!terminalFocus" },
+   { key: "mod+s", command: "composer.stash", when: "!terminalFocus" },
++  { key: "mod+f", command: "chat.search", when: "!terminalFocus" },
+   { key: "mod+n", command: "chat.new", when: "!terminalFocus" },
+   { key: "mod+shift+o", command: "chat.new", when: "!terminalFocus" },
+   { key: "mod+shift+n", command: "chat.newLocal", when: "!terminalFocus" },

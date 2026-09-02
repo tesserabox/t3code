@@ -1,0 +1,15 @@
+{
+  "slug": "readme-copilot-notice",
+  "title": "Add a section to README.md documenting the experimental Copilot provider integration, with a warning that sessions created with the Copilot provider are not backward-compatible with upstream t3code — switching back to upstream will fail to load those sessions.",
+  "outcome": "blocked",
+  "phase": "phase-4-blocked",
+  "upstream_ref": "upstream/main",
+  "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+  "notes": [
+    "Operation-level: 0 present, 0 applicable, 1 conflicts",
+    "Provider semantic check error: generation request failed: Post \"http://localhost:4141/v1/messages\": context deadline exceeded",
+    "Patch cannot be applied cleanly — manual intervention needed",
+    "git: error: .git/logs/HEAD: Not a directory\nerror: .git/logs/refs/heads/main: Not a directory\nerror: .git/logs/refs/remotes/origin/HEAD: Not a directory"
+  ],
+  "conflicts": ["Forward-apply failed — check for merge conflicts"]
+}

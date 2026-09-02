@@ -1,0 +1,16 @@
+{
+  "slug": "copilot-resource-events",
+  "title": "Handle Copilot SDK resource events for rich content rendering. Map resource, resource_link, image, audio, file, blob, directory content blocks to ProviderRuntimeEvent types. Add frontend components for inline images, audio players, and file download links. Requires new contract types in providerRuntime.ts.",
+  "outcome": "blocked",
+  "phase": "phase-4-blocked",
+  "upstream_ref": "upstream/main",
+  "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
+  "notes": [
+    "Operation-level: 1 present, 0 applicable, 2 conflicts",
+    "Provider semantic check error: generation request failed: Post \"http://localhost:4141/v1/messages\": context deadline exceeded",
+    "Patch cannot be applied cleanly — manual intervention needed",
+    "git: error: .git/logs/HEAD: Not a directory\nerror: .git/logs/refs/heads/main: Not a directory\nerror: .git/logs/refs/remotes/origin/HEAD: Not a directory"
+  ],
+  "conflicts": ["Forward-apply failed — check for merge conflicts"],
+  "labels": ["blocked-by-parent"]
+}

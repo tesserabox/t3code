@@ -1,0 +1,52 @@
+diff --git a/apps/server/src/provider/Layers/CopilotAdapter.ts b/apps/server/src/provider/Layers/CopilotAdapter.ts
+index 4aa89745..75611ea5 100644
+--- a/apps/server/src/provider/Layers/CopilotAdapter.ts
++++ b/apps/server/src/provider/Layers/CopilotAdapter.ts
+@@ -144,6 +144,16 @@ interface CopilotSkillsListResponse {
+   }>;
+ }
+ 
++/** Typed RPC interface for skills operations */
++interface CopilotSkillsRpc {
++  skills?: {
++    list?: () => Promise<CopilotSkillsListResponse>;
++    enable?: (params: { name: string }) => Promise<unknown>;
++    disable?: (params: { name: string }) => Promise<unknown>;
++    reload?: () => Promise<unknown>;
++  };
++}
++
+ /**
+  * Merge incoming skills with existing discovered skills by name.
+  * Incoming skills replace existing ones with the same name; skills
+@@ -1719,13 +1729,17 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+           }),
+         ]);
+ 
+-        // Non-blocking skill discovery fallback — belt-and-suspenders alongside
+-        // the session.skills_loaded event handler. Fire-and-forget.
++        // Non-blocking skill discovery + reload after session start.
++        // 1. Reload skills to pick up any new SKILL.md files in the workspace
++        // 2. List skills to populate the discovery cache
++        // Belt-and-suspenders alongside the session.skills_loaded event handler.
+         void (async () => {
+           try {
+-            const skillsResult = await (
+-              session.rpc as { skills?: { list?: () => Promise<CopilotSkillsListResponse> } }
+-            ).skills?.list?.();
++            const rpcSkills = (session.rpc as CopilotSkillsRpc).skills;
++            // Reload first to discover new workspace skills
++            await rpcSkills?.reload?.().catch(() => {});
++            // Then list to populate the cache
++            const skillsResult = await rpcSkills?.list?.();
+             if (Array.isArray(skillsResult?.skills) && skillsResult.skills.length > 0) {
+               const mapped = skillsResult.skills
+                 .map(mapSdkSkillToServerProviderSkill)
+@@ -1734,7 +1748,7 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
+             }
+           } catch (err: unknown) {
+             const message = err instanceof Error ? err.message : String(err);
+-            console.warn("[CopilotAdapter] rpc.skills.list() failed:", message);
++            console.warn("[CopilotAdapter] rpc.skills discovery failed:", message);
+           }
+         })();
