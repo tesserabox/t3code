@@ -1,0 +1,183 @@
+{
+  "version": 1,
+  "feature": "phase1-foundation",
+  "current_generation": 1,
+  "generations": [
+    {
+      "generation": 1,
+      "generation_id": "pg_650f97c8196a",
+      "kind": "record",
+      "patch_sha256": "b61fc4bc72887930d063b571588a1e4ed43b0fde5d5ec75c32c7175b0783ea07",
+      "git_patch_id": "6c40c9fdcf69c6c3ec628a82bc96ab8103d73492",
+      "git_patch_id_algorithm": "git-patch-id-stable",
+      "recipe_sha256": "71897d8909979e86addf8ba9702dbae83dab222e4d018026917265b94887e17f",
+      "canonical_patch": "artifacts/post-apply.patch",
+      "audit_patch": "",
+      "base_commit": "4b9584b1bfdf5803e41fbc262cda573fdd4ec803",
+      "upper": {
+        "kind": "working-tree",
+        "ref": "working-tree",
+        "commit": ""
+      },
+      "capture": {
+        "mode": "working-tree-all",
+        "pathspecs": [
+          "apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts",
+          "apps/server/src/orchestration/Layers/ProjectionPipeline.ts",
+          "apps/server/src/orchestration/ThreadAttentionAudit.test.ts",
+          "apps/server/src/orchestration/ThreadAttentionAudit.ts",
+          "apps/server/src/persistence/Layers/ProjectionThreadAttentionAudit.test.ts",
+          "apps/server/src/persistence/Layers/ProjectionThreadAttentionAudit.ts",
+          "apps/server/src/persistence/Layers/TwsBindings.test.ts",
+          "apps/server/src/persistence/Layers/TwsBindings.ts",
+          "apps/server/src/persistence/Migrations.ts",
+          "apps/server/src/persistence/Migrations/044_ProjectionThreadAttentionAudit.test.ts",
+          "apps/server/src/persistence/Migrations/044_ProjectionThreadAttentionAudit.ts",
+          "apps/server/src/persistence/Migrations/045_TwsBindings.test.ts",
+          "apps/server/src/persistence/Migrations/045_TwsBindings.ts",
+          "apps/server/src/persistence/Services/ProjectionThreadAttentionAudit.ts",
+          "apps/server/src/persistence/Services/TwsBindings.ts",
+          "apps/server/src/tws/TwsBindingMatch.test.ts",
+          "apps/server/src/tws/TwsBindingMatch.ts",
+          "apps/server/src/tws/TwsCliAdapter.test.ts",
+          "apps/server/src/tws/TwsCliAdapter.ts",
+          "apps/server/src/tws/TwsCliDecoder.test.ts",
+          "apps/server/src/tws/TwsCliDecoder.ts",
+          "packages/contracts/src/environment.test.ts",
+          "packages/contracts/src/environment.ts",
+          "packages/contracts/src/index.ts",
+          "packages/contracts/src/orchestration.test.ts",
+          "packages/contracts/src/orchestration.ts",
+          "packages/contracts/src/twsBindings.test.ts",
+          "packages/contracts/src/twsBindings.ts",
+          "packages/contracts/src/workItem.test.ts",
+          "packages/contracts/src/workItem.ts"
+        ],
+        "claim_ids": []
+      },
+      "touched_paths": [
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts",
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.ts",
+        "apps/server/src/orchestration/ThreadAttentionAudit.test.ts",
+        "apps/server/src/orchestration/ThreadAttentionAudit.ts",
+        "apps/server/src/persistence/Layers/ProjectionThreadAttentionAudit.test.ts",
+        "apps/server/src/persistence/Layers/ProjectionThreadAttentionAudit.ts",
+        "apps/server/src/persistence/Layers/TwsBindings.test.ts",
+        "apps/server/src/persistence/Layers/TwsBindings.ts",
+        "apps/server/src/persistence/Migrations.ts",
+        "apps/server/src/persistence/Migrations/044_ProjectionThreadAttentionAudit.test.ts",
+        "apps/server/src/persistence/Migrations/044_ProjectionThreadAttentionAudit.ts",
+        "apps/server/src/persistence/Migrations/045_TwsBindings.test.ts",
+        "apps/server/src/persistence/Migrations/045_TwsBindings.ts",
+        "apps/server/src/persistence/Services/ProjectionThreadAttentionAudit.ts",
+        "apps/server/src/persistence/Services/TwsBindings.ts",
+        "apps/server/src/tws/TwsBindingMatch.test.ts",
+        "apps/server/src/tws/TwsBindingMatch.ts",
+        "apps/server/src/tws/TwsCliAdapter.test.ts",
+        "apps/server/src/tws/TwsCliAdapter.ts",
+        "apps/server/src/tws/TwsCliDecoder.test.ts",
+        "apps/server/src/tws/TwsCliDecoder.ts",
+        "packages/contracts/src/environment.test.ts",
+        "packages/contracts/src/environment.ts",
+        "packages/contracts/src/index.ts",
+        "packages/contracts/src/orchestration.test.ts",
+        "packages/contracts/src/orchestration.ts",
+        "packages/contracts/src/twsBindings.test.ts",
+        "packages/contracts/src/twsBindings.ts",
+        "packages/contracts/src/workItem.test.ts",
+        "packages/contracts/src/workItem.ts"
+      ],
+      "dependencies": [
+        {
+          "slug": "copilot-cli-provider",
+          "kind": "hard",
+          "satisfied_by": "",
+          "parent_generation": 12,
+          "parent_patch_sha256": "1ca1e4751e07b43cbee07b5038be7c46a0f2edaa36949acb965882f3d4cc0973",
+          "parent_recipe_sha256": "4aa67cb415e5f744a595dfb609af648aea1e71f708473afc6938ec4dafe324da"
+        },
+        {
+          "slug": "copilot-plan-compaction",
+          "kind": "supersedes",
+          "satisfied_by": "",
+          "parent_generation": 0,
+          "parent_patch_sha256": ""
+        },
+        {
+          "slug": "copilot-skill-discovery",
+          "kind": "supersedes",
+          "satisfied_by": "",
+          "parent_generation": 0,
+          "parent_patch_sha256": ""
+        },
+        {
+          "slug": "copilot-text-generation",
+          "kind": "supersedes",
+          "satisfied_by": "",
+          "parent_generation": 0,
+          "parent_patch_sha256": ""
+        },
+        {
+          "slug": "copilot-tool-detail",
+          "kind": "supersedes",
+          "satisfied_by": "",
+          "parent_generation": 0,
+          "parent_patch_sha256": ""
+        },
+        {
+          "slug": "copilot-turn-timing",
+          "kind": "supersedes",
+          "satisfied_by": "",
+          "parent_generation": 0,
+          "parent_patch_sha256": ""
+        },
+        {
+          "slug": "durable-thread-attention-ledger",
+          "kind": "supersedes",
+          "satisfied_by": "",
+          "parent_generation": 1,
+          "parent_patch_sha256": "6953cbea041b0d8c529f63e9e525c43322ac763ad0b8d65d2fd8bd1074d7ff75",
+          "parent_recipe_sha256": "e45b16ac455fd4b42b53edcff818f8b1145377f95453b69bb79852b169ae04c0"
+        },
+        {
+          "slug": "hosting-work-item-contracts",
+          "kind": "supersedes",
+          "satisfied_by": "",
+          "parent_generation": 1,
+          "parent_patch_sha256": "5268b20b56b371838563fcda3770cc50c30c1b43ba96a591db4a2058d38e0e86",
+          "parent_recipe_sha256": "a1f9c190d469f54999eeb023102e21f88445f2aedae82b2b581d865ebef8c684"
+        },
+        {
+          "slug": "session-search",
+          "kind": "hard",
+          "satisfied_by": "",
+          "parent_generation": 6,
+          "parent_patch_sha256": "e03f4277008ed0c92f0420c2bd13bd9139613ab89ef5a3c26903bcc209ffade0",
+          "parent_recipe_sha256": "e0ea44f4d387dbc6a380e554a129ce3f47518bf04fd05e3ed73081eedb486d1a"
+        },
+        {
+          "slug": "tws-identity-bindings",
+          "kind": "supersedes",
+          "satisfied_by": "",
+          "parent_generation": 1,
+          "parent_patch_sha256": "2aff1a6c2726968b459e9282584f83e05798580a82ac77d9a0ecc9e90b05645e",
+          "parent_recipe_sha256": "63b18576300252c49752400e437a32d5e390d34ddd19cc92e84336fbf7760217"
+        },
+        {
+          "slug": "tws-readonly-cli-adapter",
+          "kind": "supersedes",
+          "satisfied_by": "",
+          "parent_generation": 1,
+          "parent_patch_sha256": "e0aec536d901c1c604647ad10144b4da0e4d6b24df67ae4979cf47a165429cfa",
+          "parent_recipe_sha256": "e873e30981f4784c07a95e939af9ed5f1cab9c5548b53e65c6f16892754a3874"
+        }
+      ],
+      "refs": {
+        "anchors": "",
+        "fingerprints": "",
+        "relations": "",
+        "vector_manifest": ""
+      }
+    }
+  ]
+}

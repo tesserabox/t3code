@@ -1,4 +1,5 @@
 import {
+  ApprovalRequestId,
   CheckpointRef,
   CommandId,
   CorrelationId,
@@ -323,6 +324,190 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           unsettledAt: "2026-01-01T00:00:02.000Z",
         },
       ]);
+    }),
+  );
+
+  it.effect("persists compact attention audit rows without changing visible activities", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-attention-audit");
+      const now = "2026-01-01T00:00:00.000Z";
+
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.make("event-attention-thread-created"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("command-attention-thread-created"),
+        causationEventId: null,
+        correlationId: CommandId.make("command-attention-thread-created"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-attention-audit"),
+          title: "Attention audit",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.6-sol",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      const appendActivity = (
+        eventId: string,
+        kind: string,
+        payload: unknown,
+        metadataRequestId?: string,
+      ) =>
+        eventStore.append({
+          type: "thread.activity-appended",
+          eventId: EventId.make(eventId),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: metadataRequestId
+            ? { requestId: ApprovalRequestId.make(metadataRequestId) }
+            : {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make(`activity-${eventId}`),
+              tone: "approval" as const,
+              kind,
+              summary: "Attention changed",
+              payload,
+              turnId: TurnId.make("turn-attention-audit"),
+              createdAt: now,
+            },
+          },
+        });
+
+      yield* appendActivity("event-routine", "tool.updated", {});
+      yield* appendActivity("event-approval-requested", "approval.requested", {
+        requestId: "request-approval",
+        sensitive: "not copied",
+      });
+      yield* appendActivity("event-approval-resolved", "approval.resolved", {}, "request-approval");
+      yield* appendActivity("event-user-input-requested", "user-input.requested", {
+        requestId: "request-user-input",
+      });
+      yield* appendActivity("event-user-input-failed", "provider.user-input.respond.failed", {
+        requestId: "request-user-input",
+      });
+      yield* eventStore.append({
+        type: "thread.settled",
+        eventId: EventId.make("event-attention-settled"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-01-01T00:00:01.000Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        payload: {
+          threadId,
+          settledAt: "2026-01-01T00:00:01.000Z",
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+      });
+      yield* eventStore.append({
+        type: "thread.unsettled",
+        eventId: EventId.make("event-attention-unsettled"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-01-01T00:00:02.000Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        payload: {
+          threadId,
+          reason: "activity",
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      const auditRows = yield* sql<{
+        readonly eventId: string;
+        readonly kind: string;
+        readonly requestId: string | null;
+      }>`
+        SELECT
+          event_id AS "eventId",
+          kind,
+          request_id AS "requestId"
+        FROM projection_thread_attention_audit
+        WHERE thread_id = ${threadId}
+        ORDER BY sequence ASC
+      `;
+      assert.deepEqual(auditRows, [
+        {
+          eventId: "event-approval-requested",
+          kind: "approval.requested",
+          requestId: "request-approval",
+        },
+        {
+          eventId: "event-approval-resolved",
+          kind: "approval.resolved",
+          requestId: "request-approval",
+        },
+        {
+          eventId: "event-user-input-requested",
+          kind: "user-input.requested",
+          requestId: "request-user-input",
+        },
+        {
+          eventId: "event-user-input-failed",
+          kind: "provider.user-input.respond.failed",
+          requestId: "request-user-input",
+        },
+        {
+          eventId: "event-attention-settled",
+          kind: "thread.settled",
+          requestId: null,
+        },
+        {
+          eventId: "event-attention-unsettled",
+          kind: "thread.unsettled",
+          requestId: null,
+        },
+      ]);
+
+      const visibleActivityRows = yield* sql<{ readonly kind: string }>`
+        SELECT kind
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+        ORDER BY created_at ASC, activity_id ASC
+      `;
+      assert.strictEqual(visibleActivityRows.length, 5);
+      assert.isFalse(visibleActivityRows.some((row) => row.kind.startsWith("thread.")));
+
+      yield* sql`
+        UPDATE projection_state
+        SET last_applied_sequence = 0
+        WHERE projector = ${ORCHESTRATION_PROJECTOR_NAMES.threadAttentionAudit}
+      `;
+      yield* projectionPipeline.bootstrap;
+
+      const replayedRows = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count
+        FROM projection_thread_attention_audit
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(replayedRows, [{ count: 6 }]);
     }),
   );
 });

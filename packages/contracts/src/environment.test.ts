@@ -27,6 +27,19 @@ describe("ExecutionEnvironmentDescriptor", () => {
     ).toBe(true);
   });
 
+  it("treats a missing work-item capability as unsupported under version skew", () => {
+    expect(decodeDescriptor(descriptor).capabilities.workItems).toBeUndefined();
+  });
+
+  it("preserves an advertised work-item capability", () => {
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: { ...descriptor.capabilities, workItems: true },
+      }).capabilities.workItems,
+    ).toBe(true);
+  });
+
   it("treats a missing attachment upload capability as unsupported", () => {
     expect(decodeDescriptor(descriptor).capabilities.attachmentUploads).toBeUndefined();
   });
