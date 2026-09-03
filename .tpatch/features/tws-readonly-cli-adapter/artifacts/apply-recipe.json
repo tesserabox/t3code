@@ -1,0 +1,33 @@
+{
+  "feature": "tws-readonly-cli-adapter",
+  "operations": [
+    {
+      "type": "ensure-directory",
+      "path": "apps/server/src/tws/"
+    },
+    {
+      "type": "write-file",
+      "path": "apps/server/src/tws/TwsCliDecoder.ts",
+      "preimage_hash": "",
+      "content": "export {};\n"
+    },
+    {
+      "type": "write-file",
+      "path": "apps/server/src/tws/TwsCliDecoder.test.ts",
+      "preimage_hash": "",
+      "content": "export {};\n"
+    },
+    {
+      "type": "write-file",
+      "path": "apps/server/src/tws/TwsCliAdapter.ts",
+      "preimage_hash": "",
+      "content": "export {};\n"
+    },
+    {
+      "type": "write-file",
+      "path": "apps/server/src/tws/TwsCliAdapter.test.ts",
+      "preimage_hash": "",
+      "content": "export {};\n"
+    }
+  ]
+}
