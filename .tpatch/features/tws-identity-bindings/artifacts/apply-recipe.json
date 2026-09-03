@@ -1,0 +1,75 @@
+{
+  "feature": "tws-identity-bindings",
+  "operations": [
+    {
+      "type": "ensure-directory",
+      "path": "apps/server/src/tws/"
+    },
+    {
+      "type": "write-file",
+      "path": "packages/contracts/src/twsBindings.ts",
+      "preimage_hash": "",
+      "content": "export {};\n"
+    },
+    {
+      "type": "write-file",
+      "path": "packages/contracts/src/twsBindings.test.ts",
+      "preimage_hash": "",
+      "content": "export {};\n"
+    },
+    {
+      "type": "write-file",
+      "path": "apps/server/src/persistence/Migrations/045_TwsBindings.ts",
+      "preimage_hash": "",
+      "content": "export {};\n"
+    },
+    {
+      "type": "write-file",
+      "path": "apps/server/src/persistence/Migrations/045_TwsBindings.test.ts",
+      "preimage_hash": "",
+      "content": "export {};\n"
+    },
+    {
+      "type": "write-file",
+      "path": "apps/server/src/persistence/Services/TwsBindings.ts",
+      "preimage_hash": "",
+      "content": "export {};\n"
+    },
+    {
+      "type": "write-file",
+      "path": "apps/server/src/persistence/Layers/TwsBindings.ts",
+      "preimage_hash": "",
+      "content": "export {};\n"
+    },
+    {
+      "type": "write-file",
+      "path": "apps/server/src/persistence/Layers/TwsBindings.test.ts",
+      "preimage_hash": "",
+      "content": "export {};\n"
+    },
+    {
+      "type": "write-file",
+      "path": "apps/server/src/tws/TwsBindingMatch.ts",
+      "preimage_hash": "",
+      "content": "export {};\n"
+    },
+    {
+      "type": "write-file",
+      "path": "apps/server/src/tws/TwsBindingMatch.test.ts",
+      "preimage_hash": "",
+      "content": "export {};\n"
+    },
+    {
+      "type": "replace-in-file",
+      "path": "packages/contracts/src/index.ts",
+      "search": "export * from \"./workItem.ts\";\n",
+      "replace": "export * from \"./workItem.ts\";\nexport * from \"./twsBindings.ts\";\n"
+    },
+    {
+      "type": "replace-in-file",
+      "path": "apps/server/src/persistence/Migrations.ts",
+      "search": "import Migration0044 from \"./Migrations/044_ProjectionThreadAttentionAudit.ts\";\n",
+      "replace": "import Migration0044 from \"./Migrations/044_ProjectionThreadAttentionAudit.ts\";\nimport Migration0045 from \"./Migrations/045_TwsBindings.ts\";\n"
+    }
+  ]
+}
