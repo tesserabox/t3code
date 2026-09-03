@@ -1,0 +1,29 @@
+{
+  "feature": "hosting-work-item-contracts",
+  "operations": [
+    {
+      "type": "write-file",
+      "path": "packages/contracts/src/workItem.ts",
+      "preimage_hash": "",
+      "content": "export {};\n"
+    },
+    {
+      "type": "write-file",
+      "path": "packages/contracts/src/workItem.test.ts",
+      "preimage_hash": "",
+      "content": "export {};\n"
+    },
+    {
+      "type": "replace-in-file",
+      "path": "packages/contracts/src/index.ts",
+      "search": "export * from \"./pullRequest.ts\";\n",
+      "replace": "export * from \"./pullRequest.ts\";\nexport * from \"./workItem.ts\";\n"
+    },
+    {
+      "type": "replace-in-file",
+      "path": "packages/contracts/src/environment.ts",
+      "search": "  pullRequests: Schema.optionalKey(Schema.Boolean),\n",
+      "replace": "  pullRequests: Schema.optionalKey(Schema.Boolean),\n  workItems: Schema.optionalKey(Schema.Boolean),\n"
+    }
+  ]
+}
