@@ -19,11 +19,5 @@
     "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
     "outcome": "blocked",
     "labels": ["blocked-by-parent"]
-  },
-  "depends_on": [
-    {
-      "slug": "windows-wsl-support",
-      "kind": "hard"
-    }
-  ]
+  }
 }

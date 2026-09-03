@@ -1,0 +1,677 @@
+diff --git a/apps/web/src/components/CommandPalette.logic.test.ts b/apps/web/src/components/CommandPalette.logic.test.ts
+index 65f183940..9b74e057e 100644
+--- a/apps/web/src/components/CommandPalette.logic.test.ts
++++ b/apps/web/src/components/CommandPalette.logic.test.ts
+@@ -5,6 +5,7 @@ import {
+   browseInputEndPaddingClass,
+   buildBrowseGroups,
+   buildThreadActionItems,
++  createCommandPaletteCloseCoordinator,
+   enumerateCommandPaletteItems,
+   filterPinnedBrowseEntries,
+   filterCommandPaletteGroups,
+@@ -113,6 +114,36 @@ describe("reduceCommandPaletteUiState", () => {
+   });
+ });
+ 
++describe("createCommandPaletteCloseCoordinator", () => {
++  it("runs deferred work after close and suppresses composer focus in either callback order", () => {
++    const closeCompleteFirst = createCommandPaletteCloseCoordinator();
++    const firstAction = vi.fn();
++    closeCompleteFirst.deferUntilClosed(firstAction);
++    closeCompleteFirst.takeDeferredAction()?.();
++    expect(closeCompleteFirst.consumeShouldRestoreFocus()).toBe(false);
++    expect(firstAction).toHaveBeenCalledOnce();
++    expect(closeCompleteFirst.consumeShouldRestoreFocus()).toBe(true);
++
++    const finalFocusFirst = createCommandPaletteCloseCoordinator();
++    const secondAction = vi.fn();
++    finalFocusFirst.deferUntilClosed(secondAction);
++    expect(finalFocusFirst.consumeShouldRestoreFocus()).toBe(false);
++    finalFocusFirst.takeDeferredAction()?.();
++    expect(secondAction).toHaveBeenCalledOnce();
++  });
++
++  it("resets an abandoned deferred action before the next open cycle", () => {
++    const coordinator = createCommandPaletteCloseCoordinator();
++    const action = vi.fn();
++    coordinator.deferUntilClosed(action);
++    coordinator.reset();
++
++    expect(coordinator.takeDeferredAction()).toBeNull();
++    expect(coordinator.consumeShouldRestoreFocus()).toBe(true);
++    expect(action).not.toHaveBeenCalled();
++  });
++});
++
+ describe("enumerateCommandPaletteItems", () => {
+   it("assigns positional jump shortcuts to the first nine displayed items", () => {
+     const items = Array.from({ length: 10 }, (_, index) => ({
+diff --git a/apps/web/src/components/CommandPalette.logic.ts b/apps/web/src/components/CommandPalette.logic.ts
+index a0af1be04..7400f59a7 100644
+--- a/apps/web/src/components/CommandPalette.logic.ts
++++ b/apps/web/src/components/CommandPalette.logic.ts
+@@ -79,6 +79,41 @@ export function reduceCommandPaletteUiState(
+   }
+ }
+ 
++export interface CommandPaletteCloseCoordinator {
++  readonly deferUntilClosed: (action: () => void) => void;
++  readonly takeDeferredAction: () => (() => void) | null;
++  readonly consumeShouldRestoreFocus: () => boolean;
++  readonly reset: () => void;
++}
++
++export function createCommandPaletteCloseCoordinator(): CommandPaletteCloseCoordinator {
++  let deferredAction: (() => void) | null = null;
++  let suppressNextFocusRestore = false;
++
++  return {
++    deferUntilClosed: (action) => {
++      deferredAction = action;
++      suppressNextFocusRestore = true;
++    },
++    takeDeferredAction: () => {
++      const action = deferredAction;
++      deferredAction = null;
++      return action;
++    },
++    consumeShouldRestoreFocus: () => {
++      if (!suppressNextFocusRestore) {
++        return true;
++      }
++      suppressNextFocusRestore = false;
++      return false;
++    },
++    reset: () => {
++      deferredAction = null;
++      suppressNextFocusRestore = false;
++    },
++  };
++}
++
+ export interface CommandPaletteThreadContentMatch {
+   readonly source: "user" | "assistant";
+   readonly snippet: string;
+@@ -105,6 +140,7 @@ export interface CommandPaletteItem {
+ export interface CommandPaletteActionItem extends CommandPaletteItem {
+   readonly kind: "action";
+   readonly keepOpen?: boolean;
++  readonly deferRunUntilClosed?: boolean;
+   readonly run: () => Promise<void>;
+ }
+ 
+diff --git a/apps/web/src/components/CommandPalette.tsx b/apps/web/src/components/CommandPalette.tsx
+index 4f6b7f076..ed74cb916 100644
+--- a/apps/web/src/components/CommandPalette.tsx
++++ b/apps/web/src/components/CommandPalette.tsx
+@@ -127,6 +127,7 @@ import {
+   buildProjectActionItems,
+   buildRootGroups,
+   buildThreadActionItems,
++  createCommandPaletteCloseCoordinator,
+   enumerateCommandPaletteItems,
+   type CommandPaletteActionItem,
+   type CommandPaletteOpenIntent,
+@@ -418,6 +419,19 @@ export function CommandPalette({ children }: { children: ReactNode }) {
+   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+   const { theme, themeHalves, resolvedTheme } = useTheme();
+   const composerHandleRef = useRef<ChatComposerHandle | null>(null);
++  const [closeCoordinator] = useState(createCommandPaletteCloseCoordinator);
++  const deferActionUntilClose = useCallback(
++    (action: () => void) => {
++      closeCoordinator.deferUntilClosed(action);
++      setOpen(false);
++    },
++    [closeCoordinator, setOpen],
++  );
++  useEffect(() => {
++    if (state.open) {
++      closeCoordinator.reset();
++    }
++  }, [closeCoordinator, state.open]);
+   const routeTarget = useParams({
+     strict: false,
+     select: (params) => resolveThreadRouteTarget(params),
+@@ -507,6 +521,11 @@ export function CommandPalette({ children }: { children: ReactNode }) {
+           }
+           setOpen(open);
+         }}
++        onOpenChangeComplete={(open) => {
++          if (!open) {
++            closeCoordinator.takeDeferredAction()?.();
++          }
++        }}
+       >
+         {children}
+         <CommandPaletteDialog
+@@ -515,6 +534,8 @@ export function CommandPalette({ children }: { children: ReactNode }) {
+           setOpen={setOpen}
+           openOverlayMode={toggleMode}
+           clearOpenIntent={clearOpenIntent}
++          deferActionUntilClose={deferActionUntilClose}
++          shouldRestoreComposerFocus={closeCoordinator.consumeShouldRestoreFocus}
+         />
+       </CommandDialog>
+     </ComposerHandleContext>
+@@ -527,6 +548,8 @@ function CommandPaletteDialog(props: {
+   readonly setOpen: (open: boolean) => void;
+   readonly openOverlayMode: (mode: SearchOverlayMode) => void;
+   readonly clearOpenIntent: () => void;
++  readonly deferActionUntilClose: (action: () => void) => void;
++  readonly shouldRestoreComposerFocus: () => boolean;
+ }) {
+   const composerHandleRef = useComposerHandleContext();
+ 
+@@ -544,7 +567,9 @@ function CommandPaletteDialog(props: {
+       data-palette-mode={props.mode}
+       data-testid="command-palette"
+       finalFocus={() => {
+-        composerHandleRef?.current?.focusAtEnd();
++        if (props.shouldRestoreComposerFocus()) {
++          composerHandleRef?.current?.focusAtEnd();
++        }
+         return false;
+       }}
+       onBackdropPointerDown={() => {
+@@ -561,6 +586,7 @@ function CommandPaletteDialog(props: {
+           setOpen={props.setOpen}
+           openOverlayMode={props.openOverlayMode}
+           clearOpenIntent={props.clearOpenIntent}
++          deferActionUntilClose={props.deferActionUntilClose}
+         />
+       )}
+     </CommandDialogPopup>
+@@ -572,6 +598,7 @@ function OpenCommandPaletteDialog(props: {
+   readonly setOpen: (open: boolean) => void;
+   readonly openOverlayMode: (mode: SearchOverlayMode) => void;
+   readonly clearOpenIntent: () => void;
++  readonly deferActionUntilClose: (action: () => void) => void;
+ }) {
+   const navigate = useNavigate();
+   const pathname = useLocation({ select: (location) => location.pathname });
+@@ -1619,6 +1646,7 @@ function OpenCommandPaletteDialog(props: {
+       title: "Search current thread",
+       icon: <TextSearchIcon className={ITEM_ICON_CLASS} />,
+       shortcutCommand: "chat.search",
++      deferRunUntilClosed: true,
+       run: async () => {
+         openSessionSearch();
+       },
+@@ -2344,19 +2372,26 @@ function OpenCommandPaletteDialog(props: {
+       return;
+     }
+ 
++    const runItem = () => {
++      void item.run().catch((error: unknown) => {
++        toastManager.add(
++          stackedThreadToast({
++            type: "error",
++            title: "Unable to run command",
++            description: error instanceof Error ? error.message : "An unexpected error occurred.",
++          }),
++        );
++      });
++    };
++
++    if (!item.keepOpen && item.deferRunUntilClosed) {
++      props.deferActionUntilClose(runItem);
++      return;
++    }
+     if (!item.keepOpen) {
+       setOpen(false);
+     }
+-
+-    void item.run().catch((error: unknown) => {
+-      toastManager.add(
+-        stackedThreadToast({
+-          type: "error",
+-          title: "Unable to run command",
+-          description: error instanceof Error ? error.message : "An unexpected error occurred.",
+-        }),
+-      );
+-    });
++    runItem();
+   }
+ 
+   const handleOpenProjectFromFileManager = useCallback(async () => {
+diff --git a/apps/web/src/components/chat/MessagesTimeline.logic.ts b/apps/web/src/components/chat/MessagesTimeline.logic.ts
+index 23bea5410..3c3f4c4b5 100644
+--- a/apps/web/src/components/chat/MessagesTimeline.logic.ts
++++ b/apps/web/src/components/chat/MessagesTimeline.logic.ts
+@@ -374,7 +374,7 @@ interface TurnFold {
+  * user sends a message, the previous turn is still the "active" one until the
+  * server creates the new turn, and folding must not flicker through that window.
+  */
+-function deriveUnsettledTurnId(
++export function deriveUnsettledTurnId(
+   latestTurn: TimelineLatestTurn | null,
+   runningTurnId: TurnId | null,
+ ): TurnId | null {
+@@ -388,6 +388,30 @@ function deriveUnsettledTurnId(
+   return isSettled ? null : latestTurn.turnId;
+ }
+ 
++export interface TimelineWorkVisibilityContext {
++  readonly isWorking: boolean;
++  readonly unsettledTurnId: TurnId | null;
++}
++
++export function workEntryIsInActiveTimelineRun(
++  entry: WorkLogEntry,
++  context: TimelineWorkVisibilityContext,
++): boolean {
++  return (
++    context.isWorking &&
++    context.unsettledTurnId !== null &&
++    entry.toolLifecycleStatus === "inProgress" &&
++    entry.turnId === context.unsettledTurnId
++  );
++}
++
++export function workEntryIsVisibleInTimelineGroup(
++  entry: WorkLogEntry,
++  context: TimelineWorkVisibilityContext,
++): boolean {
++  return workEntryIsVisibleInGroup(entry, workEntryIsInActiveTimelineRun(entry, context));
++}
++
+ function lastUserMessageIndex(timelineEntries: ReadonlyArray<TimelineEntry>): number {
+   return timelineEntries.findLastIndex(
+     (entry) => entry.kind === "message" && entry.message.role === "user",
+@@ -602,11 +626,12 @@ export function deriveMessagesTimelineRows(input: {
+     input.isWorking &&
+     index >= activeTurnHeaderIndex &&
+     (unsettledTurnId === null || timelineEntryTurnId(entry) === unsettledTurnId);
+-  const workEntryIsInActiveRun = (entry: WorkLogEntry) =>
+-    input.isWorking &&
+-    unsettledTurnId !== null &&
+-    entry.toolLifecycleStatus === "inProgress" &&
+-    entry.turnId === unsettledTurnId;
++  const workVisibilityContext = {
++    isWorking: input.isWorking,
++    unsettledTurnId,
++  } satisfies TimelineWorkVisibilityContext;
++  const entryIsInActiveRun = (entry: WorkLogEntry) =>
++    workEntryIsInActiveTimelineRun(entry, workVisibilityContext);
+   const activeToolEntries: Array<Extract<TimelineEntry, { kind: "work" }>> = [];
+   for (let index = input.timelineEntries.length - 1; index >= activeTurnHeaderIndex; index -= 1) {
+     const entry = input.timelineEntries[index]!;
+@@ -744,12 +769,12 @@ export function deriveMessagesTimelineRows(input: {
+       }
+       const visibleGroupedEntries = omitSupersededLifecycleMarkers(
+         groupedEntries.filter((entry) =>
+-          workEntryIsVisibleInGroup(entry, workEntryIsInActiveRun(entry)),
++          workEntryIsVisibleInTimelineGroup(entry, workVisibilityContext),
+         ),
+         (entry) => entry,
+       );
+       if (visibleGroupedEntries.length > 0) {
+-        const activeInProgressToolEntries = visibleGroupedEntries.filter(workEntryIsInActiveRun);
++        const activeInProgressToolEntries = visibleGroupedEntries.filter(entryIsInActiveRun);
+         if (activeInProgressToolEntries.length > 0) {
+           const groupId = workGroupId(timelineEntry.id, timelineEntry.entry);
+           const expanded =
+diff --git a/apps/web/src/components/chat/MessagesTimeline.tsx b/apps/web/src/components/chat/MessagesTimeline.tsx
+index 0c95066e2..195e4781c 100644
+--- a/apps/web/src/components/chat/MessagesTimeline.tsx
++++ b/apps/web/src/components/chat/MessagesTimeline.tsx
+@@ -352,10 +352,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
+     () =>
+       sessionSearchState.open
+         ? deriveSessionSearchMatches(timelineEntries, sessionSearchState.query, {
++            isWorking,
++            latestTurn,
++            runningTurnId,
+             workspaceRoot,
+           })
+         : [],
+-    [sessionSearchState.open, sessionSearchState.query, timelineEntries, workspaceRoot],
++    [
++      isWorking,
++      latestTurn,
++      runningTurnId,
++      sessionSearchState.open,
++      sessionSearchState.query,
++      timelineEntries,
++      workspaceRoot,
++    ],
+   );
+   const activeSessionSearchMatchIndex = resolveSessionSearchMatchIndex(
+     sessionSearchMatches,
+diff --git a/apps/web/src/components/chat/SessionSearchBar.tsx b/apps/web/src/components/chat/SessionSearchBar.tsx
+index 7f62113cd..372ad3da7 100644
+--- a/apps/web/src/components/chat/SessionSearchBar.tsx
++++ b/apps/web/src/components/chat/SessionSearchBar.tsx
+@@ -1,7 +1,7 @@
+ import { ChevronDownIcon, ChevronUpIcon, XIcon } from "lucide-react";
+ import { memo, useCallback, useEffect, useLayoutEffect, useRef } from "react";
+ 
+-import { SESSION_SEARCH_MAX_QUERY_LENGTH } from "./sessionSearch";
++import { handleSessionSearchKeyDown, SESSION_SEARCH_MAX_QUERY_LENGTH } from "./sessionSearch";
+ 
+ export interface SessionSearchBarProps {
+   readonly query: string;
+@@ -41,19 +41,11 @@ export const SessionSearchBar = memo(function SessionSearchBar(props: SessionSea
+ 
+   const handleKeyDown = useCallback(
+     (event: React.KeyboardEvent<HTMLInputElement>) => {
+-      if (event.key === "Escape") {
+-        event.preventDefault();
+-        event.stopPropagation();
+-        props.onClose();
+-      } else if (event.key === "Enter" && event.shiftKey) {
+-        event.preventDefault();
+-        event.stopPropagation();
+-        props.onPrevious();
+-      } else if (event.key === "Enter") {
+-        event.preventDefault();
+-        event.stopPropagation();
+-        props.onNext();
+-      }
++      handleSessionSearchKeyDown(event, {
++        close: props.onClose,
++        next: props.onNext,
++        previous: props.onPrevious,
++      });
+     },
+     [props],
+   );
+diff --git a/apps/web/src/components/chat/sessionSearch.test.ts b/apps/web/src/components/chat/sessionSearch.test.ts
+index 0c65a36da..c77cc01d5 100644
+--- a/apps/web/src/components/chat/sessionSearch.test.ts
++++ b/apps/web/src/components/chat/sessionSearch.test.ts
+@@ -1,14 +1,16 @@
+-import { MessageId } from "@t3tools/contracts";
+-import { describe, expect, it } from "vite-plus/test";
++import { MessageId, TurnId } from "@t3tools/contracts";
++import { describe, expect, it, vi } from "vite-plus/test";
+ 
+ import type { TimelineEntry } from "../../session-logic";
+ import {
+   deriveSessionSearchMatches,
++  handleSessionSearchKeyDown,
+   INITIAL_SESSION_SEARCH_STATE,
+   navigateSessionSearchMatch,
+   reduceSessionSearchState,
+   resolveSessionSearchMatchIndex,
+ } from "./sessionSearch";
++import { deriveMessagesTimelineRows, findMessagesTimelineRowIndex } from "./MessagesTimeline.logic";
+ 
+ const CREATED_AT = "2026-09-02T00:00:00.000Z";
+ 
+@@ -57,6 +59,7 @@ const ENTRIES: ReadonlyArray<TimelineEntry> = [
+       command: "rg Needle apps/web",
+       detail: "Hidden expanded output",
+       tone: "tool",
++      toolLifecycleStatus: "completed",
+     },
+   },
+ ];
+@@ -99,6 +102,88 @@ describe("deriveSessionSearchMatches", () => {
+     expect(deriveSessionSearchMatches(ENTRIES, "rg needle")).toHaveLength(1);
+   });
+ 
++  it("indexes only activity entries that resolve to a rendered timeline row", () => {
++    const activeTurnId = TurnId.make("turn-active");
++    const entries: ReadonlyArray<TimelineEntry> = [
++      {
++        id: "stale-progress",
++        kind: "work",
++        createdAt: "2026-09-02T00:00:00.000Z",
++        entry: {
++          id: "stale-progress",
++          createdAt: "2026-09-02T00:00:00.000Z",
++          turnId: TurnId.make("turn-stale"),
++          label: "Needle stale progress",
++          tone: "tool",
++          toolLifecycleStatus: "inProgress",
++        },
++      },
++      {
++        id: "completed-activity",
++        kind: "work",
++        createdAt: "2026-09-02T00:00:01.000Z",
++        entry: {
++          id: "completed-activity",
++          createdAt: "2026-09-02T00:00:01.000Z",
++          label: "Needle completed activity",
++          tone: "tool",
++          toolLifecycleStatus: "completed",
++        },
++      },
++      {
++        id: "user-active",
++        kind: "message",
++        createdAt: "2026-09-02T00:00:02.000Z",
++        message: {
++          id: MessageId.make("user-active"),
++          role: "user",
++          text: "Run the next task",
++          turnId: null,
++          streaming: false,
++          createdAt: "2026-09-02T00:00:02.000Z",
++          updatedAt: "2026-09-02T00:00:02.000Z",
++        },
++      },
++      {
++        id: "active-progress",
++        kind: "work",
++        createdAt: "2026-09-02T00:00:03.000Z",
++        entry: {
++          id: "active-progress",
++          createdAt: "2026-09-02T00:00:03.000Z",
++          turnId: activeTurnId,
++          label: "Needle active progress",
++          tone: "tool",
++          toolLifecycleStatus: "inProgress",
++        },
++      },
++    ];
++    const timelineContext = {
++      isWorking: true,
++      latestTurn: null,
++      runningTurnId: activeTurnId,
++    } as const;
++    const activityMatches = deriveSessionSearchMatches(entries, "needle", timelineContext).filter(
++      (match) => match.kind === "activity",
++    );
++
++    expect(activityMatches.map((match) => match.entryId)).toEqual([
++      "completed-activity",
++      "active-progress",
++    ]);
++    for (const match of activityMatches) {
++      const rows = deriveMessagesTimelineRows({
++        timelineEntries: entries,
++        ...timelineContext,
++        revealedEntryId: match.entryId,
++        activeTurnStartedAt: null,
++        turnDiffSummaryByAssistantMessageId: new Map(),
++        revertTurnCountByUserMessageId: new Map(),
++      });
++      expect(findMessagesTimelineRowIndex(rows, match.entryId)).toBeGreaterThanOrEqual(0);
++    }
++  });
++
+   it("returns no matches for blank or missing queries", () => {
+     expect(deriveSessionSearchMatches(ENTRIES, "   ")).toEqual([]);
+     expect(deriveSessionSearchMatches(ENTRIES, "absent")).toEqual([]);
+@@ -163,3 +248,66 @@ describe("reduceSessionSearchState", () => {
+     });
+   });
+ });
++
++describe("handleSessionSearchKeyDown", () => {
++  function event(
++    key: string,
++    overrides: Partial<{
++      readonly shiftKey: boolean;
++      readonly keyCode: number;
++      readonly isComposing: boolean;
++    }> = {},
++  ) {
++    return {
++      key,
++      shiftKey: overrides.shiftKey ?? false,
++      keyCode: overrides.keyCode ?? 0,
++      nativeEvent: { isComposing: overrides.isComposing ?? false },
++      preventDefault: vi.fn(),
++      stopPropagation: vi.fn(),
++    };
++  }
++
++  it("routes Enter, Shift+Enter, and Escape after preventing browser handling", () => {
++    const actions = {
++      close: vi.fn(),
++      next: vi.fn(),
++      previous: vi.fn(),
++    };
++    const nextEvent = event("Enter");
++    const previousEvent = event("Enter", { shiftKey: true });
++    const closeEvent = event("Escape");
++
++    expect(handleSessionSearchKeyDown(nextEvent, actions)).toBe(true);
++    expect(handleSessionSearchKeyDown(previousEvent, actions)).toBe(true);
++    expect(handleSessionSearchKeyDown(closeEvent, actions)).toBe(true);
++    expect(actions.next).toHaveBeenCalledOnce();
++    expect(actions.previous).toHaveBeenCalledOnce();
++    expect(actions.close).toHaveBeenCalledOnce();
++    for (const handledEvent of [nextEvent, previousEvent, closeEvent]) {
++      expect(handledEvent.preventDefault).toHaveBeenCalledOnce();
++      expect(handledEvent.stopPropagation).toHaveBeenCalledOnce();
++    }
++  });
++
++  it.each([
++    ["Enter", { isComposing: true }],
++    ["Escape", { isComposing: true }],
++    ["Enter", { keyCode: 229 }],
++    ["Escape", { keyCode: 229 }],
++  ] as const)("ignores %s during IME composition", (key, overrides) => {
++    const composingEvent = event(key, overrides);
++    const actions = {
++      close: vi.fn(),
++      next: vi.fn(),
++      previous: vi.fn(),
++    };
++
++    expect(handleSessionSearchKeyDown(composingEvent, actions)).toBe(false);
++    expect(composingEvent.preventDefault).not.toHaveBeenCalled();
++    expect(composingEvent.stopPropagation).not.toHaveBeenCalled();
++    expect(actions.close).not.toHaveBeenCalled();
++    expect(actions.next).not.toHaveBeenCalled();
++    expect(actions.previous).not.toHaveBeenCalled();
++  });
++});
+diff --git a/apps/web/src/components/chat/sessionSearch.ts b/apps/web/src/components/chat/sessionSearch.ts
+index d7e8dc890..3faade10a 100644
+--- a/apps/web/src/components/chat/sessionSearch.ts
++++ b/apps/web/src/components/chat/sessionSearch.ts
+@@ -1,7 +1,12 @@
+ import { omitSupersededLifecycleMarkers } from "@t3tools/client-runtime/work-log/presentation";
+ 
+ import type { TimelineEntry } from "../../session-logic";
+-import { workEntryDisplayText, workEntryIsVisibleInGroup } from "./MessagesTimeline.logic";
++import {
++  deriveUnsettledTurnId,
++  type TimelineLatestTurn,
++  workEntryDisplayText,
++  workEntryIsVisibleInTimelineGroup,
++} from "./MessagesTimeline.logic";
+ 
+ export const SESSION_SEARCH_MAX_QUERY_LENGTH = 200;
+ 
+@@ -67,15 +72,73 @@ export function reduceSessionSearchState(
+   }
+ }
+ 
++export interface SessionSearchKeyboardEvent {
++  readonly key: string;
++  readonly shiftKey: boolean;
++  readonly keyCode: number;
++  readonly nativeEvent: {
++    readonly isComposing: boolean;
++  };
++  readonly preventDefault: () => void;
++  readonly stopPropagation: () => void;
++}
++
++export function handleSessionSearchKeyDown(
++  event: SessionSearchKeyboardEvent,
++  actions: {
++    readonly close: () => void;
++    readonly next: () => void;
++    readonly previous: () => void;
++  },
++): boolean {
++  if (event.nativeEvent.isComposing || event.keyCode === 229) {
++    return false;
++  }
++
++  const action =
++    event.key === "Escape"
++      ? actions.close
++      : event.key === "Enter"
++        ? event.shiftKey
++          ? actions.previous
++          : actions.next
++        : null;
++  if (action === null) {
++    return false;
++  }
++
++  event.preventDefault();
++  event.stopPropagation();
++  action();
++  return true;
++}
++
+ export function normalizeSessionSearchText(value: string): string {
+   return value.normalize("NFKC").toLowerCase();
+ }
+ 
+-function searchableWorkEntryIds(entries: ReadonlyArray<TimelineEntry>): ReadonlySet<string> {
++export interface SessionSearchTimelineContext {
++  readonly isWorking?: boolean;
++  readonly latestTurn?: TimelineLatestTurn | null;
++  readonly runningTurnId?: TimelineLatestTurn["turnId"] | null;
++  readonly workspaceRoot?: string | undefined;
++}
++
++function searchableWorkEntryIds(
++  entries: ReadonlyArray<TimelineEntry>,
++  options: SessionSearchTimelineContext | undefined,
++): ReadonlySet<string> {
++  const visibilityContext = {
++    isWorking: options?.isWorking ?? false,
++    unsettledTurnId: deriveUnsettledTurnId(
++      options?.latestTurn ?? null,
++      options?.runningTurnId ?? null,
++    ),
++  };
+   const visibleEntries = entries.flatMap((entry) =>
+     entry.kind === "work" &&
+     entry.entry.agentSpawn === undefined &&
+-    workEntryIsVisibleInGroup(entry.entry, true)
++    workEntryIsVisibleInTimelineGroup(entry.entry, visibilityContext)
+       ? [entry]
+       : [],
+   );
+@@ -110,14 +173,14 @@ function searchableEntryText(
+ export function deriveSessionSearchMatches(
+   entries: ReadonlyArray<TimelineEntry>,
+   rawQuery: string,
+-  options?: { readonly workspaceRoot?: string | undefined },
++  options?: SessionSearchTimelineContext,
+ ): SessionSearchMatch[] {
+   const query = normalizeSessionSearchText(rawQuery.trim());
+   if (query.length === 0) {
+     return [];
+   }
+ 
+-  const searchableWorkIds = searchableWorkEntryIds(entries);
++  const searchableWorkIds = searchableWorkEntryIds(entries, options);
+   const matches: SessionSearchMatch[] = [];
+   for (const entry of entries) {
+     const searchable = searchableEntryText(entry, searchableWorkIds, options?.workspaceRoot);

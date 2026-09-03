@@ -1,0 +1,210 @@
+diff --git a/apps/web/src/components/chat/MessagesTimeline.logic.ts b/apps/web/src/components/chat/MessagesTimeline.logic.ts
+index 3c3f4c4b5..cacbbe5dd 100644
+--- a/apps/web/src/components/chat/MessagesTimeline.logic.ts
++++ b/apps/web/src/components/chat/MessagesTimeline.logic.ts
+@@ -428,6 +428,51 @@ function timelineEntryTurnId(entry: TimelineEntry): TurnId | null {
+   return entry.kind === "work" ? (entry.entry.turnId ?? null) : null;
+ }
+ 
++export interface ActiveTimelineWorkState {
++  readonly activeTurnHeaderIndex: number;
++  readonly entries: ReadonlyArray<Extract<TimelineEntry, { kind: "work" }>>;
++}
++
++export function deriveActiveTimelineWorkState(
++  timelineEntries: ReadonlyArray<TimelineEntry>,
++  context: TimelineWorkVisibilityContext,
++): ActiveTimelineWorkState {
++  let activeTurnHeaderIndex = timelineEntries.length;
++  if (context.isWorking) {
++    const latestUserMessageIndex = lastUserMessageIndex(timelineEntries);
++    const firstOwnedAfterUser =
++      context.unsettledTurnId === null
++        ? -1
++        : timelineEntries.findIndex(
++            (entry, index) =>
++              index > latestUserMessageIndex &&
++              timelineEntryTurnId(entry) === context.unsettledTurnId,
++          );
++    activeTurnHeaderIndex =
++      firstOwnedAfterUser >= 0 ? firstOwnedAfterUser : latestUserMessageIndex + 1;
++  }
++
++  const entryBelongsToActiveTurn = (entry: TimelineEntry, index: number) =>
++    context.isWorking &&
++    index >= activeTurnHeaderIndex &&
++    (context.unsettledTurnId === null || timelineEntryTurnId(entry) === context.unsettledTurnId);
++  const entries: Array<Extract<TimelineEntry, { kind: "work" }>> = [];
++  for (let index = timelineEntries.length - 1; index >= activeTurnHeaderIndex; index -= 1) {
++    const entry = timelineEntries[index]!;
++    if (
++      !entryBelongsToActiveTurn(entry, index) ||
++      entry.kind !== "work" ||
++      entry.entry.agentSpawn !== undefined ||
++      entry.entry.tone === "error"
++    ) {
++      break;
++    }
++    entries.unshift(entry);
++  }
++
++  return { activeTurnHeaderIndex, entries };
++}
++
+ function workEntryIsActiveTurnActivity(entry: WorkLogEntry): boolean {
+   return (
+     entry.toolLifecycleStatus === "inProgress" ||
+@@ -609,42 +654,16 @@ export function deriveMessagesTimelineRows(input: {
+     }
+   }
+ 
+-  let activeTurnHeaderIndex = input.timelineEntries.length;
+-  if (input.isWorking) {
+-    const latestUserMessageIndex = lastUserMessageIndex(input.timelineEntries);
+-    const firstOwnedAfterUser =
+-      unsettledTurnId === null
+-        ? -1
+-        : input.timelineEntries.findIndex(
+-            (entry, index) =>
+-              index > latestUserMessageIndex && timelineEntryTurnId(entry) === unsettledTurnId,
+-          );
+-    activeTurnHeaderIndex =
+-      firstOwnedAfterUser >= 0 ? firstOwnedAfterUser : latestUserMessageIndex + 1;
+-  }
+-  const entryBelongsToActiveTurn = (entry: TimelineEntry, index: number) =>
+-    input.isWorking &&
+-    index >= activeTurnHeaderIndex &&
+-    (unsettledTurnId === null || timelineEntryTurnId(entry) === unsettledTurnId);
+   const workVisibilityContext = {
+     isWorking: input.isWorking,
+     unsettledTurnId,
+   } satisfies TimelineWorkVisibilityContext;
+   const entryIsInActiveRun = (entry: WorkLogEntry) =>
+     workEntryIsInActiveTimelineRun(entry, workVisibilityContext);
+-  const activeToolEntries: Array<Extract<TimelineEntry, { kind: "work" }>> = [];
+-  for (let index = input.timelineEntries.length - 1; index >= activeTurnHeaderIndex; index -= 1) {
+-    const entry = input.timelineEntries[index]!;
+-    if (
+-      !entryBelongsToActiveTurn(entry, index) ||
+-      entry.kind !== "work" ||
+-      entry.entry.agentSpawn !== undefined ||
+-      entry.entry.tone === "error"
+-    ) {
+-      break;
+-    }
+-    activeToolEntries.unshift(entry);
+-  }
++  const { activeTurnHeaderIndex, entries: activeToolEntries } = deriveActiveTimelineWorkState(
++    input.timelineEntries,
++    workVisibilityContext,
++  );
+   const visibleActiveToolEntries = omitSupersededLifecycleMarkers(
+     activeToolEntries.filter((entry) => workEntryIsVisibleInGroup(entry.entry, true)),
+     (entry) => entry.entry,
+diff --git a/apps/web/src/components/chat/sessionSearch.test.ts b/apps/web/src/components/chat/sessionSearch.test.ts
+index c77cc01d5..4a617b3d2 100644
+--- a/apps/web/src/components/chat/sessionSearch.test.ts
++++ b/apps/web/src/components/chat/sessionSearch.test.ts
+@@ -118,6 +118,19 @@ describe("deriveSessionSearchMatches", () => {
+           toolLifecycleStatus: "inProgress",
+         },
+       },
++      {
++        id: "stale-task-progress",
++        kind: "work",
++        createdAt: "2026-09-02T00:00:00.500Z",
++        entry: {
++          id: "stale-task-progress",
++          createdAt: "2026-09-02T00:00:00.500Z",
++          turnId: TurnId.make("turn-stale"),
++          label: "Needle stale task progress",
++          tone: "thinking",
++          sourceActivityKind: "task.progress",
++        },
++      },
+       {
+         id: "completed-activity",
+         kind: "work",
+@@ -157,6 +170,19 @@ describe("deriveSessionSearchMatches", () => {
+           toolLifecycleStatus: "inProgress",
+         },
+       },
++      {
++        id: "live-task-progress",
++        kind: "work",
++        createdAt: "2026-09-02T00:00:04.000Z",
++        entry: {
++          id: "live-task-progress",
++          createdAt: "2026-09-02T00:00:04.000Z",
++          turnId: activeTurnId,
++          label: "Needle live task progress",
++          tone: "thinking",
++          sourceActivityKind: "task.progress",
++        },
++      },
+     ];
+     const timelineContext = {
+       isWorking: true,
+@@ -170,7 +196,21 @@ describe("deriveSessionSearchMatches", () => {
+     expect(activityMatches.map((match) => match.entryId)).toEqual([
+       "completed-activity",
+       "active-progress",
++      "live-task-progress",
+     ]);
++    const liveRows = deriveMessagesTimelineRows({
++      timelineEntries: entries,
++      ...timelineContext,
++      activeTurnStartedAt: null,
++      turnDiffSummaryByAssistantMessageId: new Map(),
++      revertTurnCountByUserMessageId: new Map(),
++    });
++    const liveTaskProgressRow =
++      liveRows[findMessagesTimelineRowIndex(liveRows, "live-task-progress")];
++    expect(liveTaskProgressRow).toMatchObject({
++      kind: "work-live",
++      entry: { id: "live-task-progress" },
++    });
+     for (const match of activityMatches) {
+       const rows = deriveMessagesTimelineRows({
+         timelineEntries: entries,
+diff --git a/apps/web/src/components/chat/sessionSearch.ts b/apps/web/src/components/chat/sessionSearch.ts
+index 3faade10a..fe17525e5 100644
+--- a/apps/web/src/components/chat/sessionSearch.ts
++++ b/apps/web/src/components/chat/sessionSearch.ts
+@@ -2,9 +2,11 @@ import { omitSupersededLifecycleMarkers } from "@t3tools/client-runtime/work-log
+ 
+ import type { TimelineEntry } from "../../session-logic";
+ import {
++  deriveActiveTimelineWorkState,
+   deriveUnsettledTurnId,
+   type TimelineLatestTurn,
+   workEntryDisplayText,
++  workEntryIsVisibleInGroup,
+   workEntryIsVisibleInTimelineGroup,
+ } from "./MessagesTimeline.logic";
+ 
+@@ -135,13 +137,18 @@ function searchableWorkEntryIds(
+       options?.runningTurnId ?? null,
+     ),
+   };
+-  const visibleEntries = entries.flatMap((entry) =>
+-    entry.kind === "work" &&
+-    entry.entry.agentSpawn === undefined &&
+-    workEntryIsVisibleInTimelineGroup(entry.entry, visibilityContext)
+-      ? [entry]
+-      : [],
++  const activeTailEntryIds = new Set(
++    deriveActiveTimelineWorkState(entries, visibilityContext).entries.map((entry) => entry.id),
+   );
++  const visibleEntries = entries.flatMap((entry) => {
++    if (entry.kind !== "work" || entry.entry.agentSpawn !== undefined) {
++      return [];
++    }
++    const visible = activeTailEntryIds.has(entry.id)
++      ? workEntryIsVisibleInGroup(entry.entry, true)
++      : workEntryIsVisibleInTimelineGroup(entry.entry, visibilityContext);
++    return visible ? [entry] : [];
++  });
+   return new Set(
+     omitSupersededLifecycleMarkers(visibleEntries, (entry) => entry.entry).map((entry) => entry.id),
+   );

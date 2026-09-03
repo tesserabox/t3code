@@ -1,6 +1,8 @@
 {
   "slug": "copilot-cli-provider",
-  "completed_at": "2026-04-18T01:38:21Z",
-  "base_commit": "f297e30e4c0fe044ba5cbed7679bfcba134526fe",
-  "has_patch": true
+  "completed_at": "2026-09-02T20:08:36Z",
+  "base_commit": "d01f4d65fd45a2f018019895da595142aeb106eb",
+  "has_patch": true,
+  "validation_status": "passed",
+  "validation_notes": "tpatch test — command: pnpm exec vp test run packages/contracts/src/settings.test.ts packages/contracts/src/providerRuntime.test.ts apps/server/src/provider/Drivers/CopilotDriver.test.ts apps/server/src/provider/Layers/copilotClientOptions.test.ts apps/server/src/provider/Layers/CopilotProvider.test.ts apps/server/src/provider/Layers/CopilotAdapter.test.ts apps/server/src/provider/Layers/ProviderInstanceRegistryHydration.test.ts apps/server/src/textGeneration/CopilotTextGeneration.test.ts apps/web/src/components/settings/ProviderSettingsForm.test.ts apps/web/src/components/settings/SettingsPanels.logic.test.ts apps/web/src/components/chat/providerIconUtils.test.ts scripts/lib/cli-external-packages.test.ts"
 }

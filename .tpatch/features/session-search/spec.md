@@ -1,46 +1,41 @@
 # Spec: session-search
 
-## Acceptance Criteria
+## Phase 0 acceptance criteria on v0.0.38
 
-1. **Keybinding**: `Cmd+F` (Mac) / `Ctrl+F` (Windows/Linux) opens a search bar within the chat view
-2. **Search bar**: Floating input at the top of the message area with:
-   - Text input field with placeholder "Search in thread..."
-   - Match count indicator ("3 of 12 matches")
-   - Up/Down navigation arrows to jump between matches
-   - Close button (Escape also closes)
-3. **Search scope**: Searches across:
-   - User message text
-   - Assistant message text (rendered markdown source)
-   - Work log entry labels and details
-   - Tool output summaries
-4. **Highlighting**: Matched text is visually highlighted in the message timeline
-5. **Navigation**: Up/Down arrows or Enter/Shift+Enter scroll to and focus the next/previous match
-6. **Performance**: Search is debounced (200ms) and doesn't block the UI for large threads
-7. **Dismiss**: Escape key or close button dismisses the search bar and clears highlights
-8. `bun run typecheck` passes
+1. `Cmd+F` / `Ctrl+F` dispatches `chat.search` in the chat surface. The default
+   binding is disabled while the terminal or in-app preview owns focus.
+2. "Search current thread" is available from the command palette, and
+   `chat.search` appears in keybinding settings.
+3. Search covers loaded user and assistant message source, proposed plans, and
+   the text currently used to present non-superseded activity rows.
+4. Matching is case-insensitive, applies Unicode NFKC normalization, counts
+   every non-overlapping occurrence, and navigates deterministically with
+   next/previous wrap.
+5. Enter and Shift+Enter navigate while Escape closes. Re-running the command
+   focuses the existing search input. Closing or switching threads clears the
+   query and active result.
+6. Navigation reveals only the settled turn, activity group, long user
+   message, or proposed plan containing the active result. It scrolls
+   LegendList to that row without expanding every work group.
+7. Search navigation disables live-follow while active and leaves existing
+   timeline anchoring, pagination, and disclosure-position restoration in
+   control of ordinary scrolling.
+8. The active result uses an accessible row-level highlight and live result
+   count. Exact inline matched-text highlighting is deferred because current
+   message and plan content is rendered through markdown and several
+   specialized context renderers.
+9. Search is explicitly limited to the client’s loaded timeline window.
+   Threads initially load ten user turns; the search bar exposes the existing
+   bounded "Load earlier" pagination action (twenty turns per request) and
+   labels partial results as loaded-turn-only. No full-history claim is made.
+10. Pure tests cover row types, Unicode/case behavior, multiple occurrences,
+    wrap, query changes, no results, thread switch/close, and targeted reveal.
 
-## Out of Scope
+## Out of scope for Phase 0
 
-- Search across multiple threads (this is single-thread search)
-- Regex or advanced query syntax
-- Search in collapsed/hidden content (file diffs, images)
-- Persistent search history
-- Server-side search (all client-side)
-
-## Plan
-
-1. Register `mod+f` keybinding for `chat.search` command in `keybindings.ts`
-2. Create `SessionSearchBar.tsx` component (input + match count + navigation)
-3. Add search state to `ChatView.tsx` (query, matches, current match index)
-4. Add highlight wrapping in `MessagesTimeline.tsx` for matched text spans
-5. Wire Escape to dismiss, Enter to navigate
-
-## Files to Touch
-
-| File                                                | Change                                            |
-| --------------------------------------------------- | ------------------------------------------------- |
-| `apps/server/src/keybindings.ts`                    | Add `{ key: "mod+f", command: "chat.search" }`    |
-| `apps/web/src/components/chat/SessionSearchBar.tsx` | NEW — search input + navigation                   |
-| `apps/web/src/components/ChatView.tsx`              | Search state, toggle visibility, pass to timeline |
-| `apps/web/src/components/chat/MessagesTimeline.tsx` | Highlight matched text in messages                |
-| `apps/web/src/session-logic.ts`                     | Optional: search/filter utility for messages      |
+- A new server search contract or full-history occurrence index.
+- Regex, case toggles, or persistent search history.
+- Searching hidden tool detail bodies, file diffs, images, or superseded
+  lifecycle markers.
+- Exact inline highlighting inside rendered markdown.
+- Mobile keybinding parity.

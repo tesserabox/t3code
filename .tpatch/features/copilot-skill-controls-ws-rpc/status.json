@@ -13,11 +13,5 @@
     "base_commit": "3faaef87d334c1df5744604c2c634c15679efa5b",
     "has_patch": true
   },
-  "reconcile": {},
-  "depends_on": [
-    {
-      "slug": "copilot-skill-controls",
-      "kind": "hard"
-    }
-  ]
+  "reconcile": {}
 }

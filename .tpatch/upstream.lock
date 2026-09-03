@@ -1,6 +1,6 @@
 # Upstream Lock
-# Updated by tpatch reconcile at 2026-07-29T16:58:28Z
+# Normalized by tpatch doctor; remote, branch, and commit are preserved.
 remote: "upstream"
 branch: "main"
-commit: "85a89868703530e03c5e79797c7b952c684bd222"
+commit: "c0995d2eaf8ec787b3318ed1169ae266ed1529f8"
 url: "https://github.com/pingdotgg/t3code.git"

@@ -1,9 +1,20 @@
- .tpatch/FEATURES.md                                |    4 +-
- .../artifacts/apply-session.json                   |    6 +-
- .../artifacts/post-apply-diff.txt                  |   46 +-
- .../artifacts/post-apply.patch                     | 4847 +-------------------
- .../artifacts/recipe-stale.json                    |    4 +-
- .tpatch/features/copilot-skill-controls/record.md  |   22 +-
- .../features/copilot-skill-controls/status.json    |   14 +-
- .../session-search/artifacts/post-apply.patch      |   74 +-
- 8 files changed, 248 insertions(+), 4769 deletions(-)
+ .../artifacts/patch-generations.json               | 127 +++-
+ .../session-search/artifacts/post-apply-diff.txt   |  28 +-
+ .../session-search/artifacts/post-apply.patch      | 707 ++++++---------------
+ .tpatch/features/session-search/record.md          |  45 +-
+ .tpatch/features/session-search/spec.md            |  83 ++-
+ .tpatch/features/session-search/status.json        |   8 +-
+ .../src/components/CommandPalette.logic.test.ts    |  31 +
+ apps/web/src/components/CommandPalette.logic.ts    |  36 ++
+ apps/web/src/components/CommandPalette.tsx         |  72 ++-
+ .../components/chat/MessagesTimeline.logic.test.ts | 184 ++++++
+ .../src/components/chat/MessagesTimeline.logic.ts  | 205 ++++--
+ apps/web/src/components/chat/MessagesTimeline.tsx  | 181 ++++--
+ apps/web/src/components/chat/ProposedPlanCard.tsx  |  13 +-
+ .../settings/KeybindingsSettings.logic.test.ts     |   1 +
+ apps/web/src/keybindings.test.ts                   |  40 ++
+ apps/web/src/routes/_chat.tsx                      |  11 +
+ packages/contracts/src/keybindings.test.ts         |   7 +
+ packages/contracts/src/keybindings.ts              |   1 +
+ packages/shared/src/keybindings.ts                 |   1 +
+ 19 files changed, 1097 insertions(+), 684 deletions(-)

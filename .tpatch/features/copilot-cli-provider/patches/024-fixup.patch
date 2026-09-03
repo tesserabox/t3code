@@ -1,0 +1,275 @@
+diff --git a/apps/server/src/provider/Layers/CopilotAdapter.ts b/apps/server/src/provider/Layers/CopilotAdapter.ts
+index c474123fd..f3256e4ba 100644
+--- a/apps/server/src/provider/Layers/CopilotAdapter.ts
++++ b/apps/server/src/provider/Layers/CopilotAdapter.ts
+@@ -1410,7 +1410,7 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+             title: tool?.toolName ?? "Copilot tool",
+             ...(detail ? { detail } : {}),
+             data: {
+-              ...(tool?.data ?? {}),
++              ...tool?.data,
+               ...toolResultData(event),
+             },
+             ...(tool?.agentId ? { agentId: tool.agentId } : {}),
+diff --git a/apps/server/src/provider/Layers/CopilotProvider.test.ts b/apps/server/src/provider/Layers/CopilotProvider.test.ts
+index 055143893..442522b52 100644
+--- a/apps/server/src/provider/Layers/CopilotProvider.test.ts
++++ b/apps/server/src/provider/Layers/CopilotProvider.test.ts
+@@ -88,8 +88,74 @@ describe("CopilotProvider", () => {
+     }),
+   );
+ 
++  it.effect("preserves the primary status failure when cleanup also fails", () =>
++    Effect.gen(function* () {
++      let stops = 0;
++      const snapshot = yield* checkCopilotProviderStatus(
++        decodeSettings({ enabled: true }),
++        "/workspace/project",
++        undefined,
++        {
++          clientFactory: () => ({
++            start: async () => {},
++            stop: async () => {
++              stops += 1;
++              throw new Error("stop failed");
++            },
++            getStatus: async () => {
++              throw new Error("status failed");
++            },
++            getAuthStatus: async () => ({
++              isAuthenticated: true,
++              authType: "gh-cli",
++            }),
++            listModels: async () => [],
++          }),
++        },
++      );
++
++      NodeAssert.equal(stops, 1);
++      NodeAssert.equal(snapshot.status, "error");
++      NodeAssert.equal(snapshot.installed, true);
++      NodeAssert.match(snapshot.message ?? "", /status failed/u);
++      NodeAssert.doesNotMatch(snapshot.message ?? "", /stop failed/u);
++    }),
++  );
++
++  it.effect("reports cleanup failure when the status probe otherwise succeeds", () =>
++    Effect.gen(function* () {
++      let stops = 0;
++      const snapshot = yield* checkCopilotProviderStatus(
++        decodeSettings({ enabled: true }),
++        "/workspace/project",
++        undefined,
++        {
++          clientFactory: () => ({
++            start: async () => {},
++            stop: async () => {
++              stops += 1;
++              return [new Error("first stop failure"), new Error("second stop failure")];
++            },
++            getStatus: async () => ({ version: "1.0.75", protocolVersion: 1 }),
++            getAuthStatus: async () => ({
++              isAuthenticated: true,
++              authType: "gh-cli",
++            }),
++            listModels: async () => [model({ id: "gpt-test", name: "GPT Test" })],
++          }),
++        },
++      );
++
++      NodeAssert.equal(stops, 1);
++      NodeAssert.equal(snapshot.status, "error");
++      NodeAssert.equal(snapshot.installed, true);
++      NodeAssert.match(snapshot.message ?? "", /first stop failure; second stop failure/u);
++    }),
++  );
++
+   it.effect("distinguishes unauthenticated and startup failures", () =>
+     Effect.gen(function* () {
++      let missingStops = 0;
+       const unauthenticated = yield* checkCopilotProviderStatus(
+         decodeSettings({ enabled: true }),
+         "/workspace/project",
+@@ -118,7 +184,10 @@ describe("CopilotProvider", () => {
+             start: async () => {
+               throw new Error("ENOENT");
+             },
+-            stop: async () => [],
++            stop: async () => {
++              missingStops += 1;
++              return [];
++            },
+             getStatus: async () => ({ version: "1.0.75", protocolVersion: 1 }),
+             getAuthStatus: async () => ({ isAuthenticated: false }),
+             listModels: async () => [],
+@@ -131,6 +200,7 @@ describe("CopilotProvider", () => {
+       NodeAssert.equal(unauthenticated.message, "Sign in required");
+       NodeAssert.equal(missing.installed, false);
+       NodeAssert.match(missing.message ?? "", /ENOENT/u);
++      NodeAssert.equal(missingStops, 1);
+     }),
+   );
+ });
+diff --git a/apps/server/src/provider/Layers/CopilotProvider.ts b/apps/server/src/provider/Layers/CopilotProvider.ts
+index 058b01115..432750748 100644
+--- a/apps/server/src/provider/Layers/CopilotProvider.ts
++++ b/apps/server/src/provider/Layers/CopilotProvider.ts
+@@ -9,6 +9,7 @@ import { createModelCapabilities } from "@t3tools/shared/model";
+ import * as Data from "effect/Data";
+ import * as DateTime from "effect/DateTime";
+ import * as Effect from "effect/Effect";
++import * as Result from "effect/Result";
+ 
+ import {
+   buildSelectOptionDescriptor,
+@@ -134,29 +135,84 @@ export const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus"
+       cwd,
+       ...(environment ? { environment } : {}),
+     });
+-  let started = false;
+-  return yield* Effect.tryPromise({
++  const lifecycle: {
++    started: boolean;
++    cleanupFailure: CopilotProviderStatusError | undefined;
++  } = {
++    started: false,
++    cleanupFailure: undefined,
++  };
++  const probe = Effect.tryPromise({
+     try: async () => {
+-      try {
+-        await client.start();
+-        started = true;
+-        const [status, auth] = await Promise.all([client.getStatus(), client.getAuthStatus()]);
+-        const models = auth.isAuthenticated ? await client.listModels() : [];
+-        return { status, auth, models };
+-      } finally {
+-        const stopErrors = await client.stop();
+-        if (stopErrors.length > 0) {
+-          throw new AggregateError(stopErrors, "GitHub Copilot SDK cleanup failed.");
+-        }
+-      }
++      await client.start();
++      lifecycle.started = true;
++      const [status, auth] = await Promise.all([client.getStatus(), client.getAuthStatus()]);
++      const models = auth.isAuthenticated ? await client.listModels() : [];
++      return { status, auth, models };
+     },
+     catch: (cause) =>
+       new CopilotProviderStatusError({
+         detail: cause instanceof Error ? cause.message : String(cause),
+-        started,
++        started: lifecycle.started,
+         cause,
+       }),
+-  }).pipe(
++  });
++  const cleanup = Effect.fn("checkCopilotProviderStatus.cleanup")(function* () {
++    const stopResult = yield* Effect.tryPromise({
++      try: () => client.stop(),
++      catch: (cause) =>
++        new CopilotProviderStatusError({
++          detail: `GitHub Copilot SDK cleanup failed: ${
++            cause instanceof Error ? cause.message : String(cause)
++          }`,
++          started: lifecycle.started,
++          cause,
++        }),
++    }).pipe(Effect.result);
++    if (Result.isFailure(stopResult)) {
++      lifecycle.cleanupFailure = stopResult.failure;
++      return;
++    }
++    if (stopResult.success.length === 0) return;
++
++    const cause = new AggregateError(stopResult.success, "GitHub Copilot SDK cleanup failed.");
++    const details = stopResult.success
++      .map((error) => error.message.trim())
++      .filter((detail) => detail.length > 0)
++      .join("; ");
++    lifecycle.cleanupFailure = new CopilotProviderStatusError({
++      detail:
++        details.length > 0
++          ? `GitHub Copilot SDK cleanup failed: ${details}`
++          : "GitHub Copilot SDK cleanup failed.",
++      started: lifecycle.started,
++      cause,
++    });
++  });
++  const statusCheck = Effect.gen(function* () {
++    const probeResult = yield* Effect.acquireUseRelease(
++      Effect.void,
++      () => probe,
++      () => cleanup(),
++    ).pipe(Effect.result);
++    if (Result.isFailure(probeResult)) {
++      const primaryFailure = probeResult.failure;
++      if (!lifecycle.cleanupFailure) return yield* primaryFailure;
++      return yield* new CopilotProviderStatusError({
++        detail: primaryFailure.detail,
++        started: primaryFailure.started,
++        cause: new AggregateError(
++          [primaryFailure, lifecycle.cleanupFailure],
++          "GitHub Copilot status check and cleanup both failed.",
++          { cause: primaryFailure },
++        ),
++      });
++    }
++    if (lifecycle.cleanupFailure) return yield* lifecycle.cleanupFailure;
++    return probeResult.success;
++  });
++
++  return yield* statusCheck.pipe(
+     Effect.map(({ auth, models, status }) =>
+       buildServerProvider({
+         presentation: COPILOT_PRESENTATION,
+diff --git a/apps/server/src/textGeneration/CopilotTextGeneration.ts b/apps/server/src/textGeneration/CopilotTextGeneration.ts
+index cbeed4629..986325dfb 100644
+--- a/apps/server/src/textGeneration/CopilotTextGeneration.ts
++++ b/apps/server/src/textGeneration/CopilotTextGeneration.ts
+@@ -111,11 +111,11 @@ function copilotReasoningEffort(
+   }
+ }
+ 
+-export const makeCopilotTextGeneration = Effect.fn("makeCopilotTextGeneration")(function* (
++function makeCopilotTextGenerationService(
+   settings: CopilotSettings,
+   environment?: NodeJS.ProcessEnv,
+   options: CopilotTextGenerationOptions = {},
+-) {
++): TextGeneration.TextGeneration["Service"] {
+   const deadline = (value: number | undefined, fallback: number) =>
+     value !== undefined && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : fallback;
+   const createSessionTimeoutMs = deadline(
+@@ -461,4 +461,13 @@ export const makeCopilotTextGeneration = Effect.fn("makeCopilotTextGeneration")(
+     generateBranchName,
+     generateThreadTitle,
+   } satisfies TextGeneration.TextGeneration["Service"];
+-});
++}
++
++export const makeCopilotTextGeneration = Effect.fn("makeCopilotTextGeneration")(
++  (
++    settings: CopilotSettings,
++    environment?: NodeJS.ProcessEnv,
++    options: CopilotTextGenerationOptions = {},
++  ): Effect.Effect<TextGeneration.TextGeneration["Service"]> =>
++    Effect.sync(() => makeCopilotTextGenerationService(settings, environment, options)),
++);
+diff --git a/scripts/lib/cli-external-packages.test.ts b/scripts/lib/cli-external-packages.test.ts
+index 095e43689..fa8b5502f 100644
+--- a/scripts/lib/cli-external-packages.test.ts
++++ b/scripts/lib/cli-external-packages.test.ts
+@@ -197,9 +197,9 @@ it.layer(NodeServices.layer)("external package dependency closure", (it) => {
+         if (!manifest) continue;
+ 
+         const declared = {
+-          ...(manifest.dependencies ?? {}),
+-          ...(manifest.optionalDependencies ?? {}),
+-          ...(manifest.peerDependencies ?? {}),
++          ...manifest.dependencies,
++          ...manifest.optionalDependencies,
++          ...manifest.peerDependencies,
+         };
+         for (const dependency of Object.keys(declared)) {
+           if (!isRuntimeExternal(dependency)) {

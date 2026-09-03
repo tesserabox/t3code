@@ -16,7 +16,7 @@ max_retries: 2
 max_tokens_implement: 16384
 
 # Shell command run by `tpatch test <slug>` (e.g. "go test ./...", "bun test")
-test_command: "bun run --filter t3 build"
+test_command: "pnpm exec vp run --filter t3 --filter @t3tools/contracts --filter @t3tools/shared --filter @t3tools/web --filter @t3tools/mobile --filter @t3tools/scripts typecheck"
 
 # Feature dependency DAG (ADR-011). Default false until v0.6.0.
 features_dependencies: true

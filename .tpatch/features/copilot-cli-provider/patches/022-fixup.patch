@@ -1,0 +1,155 @@
+diff --git a/apps/server/src/textGeneration/CopilotTextGeneration.test.ts b/apps/server/src/textGeneration/CopilotTextGeneration.test.ts
+index 4596e1ac9..f0a2fadd6 100644
+--- a/apps/server/src/textGeneration/CopilotTextGeneration.test.ts
++++ b/apps/server/src/textGeneration/CopilotTextGeneration.test.ts
+@@ -55,6 +55,7 @@ it.effect("generates all bounded text operations with ambient features disabled"
+       decodeSettings({ enabled: true }),
+       undefined,
+       {
++        createSessionTimeoutMs: 100,
+         clientFactory: () => ({
+           start: async () => {},
+           stop: async () => {
+@@ -159,6 +160,67 @@ it.effect("generates all bounded text operations with ambient features disabled"
+   }),
+ );
+ 
++it.effect("bounds hanging session creation and force-stops without double cleanup", () =>
++  Effect.gen(function* () {
++    let markCreateCalled: (() => void) | undefined;
++    const createCalled = new Promise<void>((resolve) => {
++      markCreateCalled = resolve;
++    });
++    const lifecycleCalls: string[] = [];
++    const textGeneration = yield* makeCopilotTextGeneration(
++      decodeSettings({ enabled: true }),
++      undefined,
++      {
++        createSessionTimeoutMs: 100,
++        cleanupDeadlines: {
++          clientStopMs: 100,
++          forceStopMs: 100,
++        },
++        clientFactory: () => ({
++          start: async () => {
++            lifecycleCalls.push("start");
++          },
++          stop: async () => {
++            lifecycleCalls.push("stop");
++            return [];
++          },
++          forceStop: async () => {
++            lifecycleCalls.push("force-stop");
++          },
++          deleteSession: async () => {
++            lifecycleCalls.push("delete");
++          },
++          createSession: async () => {
++            lifecycleCalls.push("create");
++            markCreateCalled?.();
++            return neverPromise();
++          },
++        }),
++      },
++    );
++
++    const fiber = yield* textGeneration
++      .generateThreadTitle({
++        cwd: process.cwd(),
++        message: "Bound session creation",
++        modelSelection,
++      })
++      .pipe(Effect.result, Effect.forkChild);
++    yield* Effect.promise(() => createCalled);
++    yield* TestClock.adjust(100);
++    const result = yield* Fiber.join(fiber);
++
++    NodeAssert.equal(result._tag, "Failure");
++    if (Result.isFailure(result)) {
++      NodeAssert.equal(
++        result.failure.detail,
++        "GitHub Copilot text generation session creation timed out after 100ms.",
++      );
++    }
++    NodeAssert.deepEqual(lifecycleCalls, ["start", "create", "stop", "force-stop"]);
++  }),
++);
++
+ it.effect("fails malformed output while still disconnecting the session and client", () =>
+   Effect.gen(function* () {
+     let disconnected = false;
+diff --git a/apps/server/src/textGeneration/CopilotTextGeneration.ts b/apps/server/src/textGeneration/CopilotTextGeneration.ts
+index d22e78cdd..6cce93810 100644
+--- a/apps/server/src/textGeneration/CopilotTextGeneration.ts
++++ b/apps/server/src/textGeneration/CopilotTextGeneration.ts
+@@ -29,6 +29,7 @@ import {
+ } from "./TextGenerationUtils.ts";
+ 
+ const GENERATION_TIMEOUT_MS = 180_000;
++const CREATE_SESSION_TIMEOUT_MS = 30_000;
+ const MAX_GENERATION_RESPONSE_CHARS = 20_000;
+ const DISCONNECT_TIMEOUT_MS = 5_000;
+ const DELETE_SESSION_TIMEOUT_MS = 5_000;
+@@ -48,6 +49,7 @@ type CopilotTextGenerationClient = Pick<
+ 
+ export interface CopilotTextGenerationOptions {
+   readonly timeoutMs?: number;
++  readonly createSessionTimeoutMs?: number;
+   readonly clientFactory?: (options: CopilotClientOptions) => CopilotTextGenerationClient;
+   readonly cleanupDeadlines?: {
+     readonly disconnectMs?: number;
+@@ -107,6 +109,10 @@ export const makeCopilotTextGeneration = Effect.fn("makeCopilotTextGeneration")(
+ ) {
+   const deadline = (value: number | undefined, fallback: number) =>
+     value !== undefined && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : fallback;
++  const createSessionTimeoutMs = deadline(
++    options.createSessionTimeoutMs,
++    CREATE_SESSION_TIMEOUT_MS,
++  );
+   const cleanupDeadlines = {
+     disconnectMs: deadline(options.cleanupDeadlines?.disconnectMs, DISCONNECT_TIMEOUT_MS),
+     deleteSessionMs: deadline(options.cleanupDeadlines?.deleteSessionMs, DELETE_SESSION_TIMEOUT_MS),
+@@ -131,6 +137,7 @@ export const makeCopilotTextGeneration = Effect.fn("makeCopilotTextGeneration")(
+     const client = options.clientFactory?.(clientOptions) ?? new CopilotClient(clientOptions);
+     const reasoningEffort = copilotReasoningEffort(input.modelSelection);
+     let session: CopilotTextGenerationSession | undefined;
++    let creationTimedOut = false;
+     const runRequest = <A>(
+       detail: string,
+       request: () => Promise<A>,
+@@ -192,6 +199,26 @@ export const makeCopilotTextGeneration = Effect.fn("makeCopilotTextGeneration")(
+             infiniteSessions: { enabled: false },
+             onPermissionRequest: () => ({ kind: "reject" }),
+           }),
++      ).pipe(
++        Effect.timeoutOption(createSessionTimeoutMs),
++        Effect.flatMap(
++          Option.match({
++            onNone: () =>
++              Effect.sync(() => {
++                creationTimedOut = true;
++              }).pipe(
++                Effect.andThen(
++                  Effect.fail(
++                    generationError(
++                      input.operation,
++                      `GitHub Copilot text generation session creation timed out after ${createSessionTimeoutMs}ms.`,
++                    ),
++                  ),
++                ),
++              ),
++            onSome: Effect.succeed,
++          }),
++        ),
+       );
+       session = createdSession;
+       const response = yield* runRequest("GitHub Copilot text generation failed.", () =>
+@@ -270,7 +297,7 @@ export const makeCopilotTextGeneration = Effect.fn("makeCopilotTextGeneration")(
+       }
+     }
+ 
+-    if (cleanupErrors.length > 0) {
++    if (cleanupErrors.length > 0 || creationTimedOut) {
+       const forceStopResult = yield* runCleanup("force-stop", cleanupDeadlines.forceStopMs, () =>
+         client.forceStop(),
+       ).pipe(Effect.result);

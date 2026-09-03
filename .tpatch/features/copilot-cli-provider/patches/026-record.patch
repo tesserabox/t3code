@@ -5092,10 +5092,10 @@ index 0fd88b426..723eb00a2 100644
        // Explicit `providerInstances` entry for this slot — user-authored
 diff --git a/apps/server/src/provider/Layers/copilotClientOptions.test.ts b/apps/server/src/provider/Layers/copilotClientOptions.test.ts
 new file mode 100644
-index 000000000..fc80e2e30
+index 000000000..cb2c4d43e
 --- /dev/null
 +++ b/apps/server/src/provider/Layers/copilotClientOptions.test.ts
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,87 @@
 +// @effect-diagnostics nodeBuiltinImport:off
 +import * as NodeAssert from "node:assert/strict";
 +import * as NodeOS from "node:os";
@@ -5112,9 +5112,6 @@ index 000000000..fc80e2e30
 +  makeCopilotClientOptions,
 +  normalizeCopilotCliPathOverride,
 +  resolveCopilotClientConfiguration,
-+  resolveElectronCopilotCliPath,
-+  resolveElectronUnpackedPath,
-+  type CopilotHostRuntime,
 +} from "./copilotClientOptions.ts";
 +
 +const decodeSettings = Schema.decodeSync(CopilotSettings);
@@ -5139,107 +5136,6 @@ index 000000000..fc80e2e30
 +    });
 +
 +    NodeAssert.ok(client);
-+  });
-+
-+  it("uses the unpacked native Copilot executable under Electron", () => {
-+    const packedPath =
-+      "/Applications/T3 Code.app/Contents/Resources/app.asar/node_modules/@github/copilot-darwin-arm64/copilot";
-+    const unpackedPath =
-+      "/Applications/T3 Code.app/Contents/Resources/app.asar.unpacked/node_modules/@github/copilot-darwin-arm64/copilot";
-+    const runtime: CopilotHostRuntime = {
-+      isElectron: true,
-+      platform: "darwin",
-+      architecture: "arm64",
-+      resolvePackage: (packageName) => {
-+        NodeAssert.equal(packageName, "@github/copilot-darwin-arm64");
-+        return packedPath;
-+      },
-+      pathExists: (path) => path === unpackedPath,
-+    };
-+
-+    NodeAssert.equal(resolveElectronUnpackedPath(packedPath), unpackedPath);
-+    NodeAssert.equal(resolveElectronCopilotCliPath(runtime), unpackedPath);
-+
-+    const options = makeCopilotClientOptions(
-+      {
-+        settings: decodeSettings({}),
-+        cwd: "/workspace/project",
-+        environment: { ELECTRON_RUN_AS_NODE: "1" },
-+      },
-+      runtime,
-+    );
-+
-+    NodeAssert.equal(options.connection?.kind, "stdio");
-+    NodeAssert.equal(
-+      options.connection?.kind === "stdio" ? options.connection.path : undefined,
-+      unpackedPath,
-+    );
-+  });
-+
-+  it("preserves an explicitly selected in-process Electron connection", () => {
-+    const runtime: CopilotHostRuntime = {
-+      isElectron: true,
-+      platform: "darwin",
-+      architecture: "arm64",
-+      resolvePackage: () => {
-+        throw new Error("The bundled executable should not be resolved.");
-+      },
-+      pathExists: () => false,
-+    };
-+    const options = makeCopilotClientOptions(
-+      {
-+        settings: decodeSettings({}),
-+        cwd: "/workspace/project",
-+        environment: { COPILOT_SDK_DEFAULT_CONNECTION: "inprocess" },
-+      },
-+      runtime,
-+    );
-+
-+    NodeAssert.equal(options.connection, undefined);
-+  });
-+
-+  it("resolves Windows server.asar executables and Linux musl fallbacks", () => {
-+    const windowsPacked =
-+      "C:\\Program Files\\T3 Code\\resources\\server.asar\\node_modules\\@github\\copilot-win32-x64\\copilot.exe";
-+    const windowsUnpacked =
-+      "C:\\Program Files\\T3 Code\\resources\\server.asar.unpacked\\node_modules\\@github\\copilot-win32-x64\\copilot.exe";
-+    NodeAssert.equal(
-+      resolveElectronCopilotCliPath({
-+        isElectron: true,
-+        platform: "win32",
-+        architecture: "x64",
-+        resolvePackage: (packageName) => {
-+          NodeAssert.equal(packageName, "@github/copilot-win32-x64");
-+          return windowsPacked;
-+        },
-+        pathExists: (path) => path === windowsUnpacked,
-+      }),
-+      windowsUnpacked,
-+    );
-+
-+    const attemptedPackages: string[] = [];
-+    const linuxUnpacked =
-+      "/opt/t3/resources/app.asar.unpacked/node_modules/@github/copilot-linuxmusl-arm64/copilot";
-+    NodeAssert.equal(
-+      resolveElectronCopilotCliPath({
-+        isElectron: true,
-+        platform: "linux",
-+        architecture: "arm64",
-+        resolvePackage: (packageName) => {
-+          attemptedPackages.push(packageName);
-+          if (packageName === "@github/copilot-linux-arm64") {
-+            throw new Error("glibc package unavailable");
-+          }
-+          return linuxUnpacked.replace("app.asar.unpacked", "app.asar");
-+        },
-+        pathExists: (path) => path === linuxUnpacked,
-+      }),
-+      linuxUnpacked,
-+    );
-+    NodeAssert.deepEqual(attemptedPackages, [
-+      "@github/copilot-linux-arm64",
-+      "@github/copilot-linuxmusl-arm64",
-+    ]);
 +  });
 +
 +  it("uses explicit runtime and COPILOT_HOME overrides", () => {
@@ -5289,13 +5185,11 @@ index 000000000..fc80e2e30
 +});
 diff --git a/apps/server/src/provider/Layers/copilotClientOptions.ts b/apps/server/src/provider/Layers/copilotClientOptions.ts
 new file mode 100644
-index 000000000..b54677112
+index 000000000..b7c4f71de
 --- /dev/null
 +++ b/apps/server/src/provider/Layers/copilotClientOptions.ts
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,79 @@
 +// @effect-diagnostics nodeBuiltinImport:off
-+import * as NodeFS from "node:fs";
-+import * as NodeModule from "node:module";
 +import * as NodeOS from "node:os";
 +import * as NodePath from "node:path";
 +
@@ -5303,74 +5197,6 @@ index 000000000..b54677112
 +import type { CopilotSettings } from "@t3tools/contracts";
 +
 +const DEFAULT_COMMAND_PATTERN = /^copilot(?:\.(?:exe|cmd|bat))?$/i;
-+const ASAR_PATH_SEGMENT_PATTERN = /([\\/][^\\/]+\.asar)(?=[\\/])/u;
-+
-+export interface CopilotHostRuntime {
-+  readonly isElectron: boolean;
-+  readonly platform: NodeJS.Platform;
-+  readonly architecture: string;
-+  readonly resolvePackage: (packageName: string) => string;
-+  readonly pathExists: (path: string) => boolean;
-+}
-+
-+function liveCopilotHostRuntime(): CopilotHostRuntime {
-+  const requireFromServer = NodeModule.createRequire(import.meta.url);
-+  const requireFromSdk = NodeModule.createRequire(requireFromServer.resolve("@github/copilot-sdk"));
-+  return {
-+    isElectron: typeof process.versions.electron === "string",
-+    // oxlint-disable-next-line t3code/no-global-process-runtime -- SDK options are synchronous and this descriptor is injectable in tests.
-+    platform: NodeOS.platform(),
-+    // oxlint-disable-next-line t3code/no-global-process-runtime -- SDK options are synchronous and this descriptor is injectable in tests.
-+    architecture: NodeOS.arch(),
-+    resolvePackage: (packageName) => requireFromSdk.resolve(packageName),
-+    pathExists: NodeFS.existsSync,
-+  };
-+}
-+
-+function copilotPlatformPackageNames(
-+  platform: NodeJS.Platform,
-+  architecture: string,
-+): ReadonlyArray<string> {
-+  if (architecture !== "arm64" && architecture !== "x64") {
-+    throw new Error(`Unsupported GitHub Copilot desktop architecture: ${architecture}`);
-+  }
-+  if (platform !== "darwin" && platform !== "linux" && platform !== "win32") {
-+    throw new Error(`Unsupported GitHub Copilot desktop platform: ${platform}`);
-+  }
-+  const variants = platform === "linux" ? ["linux", "linuxmusl"] : [platform];
-+  return variants.map((variant) => `@github/copilot-${variant}-${architecture}`);
-+}
-+
-+export function resolveElectronUnpackedPath(path: string): string {
-+  return path.replace(ASAR_PATH_SEGMENT_PATTERN, "$1.unpacked");
-+}
-+
-+export function resolveElectronCopilotCliPath(runtime: CopilotHostRuntime): string | undefined {
-+  if (!runtime.isElectron) {
-+    return undefined;
-+  }
-+
-+  const failures: string[] = [];
-+  for (const packageName of copilotPlatformPackageNames(runtime.platform, runtime.architecture)) {
-+    let resolvedPath: string;
-+    try {
-+      resolvedPath = runtime.resolvePackage(packageName);
-+    } catch (cause) {
-+      failures.push(`${packageName}: ${cause instanceof Error ? cause.message : String(cause)}`);
-+      continue;
-+    }
-+
-+    const executablePath = resolveElectronUnpackedPath(resolvedPath);
-+    if (runtime.pathExists(executablePath)) {
-+      return executablePath;
-+    }
-+    failures.push(`${packageName}: executable not found at ${executablePath}`);
-+  }
-+
-+  throw new Error(
-+    `Could not resolve the bundled GitHub Copilot executable for Electron. ${failures.join("; ")}`,
-+  );
-+}
 +
 +export function normalizeCopilotCliPathOverride(value: string | undefined): string | undefined {
 +  const trimmed = value?.trim();
@@ -5399,24 +5225,12 @@ index 000000000..b54677112
 +  readonly effectiveHome: string;
 +}
 +
-+export function resolveCopilotClientConfiguration(
-+  input: {
-+    readonly settings: CopilotSettings;
-+    readonly cwd: string;
-+    readonly environment?: NodeJS.ProcessEnv;
-+  },
-+  runtime: CopilotHostRuntime = liveCopilotHostRuntime(),
-+): ResolvedCopilotClientConfiguration {
-+  const configuredCliPath = normalizeCopilotCliPathOverride(input.settings.binaryPath);
-+  const environmentCliPath = input.environment?.COPILOT_CLI_PATH?.trim();
-+  const defaultConnection = input.environment?.COPILOT_SDK_DEFAULT_CONNECTION?.trim().toLowerCase();
-+  const bundledElectronCliPath =
-+    !configuredCliPath &&
-+    !environmentCliPath &&
-+    (defaultConnection === undefined || defaultConnection === "" || defaultConnection === "stdio")
-+      ? resolveElectronCopilotCliPath(runtime)
-+      : undefined;
-+  const cliPath = configuredCliPath ?? bundledElectronCliPath;
++export function resolveCopilotClientConfiguration(input: {
++  readonly settings: CopilotSettings;
++  readonly cwd: string;
++  readonly environment?: NodeJS.ProcessEnv;
++}): ResolvedCopilotClientConfiguration {
++  const cliPath = normalizeCopilotCliPathOverride(input.settings.binaryPath);
 +  const configuredHome = input.settings.homePath.trim();
 +  const environmentHome = input.environment?.COPILOT_HOME?.trim() ?? "";
 +  const homeCandidate =
@@ -5439,15 +5253,12 @@ index 000000000..b54677112
 +  return `githubCopilot:home:${effectiveHome}`;
 +}
 +
-+export function makeCopilotClientOptions(
-+  input: {
-+    readonly settings: CopilotSettings;
-+    readonly cwd: string;
-+    readonly environment?: NodeJS.ProcessEnv;
-+  },
-+  runtime?: CopilotHostRuntime,
-+): CopilotClientOptions {
-+  return resolveCopilotClientConfiguration(input, runtime).options;
++export function makeCopilotClientOptions(input: {
++  readonly settings: CopilotSettings;
++  readonly cwd: string;
++  readonly environment?: NodeJS.ProcessEnv;
++}): CopilotClientOptions {
++  return resolveCopilotClientConfiguration(input).options;
 +}
 +
 +export function createCopilotClient(input: {

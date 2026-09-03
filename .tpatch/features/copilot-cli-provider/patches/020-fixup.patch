@@ -1,0 +1,988 @@
+diff --git a/apps/server/src/provider/Layers/CopilotAdapter.test.ts b/apps/server/src/provider/Layers/CopilotAdapter.test.ts
+index d71b525d2..fb501efeb 100644
+--- a/apps/server/src/provider/Layers/CopilotAdapter.test.ts
++++ b/apps/server/src/provider/Layers/CopilotAdapter.test.ts
+@@ -27,6 +27,7 @@ import * as Fiber from "effect/Fiber";
+ import * as Layer from "effect/Layer";
+ import * as Schema from "effect/Schema";
+ import * as Stream from "effect/Stream";
++import * as TestClock from "effect/testing/TestClock";
+ 
+ import { ServerConfig } from "../../config.ts";
+ import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+@@ -40,6 +41,7 @@ const decodeSettings = Schema.decodeSync(CopilotSettings);
+ const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+ const INSTANCE_ID = ProviderInstanceId.make("githubCopilot");
+ const TEST_STATE_DIR = NodePath.join(process.cwd(), ".test-artifacts", "copilot-adapter");
++const neverPromise = <A>(): Promise<A> => new Promise(() => {});
+ 
+ function sessionEvent<T extends SessionEvent>(
+   value: Omit<T, "id" | "parentId" | "timestamp">,
+@@ -55,14 +57,23 @@ function sessionEvent<T extends SessionEvent>(
+ 
+ function makeFakeRuntime(input?: {
+   readonly resumeSessionId?: string;
++  readonly resumeAlreadyInUse?: boolean;
+   readonly tasks?: Awaited<ReturnType<CopilotSessionHandle["rpc"]["tasks"]["list"]>>["tasks"];
+   readonly skills?: Awaited<ReturnType<CopilotSessionHandle["rpc"]["skills"]["list"]>>["skills"];
++  readonly tasksList?: CopilotSessionHandle["rpc"]["tasks"]["list"];
++  readonly planRead?: CopilotSessionHandle["rpc"]["plan"]["read"];
++  readonly queuedCommandResponse?: CopilotSessionHandle["rpc"]["commands"]["respondToQueuedCommand"];
++  readonly disconnect?: CopilotSessionHandle["disconnect"];
++  readonly stop?: CopilotClientHandle["stop"];
++  readonly forceStop?: CopilotClientHandle["forceStop"];
+ }) {
+   let config: SessionConfig | undefined;
+   let created = 0;
+   let resumed = 0;
+   let disconnected = 0;
+   let stopped = 0;
++  let forceStopped = 0;
++  let tasksListCalls = 0;
+   let queuedCommandResponses = 0;
+   const sent: Array<Parameters<CopilotSessionHandle["send"]>[0]> = [];
+   const session: CopilotSessionHandle = {
+@@ -74,13 +85,17 @@ function makeFakeRuntime(input?: {
+     abort: async () => {},
+     disconnect: async () => {
+       disconnected += 1;
++      await input?.disconnect?.();
+     },
+     getEvents: async () => [],
+     setModel: async () => {},
+     rpc: {
+       commands: {
+-        respondToQueuedCommand: async () => {
++        respondToQueuedCommand: async (request) => {
+           queuedCommandResponses += 1;
++          if (input?.queuedCommandResponse) {
++            return input.queuedCommandResponse(request);
++          }
+           return { success: true };
+         },
+       },
+@@ -88,16 +103,27 @@ function makeFakeRuntime(input?: {
+       model: {
+         setReasoningEffort: async ({ reasoningEffort }) => ({ reasoningEffort }),
+       },
+-      plan: { read: async () => ({ exists: false, content: null, path: null }) },
++      plan: {
++        read: input?.planRead ?? (async () => ({ exists: false, content: null, path: null })),
++      },
+       skills: { list: async () => ({ skills: input?.skills ?? [] }) },
+-      tasks: { list: async () => ({ tasks: input?.tasks ?? [] }) },
++      tasks: {
++        list: async () => {
++          tasksListCalls += 1;
++          return input?.tasksList ? input.tasksList() : { tasks: input?.tasks ?? [] };
++        },
++      },
+     },
+   };
+   const client: CopilotClientHandle = {
+     start: async () => {},
+     stop: async () => {
+       stopped += 1;
+-      return [];
++      return input?.stop ? input.stop() : [];
++    },
++    forceStop: async () => {
++      forceStopped += 1;
++      await input?.forceStop?.();
+     },
+     createSession: async (nextConfig) => {
+       created += 1;
+@@ -107,6 +133,21 @@ function makeFakeRuntime(input?: {
+     resumeSession: async (_sessionId, nextConfig) => {
+       resumed += 1;
+       config = nextConfig;
++      if (input?.resumeAlreadyInUse) {
++        nextConfig.onEvent?.(
++          sessionEvent(
++            {
++              type: "session.resume",
++              data: {
++                alreadyInUse: true,
++                eventCount: 1,
++                resumeTime: "2026-07-29T12:00:00.000Z",
++              },
++            },
++            99,
++          ),
++        );
++      }
+       return session;
+     },
+   };
+@@ -120,6 +161,8 @@ function makeFakeRuntime(input?: {
+       resumed,
+       disconnected,
+       stopped,
++      forceStopped,
++      tasksListCalls,
+       queuedCommandResponses,
+     }),
+   };
+@@ -319,6 +362,46 @@ describe("CopilotAdapter", () => {
+     ),
+   );
+ 
++  it.effect("rejects a resume claim already owned by another SDK client", () =>
++    Effect.scoped(
++      Effect.gen(function* () {
++        const fake = makeFakeRuntime({
++          resumeSessionId: "owned-native-session",
++          resumeAlreadyInUse: true,
++        });
++        const adapter = yield* makeCopilotAdapter(decodeSettings({ enabled: true }), {
++          instanceId: INSTANCE_ID,
++          clientFactory: () => fake.client,
++        });
++        const threadId = ThreadId.make("thread-copilot-owned-resume");
++        const result = yield* adapter
++          .startSession({
++            threadId,
++            providerInstanceId: INSTANCE_ID,
++            cwd: process.cwd(),
++            runtimeMode: "full-access",
++            resumeCursor: { schemaVersion: 1, sessionId: "owned-native-session" },
++          })
++          .pipe(Effect.result);
++
++        NodeAssert.equal(result._tag, "Failure");
++        if (result._tag === "Failure") {
++          NodeAssert.match(result.failure.message, /already in use by another client/u);
++        }
++        NodeAssert.deepEqual(fake.counts(), {
++          created: 0,
++          resumed: 1,
++          disconnected: 1,
++          stopped: 0,
++          forceStopped: 0,
++          tasksListCalls: 0,
++          queuedCommandResponses: 0,
++        });
++        NodeAssert.equal(yield* adapter.hasSession(threadId), false);
++      }).pipe(Effect.provide(testLayer)),
++    ),
++  );
++
+   it.effect("bridges approvals, user input, and proposed plans", () =>
+     Effect.scoped(
+       Effect.gen(function* () {
+@@ -515,6 +598,20 @@ describe("CopilotAdapter", () => {
+               32,
+             ),
+           );
++          fake.emit(
++            sessionEvent(
++              {
++                type: "subagent.completed",
++                agentId: "agent-stream",
++                data: {
++                  agentDisplayName: "Explorer",
++                  agentName: "explore",
++                  toolCallId: "agent-stream-tool",
++                },
++              },
++              33,
++            ),
++          );
+           fake.emit(
+             sessionEvent(
+               {
+@@ -522,7 +619,7 @@ describe("CopilotAdapter", () => {
+                 ephemeral: true,
+                 data: { messageId: "root-message", deltaContent: "  * item\n\n" },
+               },
+-              33,
++              34,
+             ),
+           );
+           fake.emit(
+@@ -532,7 +629,7 @@ describe("CopilotAdapter", () => {
+                 ephemeral: true,
+                 data: { reasoningId: "root-reasoning", deltaContent: "\n  indented" },
+               },
+-              34,
++              35,
+             ),
+           );
+           fake.emit(
+@@ -541,7 +638,7 @@ describe("CopilotAdapter", () => {
+                 type: "assistant.message",
+                 data: { messageId: "root-message", content: "Root answer" },
+               },
+-              35,
++              36,
+             ),
+           );
+           fake.emit(
+@@ -550,7 +647,7 @@ describe("CopilotAdapter", () => {
+                 type: "assistant.turn_end",
+                 data: { turnId: "native-stream-turn", model: "gpt-test" },
+               },
+-              36,
++              37,
+             ),
+           );
+           yield* collected.awaitDone;
+@@ -577,6 +674,15 @@ describe("CopilotAdapter", () => {
+             agentProgress?.type === "task.progress" ? agentProgress.payload.summary : undefined,
+             "Agent result",
+           );
++          const agentCompletion = collected.events.find(
++            (event) => event.type === "task.completed" && event.payload.taskId === "agent-stream",
++          );
++          NodeAssert.equal(
++            agentCompletion?.type === "task.completed"
++              ? agentCompletion.payload.summary
++              : undefined,
++            "Agent result",
++          );
+         }).pipe(Effect.provide(testLayer)),
+       ),
+   );
+@@ -792,6 +898,227 @@ describe("CopilotAdapter", () => {
+     ),
+   );
+ 
++  it.effect("bounds event RPC drain time while preserving graceful disconnect", () =>
++    Effect.scoped(
++      Effect.gen(function* () {
++        let markTasksListCalled: (() => void) | undefined;
++        const tasksListCalled = new Promise<void>((resolve) => {
++          markTasksListCalled = resolve;
++        });
++        const fake = makeFakeRuntime({
++          tasksList: async () => {
++            markTasksListCalled?.();
++            return neverPromise();
++          },
++        });
++        const adapter = yield* makeCopilotAdapter(decodeSettings({ enabled: true }), {
++          instanceId: INSTANCE_ID,
++          clientFactory: () => fake.client,
++          deadlines: {
++            eventRpcMs: 100,
++            eventDrainMs: 200,
++            disconnectMs: 100,
++          },
++        });
++        const threadId = ThreadId.make("thread-copilot-bounded-event");
++        yield* adapter.startSession({
++          threadId,
++          providerInstanceId: INSTANCE_ID,
++          cwd: process.cwd(),
++          runtimeMode: "full-access",
++        });
++        fake.emit(
++          sessionEvent(
++            {
++              type: "session.background_tasks_changed",
++              ephemeral: true,
++              data: {},
++            },
++            60,
++          ),
++        );
++        yield* Effect.promise(() => tasksListCalled);
++        const stopFiber = yield* adapter
++          .stopSession(threadId)
++          .pipe(Effect.result, Effect.forkChild);
++        yield* TestClock.adjust(100);
++        const stopResult = yield* Fiber.join(stopFiber);
++
++        NodeAssert.equal(stopResult._tag, "Success");
++        NodeAssert.equal(fake.counts().tasksListCalls, 1);
++        NodeAssert.equal(fake.counts().disconnected, 1);
++        NodeAssert.equal(fake.counts().forceStopped, 0);
++      }).pipe(Effect.provide(testLayer)),
++    ),
++  );
++
++  it.effect("force-stops when the event semaphore cannot drain by its deadline", () =>
++    Effect.scoped(
++      Effect.gen(function* () {
++        const skillHandlingStarted = yield* Deferred.make<void>();
++        const releaseSkillHandling = yield* Deferred.make<void>();
++        const fake = makeFakeRuntime();
++        const adapter = yield* makeCopilotAdapter(decodeSettings({ enabled: true }), {
++          instanceId: INSTANCE_ID,
++          clientFactory: () => fake.client,
++          onSkillsChanged: ({ skills }) =>
++            skills.length === 0
++              ? Effect.void
++              : Deferred.succeed(skillHandlingStarted, undefined).pipe(
++                  Effect.andThen(Deferred.await(releaseSkillHandling)),
++                ),
++          deadlines: {
++            eventDrainMs: 100,
++            disconnectMs: 100,
++            forceStopMs: 100,
++          },
++        });
++        const threadId = ThreadId.make("thread-copilot-event-drain-timeout");
++        yield* adapter.startSession({
++          threadId,
++          providerInstanceId: INSTANCE_ID,
++          cwd: process.cwd(),
++          runtimeMode: "full-access",
++        });
++        fake.emit(
++          sessionEvent(
++            {
++              type: "session.skills_loaded",
++              ephemeral: true,
++              data: {
++                skills: [
++                  {
++                    name: "personal",
++                    description: "Personal skill",
++                    enabled: true,
++                    source: "personal-copilot",
++                    userInvocable: true,
++                    path: "/skills/personal/SKILL.md",
++                  },
++                ],
++              },
++            },
++            61,
++          ),
++        );
++        yield* Deferred.await(skillHandlingStarted);
++        const stopFiber = yield* adapter
++          .stopSession(threadId)
++          .pipe(Effect.result, Effect.forkChild);
++        yield* TestClock.adjust(100);
++        const stopResult = yield* Fiber.join(stopFiber);
++
++        NodeAssert.equal(stopResult._tag, "Failure");
++        NodeAssert.equal(fake.counts().disconnected, 0);
++        NodeAssert.equal(fake.counts().forceStopped, 1);
++        NodeAssert.equal(yield* adapter.hasSession(threadId), false);
++        yield* Deferred.succeed(releaseSkillHandling, undefined);
++        yield* Effect.yieldNow;
++      }).pipe(Effect.provide(testLayer)),
++    ),
++  );
++
++  it.effect("force-stops the shared client when session disconnect misses its deadline", () =>
++    Effect.scoped(
++      Effect.gen(function* () {
++        let markDisconnectCalled: (() => void) | undefined;
++        const disconnectCalled = new Promise<void>((resolve) => {
++          markDisconnectCalled = resolve;
++        });
++        const fake = makeFakeRuntime({
++          disconnect: async () => {
++            markDisconnectCalled?.();
++            return neverPromise();
++          },
++        });
++        const adapter = yield* makeCopilotAdapter(decodeSettings({ enabled: true }), {
++          instanceId: INSTANCE_ID,
++          clientFactory: () => fake.client,
++          deadlines: {
++            eventDrainMs: 200,
++            disconnectMs: 100,
++            forceStopMs: 100,
++          },
++        });
++        const firstThreadId = ThreadId.make("thread-copilot-disconnect-timeout");
++        const secondThreadId = ThreadId.make("thread-copilot-force-stop-sibling");
++        for (const threadId of [firstThreadId, secondThreadId]) {
++          yield* adapter.startSession({
++            threadId,
++            providerInstanceId: INSTANCE_ID,
++            cwd: process.cwd(),
++            runtimeMode: "full-access",
++          });
++        }
++
++        const stopFiber = yield* adapter
++          .stopSession(firstThreadId)
++          .pipe(Effect.result, Effect.forkChild);
++        yield* Effect.promise(() => disconnectCalled);
++        yield* TestClock.adjust(100);
++        const stopResult = yield* Fiber.join(stopFiber);
++
++        NodeAssert.equal(stopResult._tag, "Failure");
++        NodeAssert.equal(fake.counts().forceStopped, 1);
++        NodeAssert.equal(yield* adapter.hasSession(firstThreadId), false);
++        NodeAssert.equal(yield* adapter.hasSession(secondThreadId), false);
++      }).pipe(Effect.provide(testLayer)),
++    ),
++  );
++
++  it.effect("bounds finalizer stop and force-stop deadlines", () =>
++    Effect.gen(function* () {
++      let markStopCalled: (() => void) | undefined;
++      const stopCalled = new Promise<void>((resolve) => {
++        markStopCalled = resolve;
++      });
++      let markForceStopCalled: (() => void) | undefined;
++      const forceStopCalled = new Promise<void>((resolve) => {
++        markForceStopCalled = resolve;
++      });
++      const fake = makeFakeRuntime({
++        stop: async () => {
++          markStopCalled?.();
++          return neverPromise();
++        },
++        forceStop: async () => {
++          markForceStopCalled?.();
++          return neverPromise();
++        },
++      });
++      const scopedAdapter = Effect.scoped(
++        Effect.gen(function* () {
++          const adapter = yield* makeCopilotAdapter(decodeSettings({ enabled: true }), {
++            instanceId: INSTANCE_ID,
++            clientFactory: () => fake.client,
++            deadlines: {
++              disconnectMs: 100,
++              eventDrainMs: 200,
++              clientStopMs: 100,
++              forceStopMs: 50,
++            },
++          });
++          yield* adapter.startSession({
++            threadId: ThreadId.make("thread-copilot-finalizer-timeout"),
++            providerInstanceId: INSTANCE_ID,
++            cwd: process.cwd(),
++            runtimeMode: "full-access",
++          });
++        }).pipe(Effect.provide(testLayer)),
++      );
++      const scopeFiber = yield* scopedAdapter.pipe(Effect.forkChild);
++      yield* Effect.promise(() => stopCalled);
++      yield* TestClock.adjust(100);
++      yield* Effect.promise(() => forceStopCalled);
++      yield* TestClock.adjust(50);
++      yield* Fiber.join(scopeFiber);
++
++      NodeAssert.equal(fake.counts().disconnected, 1);
++      NodeAssert.equal(fake.counts().stopped, 1);
++      NodeAssert.equal(fake.counts().forceStopped, 1);
++    }),
++  );
++
+   it.effect("treats native shutdown as terminal and cannot resurrect the session", () =>
+     Effect.scoped(
+       Effect.gen(function* () {
+diff --git a/apps/server/src/provider/Layers/CopilotAdapter.ts b/apps/server/src/provider/Layers/CopilotAdapter.ts
+index 2a9e205ee..c474123fd 100644
+--- a/apps/server/src/provider/Layers/CopilotAdapter.ts
++++ b/apps/server/src/provider/Layers/CopilotAdapter.ts
+@@ -67,6 +67,11 @@ const USER_INPUT_ID = "answer";
+ const MAX_DETAIL_CHARS = 2_000;
+ const MAX_STREAM_CHARS = 8_000;
+ const MAX_RAW_STRING_CHARS = 4_000;
++const DEFAULT_EVENT_RPC_TIMEOUT_MS = 10_000;
++const DEFAULT_EVENT_DRAIN_TIMEOUT_MS = 15_000;
++const DEFAULT_DISCONNECT_TIMEOUT_MS = 5_000;
++const DEFAULT_CLIENT_STOP_TIMEOUT_MS = 10_000;
++const DEFAULT_FORCE_STOP_TIMEOUT_MS = 5_000;
+ const SENSITIVE_ARGUMENT_KEY = /(?:authorization|cookie|credential|password|secret|token)/iu;
+ 
+ type CopilotSessionRpc = CopilotSession["rpc"];
+@@ -104,6 +109,7 @@ export interface CopilotSessionHandle {
+ export interface CopilotClientHandle {
+   readonly start: () => Promise<void>;
+   readonly stop: () => Promise<ReadonlyArray<Error>>;
++  readonly forceStop: () => Promise<void>;
+   readonly createSession: (config: SessionConfig) => Promise<CopilotSessionHandle>;
+   readonly resumeSession: (
+     sessionId: string,
+@@ -121,6 +127,13 @@ export interface CopilotAdapterLiveOptions {
+     readonly skills: ReadonlyArray<ServerProviderSkill>;
+   }) => Effect.Effect<void>;
+   readonly onSessionClosed?: (threadId: ThreadId) => Effect.Effect<void>;
++  readonly deadlines?: {
++    readonly eventRpcMs?: number;
++    readonly eventDrainMs?: number;
++    readonly disconnectMs?: number;
++    readonly clientStopMs?: number;
++    readonly forceStopMs?: number;
++  };
+ }
+ 
+ interface PendingApproval {
+@@ -154,6 +167,7 @@ interface CopilotTaskState {
+   readonly role?: string;
+   readonly model?: string;
+   readonly toolUseId?: string;
++  latestResponse?: string;
+ }
+ 
+ interface CopilotUsageTotals {
+@@ -189,6 +203,8 @@ interface CopilotSessionContext {
+   lastPlanMarkdown: string | undefined;
+   turnUsage: CopilotTurnUsage | undefined;
+   omittedBinaryAssetWarningEmitted: boolean;
++  resumeAlreadyInUse: boolean;
++  exitEmitted: boolean;
+   stopped: boolean;
+ }
+ 
+@@ -724,6 +740,17 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+     options.clientFactory?.(clientOptions) ??
+     (new CopilotClient(clientOptions) as CopilotClientHandle);
+   let startPromise: Promise<void> | undefined;
++  let forceStopPromise: Promise<void> | undefined;
++  let clientUnavailableReason: string | undefined;
++  const deadline = (value: number | undefined, fallback: number) =>
++    value !== undefined && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : fallback;
++  const deadlines = {
++    eventRpcMs: deadline(options.deadlines?.eventRpcMs, DEFAULT_EVENT_RPC_TIMEOUT_MS),
++    eventDrainMs: deadline(options.deadlines?.eventDrainMs, DEFAULT_EVENT_DRAIN_TIMEOUT_MS),
++    disconnectMs: deadline(options.deadlines?.disconnectMs, DEFAULT_DISCONNECT_TIMEOUT_MS),
++    clientStopMs: deadline(options.deadlines?.clientStopMs, DEFAULT_CLIENT_STOP_TIMEOUT_MS),
++    forceStopMs: deadline(options.deadlines?.forceStopMs, DEFAULT_FORCE_STOP_TIMEOUT_MS),
++  };
+ 
+   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+   const randomUUID = crypto.randomUUIDv4.pipe(
+@@ -749,6 +776,9 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+     );
+   };
+   const ensureClientStarted = (): Promise<void> => {
++    if (clientUnavailableReason) {
++      return Promise.reject(new Error(clientUnavailableReason));
++    }
+     startPromise ??= client.start().catch((cause) => {
+       startPromise = undefined;
+       throw cause;
+@@ -876,6 +906,51 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+       cause,
+     });
+ 
++  const runSdkRequest = <A>(
++    method: string,
++    request: () => Promise<A>,
++    timeoutMs = deadlines.eventRpcMs,
++  ): Effect.Effect<A, ProviderAdapterRequestError> =>
++    Effect.tryPromise({
++      try: request,
++      catch: (cause) => toRequestError(method, cause),
++    }).pipe(
++      Effect.timeoutOption(timeoutMs),
++      Effect.flatMap(
++        Option.match({
++          onNone: () =>
++            Effect.fail(
++              toRequestError(
++                method,
++                new Error(`GitHub Copilot SDK request timed out after ${timeoutMs}ms.`),
++              ),
++            ),
++          onSome: Effect.succeed,
++        }),
++      ),
++    );
++
++  const forceStopClient = Effect.fn("CopilotAdapter.forceStopClient")(function* (reason: string) {
++    clientUnavailableReason ??= reason;
++    startPromise = undefined;
++    forceStopPromise ??= Promise.resolve().then(() => client.forceStop());
++    const forceStopExit = yield* Effect.tryPromise({
++      try: () => forceStopPromise!,
++      catch: (cause) => toRequestError("client.forceStop", cause),
++    }).pipe(Effect.timeoutOption(deadlines.forceStopMs), Effect.exit);
++    if (Exit.isFailure(forceStopExit)) {
++      yield* Effect.logError("GitHub Copilot client force-stop failed.", {
++        reason,
++        cause: forceStopExit.cause,
++      });
++    } else if (Option.isNone(forceStopExit.value)) {
++      yield* Effect.logError("GitHub Copilot client force-stop timed out.", {
++        reason,
++        timeoutMs: deadlines.forceStopMs,
++      });
++    }
++  });
++
+   const completeTurn = Effect.fn("CopilotAdapter.completeTurn")(function* (
+     context: CopilotSessionContext,
+     state: "completed" | "failed" | "interrupted",
+@@ -954,6 +1029,7 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+         skills: copilotInstanceSnapshotSkills(skills),
+       });
+     }
++    if (context.stopped) return;
+     if (input.some((skill) => skill.userInvocable && !skill.path)) {
+       yield* emit({
+         ...(yield* syntheticBase(
+@@ -1045,13 +1121,13 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+   ) {
+     const sdkSession = context.sdkSession;
+     if (!sdkSession) return;
+-    const listed = yield* Effect.tryPromise({
+-      try: () => sdkSession.rpc.tasks.list(),
+-      catch: (cause) => toRequestError("tasks.list", cause),
+-    });
++    const listed = yield* runSdkRequest("tasks.list", () => sdkSession.rpc.tasks.list());
++    if (context.stopped) return;
+     const listedIds = new Set<string>();
+     for (const task of listed.tasks) {
+       listedIds.add(task.id);
++      const latestResponse =
++        task.type === "agent" ? boundedContentText(task.latestResponse) : undefined;
+       const state: CopilotTaskState =
+         task.type === "agent"
+           ? {
+@@ -1063,6 +1139,7 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+                 ? { model: task.resolvedModel ?? task.model }
+                 : {}),
+               toolUseId: task.toolCallId,
++              ...(latestResponse ? { latestResponse } : {}),
+             }
+           : {
+               taskId: RuntimeTaskId.make(task.id),
+@@ -1163,6 +1240,10 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+           yield* emitTaskStarted(context, task, event.timestamp);
+           const summary = boundedContentText(event.data.content);
+           if (summary) {
++            const trackedTask = context.tasks.get(event.agentId);
++            if (trackedTask) {
++              trackedTask.latestResponse = summary;
++            }
+             yield* emit({
+               ...eventBase(context, event),
+               type: "task.progress",
+@@ -1436,10 +1517,8 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+       case "session.plan_changed": {
+         const sdkSession = context.sdkSession;
+         if (!sdkSession) return;
+-        const plan = yield* Effect.tryPromise({
+-          try: () => sdkSession.rpc.plan.read(),
+-          catch: (cause) => toRequestError("plan.read", cause),
+-        });
++        const plan = yield* runSdkRequest("plan.read", () => sdkSession.rpc.plan.read());
++        if (context.stopped) return;
+         if (plan.exists && plan.content) {
+           yield* emitPlan(context, plan.content, event.type, event.data);
+         }
+@@ -1523,7 +1602,9 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+           taskId,
+           status: event.type === "subagent.completed" ? "completed" : "failed",
+           summary:
+-            event.type === "subagent.failed" ? event.data.error : event.data.agentDisplayName,
++            event.type === "subagent.failed"
++              ? event.data.error
++              : context.tasks.get(taskId)?.latestResponse,
+           fallback: {
+             taskId: RuntimeTaskId.make(taskId),
+             taskType: event.data.agentName,
+@@ -1552,10 +1633,12 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+       case "system.notification": {
+         const notification = event.data.kind;
+         if (notification.type === "agent_completed") {
++          const task = context.tasks.get(notification.agentId);
+           yield* emitTaskCompleted(context, {
+             taskId: notification.agentId,
+             status: notification.status === "completed" ? "completed" : "failed",
+-            summary: notification.description,
++            summary:
++              notification.status === "completed" ? task?.latestResponse : notification.description,
+             fallback: {
+               taskId: RuntimeTaskId.make(notification.agentId),
+               taskType: notification.agentType,
+@@ -1668,14 +1751,14 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+             detail: boundedText(event.data.command),
+           },
+         });
+-        yield* Effect.tryPromise({
+-          try: () =>
+-            context.sdkSession!.rpc.commands.respondToQueuedCommand({
+-              requestId: event.data.requestId,
+-              result: { handled: false },
+-            }),
+-          catch: (cause) => toRequestError("commands.respondToQueuedCommand", cause),
+-        });
++        const sdkSession = context.sdkSession;
++        if (!sdkSession) return;
++        yield* runSdkRequest("commands.respondToQueuedCommand", () =>
++          sdkSession.rpc.commands.respondToQueuedCommand({
++            requestId: event.data.requestId,
++            result: { handled: false },
++          }),
++        );
+         return;
+       case "command.execute":
+         yield* emit({
+@@ -1858,15 +1941,8 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+     return Promise.resolve({ approved: false });
+   };
+ 
+-  const closeContextSerialized = Effect.fn("CopilotAdapter.closeContextSerialized")(function* (
++  const finalizeContextState = Effect.fn("CopilotAdapter.finalizeContextState")(function* (
+     context: CopilotSessionContext,
+-    input: {
+-      readonly disconnect: boolean;
+-      readonly event?: SessionEvent;
+-      readonly reason: string;
+-      readonly exitKind: "graceful" | "error";
+-      readonly recoverable?: boolean;
+-    },
+   ) {
+     if (context.stopped) return;
+     context.stopped = true;
+@@ -1885,47 +1961,122 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+     if (options.onSessionClosed) {
+       yield* options.onSessionClosed(context.session.threadId);
+     }
+-    const sdkSession = context.sdkSession;
+-    context.sdkSession = undefined;
+-    const disconnectExit =
+-      input.disconnect && sdkSession
+-        ? yield* Effect.tryPromise({
+-            try: () => sdkSession.disconnect(),
+-            catch: (cause) => toRequestError("session.disconnect", cause),
+-          }).pipe(Effect.exit)
+-        : Exit.void;
+     yield* updateSession(context, { status: "closed" }, "activeTurnId");
++  });
++
++  const emitContextExited = Effect.fn("CopilotAdapter.emitContextExited")(function* (
++    context: CopilotSessionContext,
++    input: {
++      readonly event?: SessionEvent;
++      readonly sessionId?: string;
++      readonly reason: string;
++      readonly exitKind: "graceful" | "error";
++      readonly recoverable?: boolean;
++    },
++  ) {
++    if (context.exitEmitted) return;
++    context.exitEmitted = true;
+     const base = input.event
+       ? eventBase(context, input.event)
+       : yield* syntheticBase(context, "session.stopped", {
+-          sessionId: sdkSession?.sessionId,
++          sessionId: input.sessionId,
+         });
+     yield* emit({
+       ...base,
+       type: "session.exited",
+       payload: {
+-        exitKind: Exit.isSuccess(disconnectExit) ? input.exitKind : "error",
+-        ...(Exit.isFailure(disconnectExit)
+-          ? { reason: "Failed to disconnect the Copilot session.", recoverable: true }
+-          : {
+-              reason: input.reason,
+-              ...(input.recoverable !== undefined ? { recoverable: input.recoverable } : {}),
+-            }),
++        exitKind: input.exitKind,
++        reason: input.reason,
++        ...(input.recoverable !== undefined ? { recoverable: input.recoverable } : {}),
+       },
+     });
+-    if (Exit.isFailure(disconnectExit)) {
+-      return yield* Effect.failCause(disconnectExit.cause);
+-    }
+   });
+ 
+-  const stopContext = (context: CopilotSessionContext) =>
+-    context.eventSemaphore.withPermit(
+-      closeContextSerialized(context, {
+-        disconnect: true,
+-        reason: "Session stopped",
+-        exitKind: "graceful",
+-      }),
+-    );
++  const closeContextSerialized = Effect.fn("CopilotAdapter.closeContextSerialized")(function* (
++    context: CopilotSessionContext,
++    input: {
++      readonly disconnect: boolean;
++      readonly event?: SessionEvent;
++      readonly reason: string;
++      readonly exitKind: "graceful" | "error";
++      readonly recoverable?: boolean;
++    },
++  ) {
++    const sdkSession = context.sdkSession;
++    yield* finalizeContextState(context);
++    const disconnectExit =
++      input.disconnect && sdkSession
++        ? yield* runSdkRequest(
++            "session.disconnect",
++            () => sdkSession.disconnect(),
++            deadlines.disconnectMs,
++          ).pipe(Effect.exit)
++        : Exit.void;
++    context.sdkSession = undefined;
++    yield* emitContextExited(context, {
++      ...(input.event ? { event: input.event } : {}),
++      ...(sdkSession ? { sessionId: sdkSession.sessionId } : {}),
++      reason: Exit.isFailure(disconnectExit)
++        ? "Failed to disconnect the Copilot session."
++        : input.reason,
++      exitKind: Exit.isFailure(disconnectExit) ? "error" : input.exitKind,
++      ...(Exit.isFailure(disconnectExit)
++        ? { recoverable: true }
++        : input.recoverable !== undefined
++          ? { recoverable: input.recoverable }
++          : {}),
++    });
++    return disconnectExit;
++  });
++
++  const forceStopAndCloseSessions = Effect.fn("CopilotAdapter.forceStopAndCloseSessions")(
++    function* (reason: string, initiatingContext?: CopilotSessionContext) {
++      const contexts = new Set<CopilotSessionContext>(sessions.values());
++      if (initiatingContext) contexts.add(initiatingContext);
++      for (const context of contexts) {
++        yield* finalizeContextState(context);
++        context.sdkSession = undefined;
++      }
++      yield* forceStopClient(reason);
++      for (const context of contexts) {
++        yield* emitContextExited(context, {
++          reason,
++          exitKind: "error",
++          recoverable: true,
++        });
++      }
++    },
++  );
++
++  const stopContext = Effect.fn("CopilotAdapter.stopContext")(function* (
++    context: CopilotSessionContext,
++  ) {
++    const closeResult = yield* context.eventSemaphore
++      .withPermit(
++        closeContextSerialized(context, {
++          disconnect: true,
++          reason: "Session stopped",
++          exitKind: "graceful",
++        }),
++      )
++      .pipe(Effect.timeoutOption(deadlines.eventDrainMs));
++    if (Option.isNone(closeResult)) {
++      const detail = `Timed out draining Copilot session events after ${deadlines.eventDrainMs}ms.`;
++      yield* forceStopAndCloseSessions(detail, context);
++      return yield* new ProviderAdapterRequestError({
++        provider: PROVIDER,
++        method: "session.stop",
++        detail,
++      });
++    }
++    if (Exit.isFailure(closeResult.value)) {
++      yield* forceStopAndCloseSessions(
++        "Copilot session disconnect failed; the shared client was force-stopped.",
++        context,
++      );
++      return yield* Effect.failCause(closeResult.value.cause);
++    }
++  });
+ 
+   const startSession: ProviderAdapterShape<CopilotAdapterError>["startSession"] = (input) =>
+     withThreadLock(
+@@ -2002,6 +2153,8 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+           lastPlanMarkdown: undefined,
+           turnUsage: undefined,
+           omittedBinaryAssetWarningEmitted: false,
++          resumeAlreadyInUse: false,
++          exitEmitted: false,
+           stopped: false,
+         };
+ 
+@@ -2042,8 +2195,12 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+           onUserInputRequest: (request) => handleUserInput(context, request),
+           onExitPlanModeRequest: (request) => handleExitPlanMode(context, request),
+           includeSubAgentStreamingEvents: false,
+-          onEvent: (event) =>
+-            forkLogged(context.eventSemaphore.withPermit(handleEvent(context, event))),
++          onEvent: (event) => {
++            if (event.type === "session.resume" && event.data.alreadyInUse === true) {
++              context.resumeAlreadyInUse = true;
++            }
++            forkLogged(context.eventSemaphore.withPermit(handleEvent(context, event)));
++          },
+         };
+         const previousSessionId = parseResumeCursor(input.resumeCursor);
+         const sdkSession = yield* context.eventSemaphore.withPermit(
+@@ -2058,6 +2215,24 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+                   : client.createSession(config),
+               catch: (cause) => toRequestError("session.start", cause),
+             });
++            if (previousSessionId && context.resumeAlreadyInUse) {
++              context.stopped = true;
++              const disconnectExit = yield* runSdkRequest(
++                "session.disconnectAfterOwnershipConflict",
++                () => createdSession.disconnect(),
++                deadlines.disconnectMs,
++              ).pipe(Effect.exit);
++              if (Exit.isFailure(disconnectExit)) {
++                yield* forceStopAndCloseSessions(
++                  `Copilot session '${previousSessionId}' reported another active owner and the conflict cleanup did not finish.`,
++                );
++              }
++              return yield* new ProviderAdapterValidationError({
++                provider: PROVIDER,
++                operation: "startSession",
++                issue: `Copilot session '${previousSessionId}' is already in use by another client.`,
++              });
++            }
+             context.sdkSession = createdSession;
+             context.session = {
+               ...context.session,
+@@ -2088,10 +2263,7 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+           }),
+         );
+ 
+-        yield* Effect.tryPromise({
+-          try: () => sdkSession.rpc.skills.list(),
+-          catch: (cause) => toRequestError("skills.list", cause),
+-        }).pipe(
++        yield* runSdkRequest("skills.list", () => sdkSession.rpc.skills.list()).pipe(
+           Effect.flatMap((listed) => publishSkills(context, listed.skills)),
+           Effect.catchTag("ProviderAdapterRequestError", (error) =>
+             syntheticBase(context, "skills.list.failed", {
+@@ -2433,12 +2605,26 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+   yield* Effect.addFinalizer(() =>
+     Effect.gen(function* () {
+       yield* stopAll().pipe(Effect.ignoreCause({ log: true }));
+-      if (startPromise) {
+-        const errors = yield* Effect.promise(() => client.stop());
+-        if (errors.length > 0) {
++      if (startPromise && !clientUnavailableReason) {
++        const stopExit = yield* Effect.tryPromise({
++          try: () => client.stop(),
++          catch: (cause) => toRequestError("client.stop", cause),
++        }).pipe(Effect.timeoutOption(deadlines.clientStopMs), Effect.exit);
++        if (Exit.isFailure(stopExit)) {
++          yield* forceStopAndCloseSessions(
++            "GitHub Copilot client graceful cleanup failed during adapter teardown.",
++          );
++        } else if (Option.isNone(stopExit.value)) {
++          yield* forceStopAndCloseSessions(
++            `GitHub Copilot client cleanup timed out after ${deadlines.clientStopMs}ms.`,
++          );
++        } else if (stopExit.value.value.length > 0) {
+           yield* Effect.logWarning("GitHub Copilot client cleanup reported errors.", {
+-            errors: errors.map((error) => error.message),
++            errors: stopExit.value.value.map((error) => error.message),
+           });
++          yield* forceStopAndCloseSessions(
++            "GitHub Copilot client cleanup reported errors during adapter teardown.",
++          );
+         }
+       }
+       yield* PubSub.shutdown(runtimeEvents);
+diff --git a/docs/user/providers-copilot.md b/docs/user/providers-copilot.md
+index 4849508fe..e2ec5a3f7 100644
+--- a/docs/user/providers-copilot.md
++++ b/docs/user/providers-copilot.md
+@@ -19,6 +19,9 @@ An empty **COPILOT_HOME path** uses `~/.copilot`. Sessions created by T3 Code ar
+ can be resumed by the native Copilot CLI. T3 Code persists the native session ID so a server restart
+ can resume the same conversation.
+ 
++If the native runtime reports that another client already owns a resumed session, T3 Code rejects
++the resume instead of attaching a second owner to the same conversation.
++
+ Give separate provider instances different `COPILOT_HOME` paths when their sessions or
+ configuration must remain isolated. Instances using the same home are treated as the same
+ continuation environment.

@@ -18,11 +18,5 @@
     "upstream_ref": "upstream/main",
     "upstream_commit": "b83e9c95e4f3bd1dcb771ee436dcfafcfaf6b3fa",
     "outcome": "false_positive_upstreamed"
-  },
-  "depends_on": [
-    {
-      "slug": "copilot-cli-provider",
-      "kind": "hard"
-    }
-  ]
+  }
 }

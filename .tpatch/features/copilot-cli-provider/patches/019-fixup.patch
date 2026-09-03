@@ -1,0 +1,2020 @@
+diff --git a/apps/server/src/provider/Drivers/CopilotDriver.test.ts b/apps/server/src/provider/Drivers/CopilotDriver.test.ts
+new file mode 100644
+index 000000000..898a77ff8
+--- /dev/null
++++ b/apps/server/src/provider/Drivers/CopilotDriver.test.ts
+@@ -0,0 +1,30 @@
++import { ThreadId, type ServerProviderSkill } from "@t3tools/contracts";
++import { describe, expect, it } from "@effect/vitest";
++
++import { mergeCopilotSessionSkills } from "./CopilotDriver.ts";
++
++const skill = (
++  name: string,
++  enabled: boolean,
++  scope = "personal-copilot",
++): ServerProviderSkill => ({
++  name,
++  path: `/skills/${name}/SKILL.md`,
++  scope,
++  enabled,
++});
++
++describe("mergeCopilotSessionSkills", () => {
++  it("unions context-independent session snapshots and lets the latest session win", () => {
++    const skillsBySession = new Map([
++      [ThreadId.make("thread-a"), [skill("alpha", true), skill("shared", false)]],
++      [ThreadId.make("thread-b"), [skill("beta", true), skill("shared", true)]],
++    ]);
++
++    expect(mergeCopilotSessionSkills(skillsBySession)).toEqual([
++      skill("alpha", true),
++      skill("beta", true),
++      skill("shared", true),
++    ]);
++  });
++});
+diff --git a/apps/server/src/provider/Drivers/CopilotDriver.ts b/apps/server/src/provider/Drivers/CopilotDriver.ts
+index b5c202694..4f3ccf8fd 100644
+--- a/apps/server/src/provider/Drivers/CopilotDriver.ts
++++ b/apps/server/src/provider/Drivers/CopilotDriver.ts
+@@ -3,12 +3,14 @@ import {
+   ProviderDriverKind,
+   type ServerProvider,
+   type ServerProviderSkill,
++  type ThreadId,
+ } from "@t3tools/contracts";
+ import * as Crypto from "effect/Crypto";
+ import * as Effect from "effect/Effect";
+ import * as PubSub from "effect/PubSub";
+ import * as Ref from "effect/Ref";
+ import * as Schema from "effect/Schema";
++import * as Semaphore from "effect/Semaphore";
+ import * as Stream from "effect/Stream";
+ 
+ import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
+@@ -21,7 +23,10 @@ import {
+   checkCopilotProviderStatus,
+   makePendingCopilotProvider,
+ } from "../Layers/CopilotProvider.ts";
+-import { expandCopilotHomePath } from "../Layers/copilotClientOptions.ts";
++import {
++  copilotContinuationGroupKey,
++  resolveCopilotClientConfiguration,
++} from "../Layers/copilotClientOptions.ts";
+ import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
+ import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
+ import {
+@@ -41,6 +46,18 @@ import {
+ const DRIVER_KIND = ProviderDriverKind.make("githubCopilot");
+ const decodeCopilotSettings = Schema.decodeSync(CopilotSettings);
+ 
++export function mergeCopilotSessionSkills(
++  skillsBySession: ReadonlyMap<ThreadId, ReadonlyArray<ServerProviderSkill>>,
++): ReadonlyArray<ServerProviderSkill> {
++  const byName = new Map<string, ServerProviderSkill>();
++  for (const skills of skillsBySession.values()) {
++    for (const skill of skills) {
++      byName.set(skill.name, skill);
++    }
++  }
++  return [...byName.values()].sort((left, right) => left.name.localeCompare(right.name));
++}
++
+ export type CopilotDriverEnv =
+   | BackgroundPolicy.BackgroundPolicy
+   | Crypto.Crypto
+@@ -83,29 +100,63 @@ export const CopilotDriver: ProviderDriver<CopilotSettings, CopilotDriverEnv> =
+         driverKind: DRIVER_KIND,
+         instanceId,
+       });
+-      const resolvedHome = expandCopilotHomePath(effectiveConfig.homePath) ?? "~/.copilot";
+-      const continuationGroupKey = `githubCopilot:home:${resolvedHome}`;
++      const copilotClientConfiguration = resolveCopilotClientConfiguration({
++        settings: effectiveConfig,
++        cwd: serverConfig.cwd,
++        environment: processEnv,
++      });
++      const continuationGroupKey = copilotContinuationGroupKey(
++        copilotClientConfiguration.effectiveHome,
++      );
+       const stampIdentity = withInstanceIdentity({
+         instanceId,
+         displayName,
+         accentColor,
+         continuationGroupKey,
+       });
+-      const skillsRef = yield* Ref.make<ReadonlyArray<ServerProviderSkill>>([]);
++      const skillsBySessionRef = yield* Ref.make<
++        ReadonlyMap<ThreadId, ReadonlyArray<ServerProviderSkill>>
++      >(new Map());
+       const skillsChanges = yield* Effect.acquireRelease(
+         PubSub.unbounded<ReadonlyArray<ServerProviderSkill>>(),
+         PubSub.shutdown,
+       );
+-      const publishSkills = (skills: ReadonlyArray<ServerProviderSkill>) =>
+-        Ref.set(skillsRef, skills).pipe(
+-          Effect.andThen(PubSub.publish(skillsChanges, skills)),
+-          Effect.asVoid,
++      const skillsSemaphore = yield* Semaphore.make(1);
++      const publishSkills = (input: {
++        readonly threadId: ThreadId;
++        readonly skills: ReadonlyArray<ServerProviderSkill>;
++      }) =>
++        skillsSemaphore.withPermit(
++          Ref.modify(skillsBySessionRef, (current) => {
++            const next = new Map(current);
++            next.delete(input.threadId);
++            next.set(input.threadId, input.skills);
++            return [mergeCopilotSessionSkills(next), next] as const;
++          }).pipe(
++            Effect.flatMap((skills) => PubSub.publish(skillsChanges, skills)),
++            Effect.asVoid,
++          ),
++        );
++      const removeSkills = (threadId: ThreadId) =>
++        skillsSemaphore.withPermit(
++          Ref.modify(skillsBySessionRef, (current) => {
++            if (!current.has(threadId)) return [null, current] as const;
++            const next = new Map(current);
++            next.delete(threadId);
++            return [mergeCopilotSessionSkills(next), next] as const;
++          }).pipe(
++            Effect.flatMap((skills) =>
++              skills === null ? Effect.void : PubSub.publish(skillsChanges, skills),
++            ),
++            Effect.asVoid,
++          ),
+         );
+ 
+       const adapter = yield* makeCopilotAdapter(effectiveConfig, {
+         instanceId,
+         environment: processEnv,
+         onSkillsChanged: publishSkills,
++        onSessionClosed: removeSkills,
+         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+       });
+       const textGeneration = yield* makeCopilotTextGeneration(effectiveConfig, processEnv);
+@@ -113,9 +164,11 @@ export const CopilotDriver: ProviderDriver<CopilotSettings, CopilotDriverEnv> =
+         provider: DRIVER_KIND,
+         packageName: "@github/copilot-sdk",
+       });
+-      const checkProvider = Ref.get(skillsRef).pipe(
+-        Effect.flatMap((skills) =>
+-          checkCopilotProviderStatus(effectiveConfig, serverConfig.cwd, processEnv, { skills }),
++      const checkProvider = Ref.get(skillsBySessionRef).pipe(
++        Effect.flatMap((skillsBySession) =>
++          checkCopilotProviderStatus(effectiveConfig, serverConfig.cwd, processEnv, {
++            skills: mergeCopilotSessionSkills(skillsBySession),
++          }),
+         ),
+         Effect.map(stampIdentity),
+       );
+@@ -126,8 +179,13 @@ export const CopilotDriver: ProviderDriver<CopilotSettings, CopilotDriverEnv> =
+         streamSettings: snapshotSettings.streamSettings,
+         haveSettingsChanged: haveProviderSnapshotSettingsChanged,
+         initialSnapshot: (settings) =>
+-          Ref.get(skillsRef).pipe(
+-            Effect.flatMap((skills) => makePendingCopilotProvider(settings.provider, skills)),
++          Ref.get(skillsBySessionRef).pipe(
++            Effect.flatMap((skillsBySession) =>
++              makePendingCopilotProvider(
++                settings.provider,
++                mergeCopilotSessionSkills(skillsBySession),
++              ),
++            ),
+             Effect.map(stampIdentity),
+           ),
+         checkProvider,
+@@ -135,8 +193,11 @@ export const CopilotDriver: ProviderDriver<CopilotSettings, CopilotDriverEnv> =
+           Effect.scoped(
+             Effect.gen(function* () {
+               const subscription = yield* PubSub.subscribe(skillsChanges);
+-              const initialSkills = yield* Ref.get(skillsRef);
+-              yield* publishSnapshot({ ...baseSnapshot, skills: [...initialSkills] });
++              const initialSkills = yield* Ref.get(skillsBySessionRef);
++              yield* publishSnapshot({
++                ...baseSnapshot,
++                skills: [...mergeCopilotSessionSkills(initialSkills)],
++              });
+               yield* Stream.fromSubscription(subscription).pipe(
+                 Stream.runForEach((skills) =>
+                   getSnapshot.pipe(
+diff --git a/apps/server/src/provider/Layers/CopilotAdapter.test.ts b/apps/server/src/provider/Layers/CopilotAdapter.test.ts
+index b25777e0b..d71b525d2 100644
+--- a/apps/server/src/provider/Layers/CopilotAdapter.test.ts
++++ b/apps/server/src/provider/Layers/CopilotAdapter.test.ts
+@@ -164,10 +164,13 @@ describe("CopilotAdapter", () => {
+       Effect.gen(function* () {
+         const fake = makeFakeRuntime();
+         const serverConfig = yield* ServerConfig;
+-        const adapter = yield* makeCopilotAdapter(decodeSettings({ enabled: true }), {
+-          instanceId: INSTANCE_ID,
+-          clientFactory: () => fake.client,
+-        });
++        const adapter = yield* makeCopilotAdapter(
++          decodeSettings({ enabled: true, enableConfigDiscovery: false }),
++          {
++            instanceId: INSTANCE_ID,
++            clientFactory: () => fake.client,
++          },
++        );
+         const collected = yield* collectUntil(adapter, (event) => event.type === "turn.completed");
+ 
+         const threadId = ThreadId.make("thread-copilot");
+@@ -193,6 +196,8 @@ describe("CopilotAdapter", () => {
+           schemaVersion: 1,
+           sessionId: "copilot-session-1",
+         });
++        NodeAssert.equal(fake.getConfig()?.enableConfigDiscovery, false);
++        NodeAssert.equal(fake.getConfig()?.skipCustomInstructions, true);
+ 
+         const started = yield* adapter.sendTurn({
+           threadId: session.threadId,
+@@ -363,6 +368,43 @@ describe("CopilotAdapter", () => {
+         } satisfies PermissionRequestResult);
+         yield* Fiber.interrupt(permissionEvents.fiber);
+ 
++        const oneShotEvents = yield* collectUntil(
++          adapter,
++          (event) => event.type === "request.opened",
++        );
++        const oneShotPromise = fake
++          .getConfig()
++          ?.onPermissionRequest?.(
++            { ...permission, canOfferSessionApproval: false },
++            { sessionId: "copilot-session-1" },
++          );
++        yield* oneShotEvents.awaitDone;
++        const oneShotEvent = oneShotEvents.events.find((event) => event.type === "request.opened");
++        NodeAssert.ok(oneShotEvent?.requestId);
++        if (oneShotEvent?.type === "request.opened") {
++          NodeAssert.deepEqual(
++            oneShotEvent.payload.options?.map((option) => option.decision),
++            ["accept", "decline"],
++          );
++        }
++        const unsupported = yield* adapter
++          .respondToRequest(
++            threadId,
++            ApprovalRequestId.make(oneShotEvent.requestId),
++            "acceptAlways",
++          )
++          .pipe(Effect.result);
++        NodeAssert.equal(unsupported._tag, "Failure");
++        yield* adapter.respondToRequest(
++          threadId,
++          ApprovalRequestId.make(oneShotEvent.requestId),
++          "accept",
++        );
++        NodeAssert.deepEqual(yield* Effect.promise(() => Promise.resolve(oneShotPromise)), {
++          kind: "approve-once",
++        } satisfies PermissionRequestResult);
++        yield* Fiber.interrupt(oneShotEvents.fiber);
++
+         const inputEvents = yield* collectUntil(
+           adapter,
+           (event) => event.type === "user-input.requested",
+@@ -414,6 +456,415 @@ describe("CopilotAdapter", () => {
+     ),
+   );
+ 
++  it.effect(
++    "preserves stream whitespace and keeps subagent messages out of the root transcript",
++    () =>
++      Effect.scoped(
++        Effect.gen(function* () {
++          const fake = makeFakeRuntime();
++          const adapter = yield* makeCopilotAdapter(decodeSettings({ enabled: true }), {
++            instanceId: INSTANCE_ID,
++            clientFactory: () => fake.client,
++          });
++          const threadId = ThreadId.make("thread-copilot-streaming");
++          const collected = yield* collectUntil(
++            adapter,
++            (event) => event.type === "turn.completed",
++          );
++          yield* adapter.startSession({
++            threadId,
++            providerInstanceId: INSTANCE_ID,
++            cwd: process.cwd(),
++            runtimeMode: "full-access",
++          });
++          yield* adapter.sendTurn({ threadId, input: "stream" });
++
++          fake.emit(
++            sessionEvent(
++              {
++                type: "subagent.started",
++                agentId: "agent-stream",
++                data: {
++                  agentDescription: "Explore",
++                  agentDisplayName: "Explorer",
++                  agentName: "explore",
++                  toolCallId: "agent-stream-tool",
++                },
++              },
++              30,
++            ),
++          );
++          fake.emit(
++            sessionEvent(
++              {
++                type: "assistant.message_delta",
++                agentId: "agent-stream",
++                ephemeral: true,
++                data: { messageId: "agent-message", deltaContent: "must not reach root" },
++              },
++              31,
++            ),
++          );
++          fake.emit(
++            sessionEvent(
++              {
++                type: "assistant.message",
++                agentId: "agent-stream",
++                data: { messageId: "agent-message", content: "Agent result" },
++              },
++              32,
++            ),
++          );
++          fake.emit(
++            sessionEvent(
++              {
++                type: "assistant.message_delta",
++                ephemeral: true,
++                data: { messageId: "root-message", deltaContent: "  * item\n\n" },
++              },
++              33,
++            ),
++          );
++          fake.emit(
++            sessionEvent(
++              {
++                type: "assistant.reasoning_delta",
++                ephemeral: true,
++                data: { reasoningId: "root-reasoning", deltaContent: "\n  indented" },
++              },
++              34,
++            ),
++          );
++          fake.emit(
++            sessionEvent(
++              {
++                type: "assistant.message",
++                data: { messageId: "root-message", content: "Root answer" },
++              },
++              35,
++            ),
++          );
++          fake.emit(
++            sessionEvent(
++              {
++                type: "assistant.turn_end",
++                data: { turnId: "native-stream-turn", model: "gpt-test" },
++              },
++              36,
++            ),
++          );
++          yield* collected.awaitDone;
++          yield* Fiber.interrupt(collected.fiber);
++
++          const deltas = collected.events.filter((event) => event.type === "content.delta");
++          NodeAssert.deepEqual(
++            deltas.map((event) => event.payload.delta),
++            ["  * item\n\n", "\n  indented"],
++          );
++          NodeAssert.equal(
++            collected.events.some(
++              (event) =>
++                event.type === "item.completed" &&
++                event.itemId === "agent-message" &&
++                event.payload.itemType === "assistant_message",
++            ),
++            false,
++          );
++          const agentProgress = collected.events.find(
++            (event) => event.type === "task.progress" && event.payload.taskId === "agent-stream",
++          );
++          NodeAssert.equal(
++            agentProgress?.type === "task.progress" ? agentProgress.payload.summary : undefined,
++            "Agent result",
++          );
++        }).pipe(Effect.provide(testLayer)),
++      ),
++  );
++
++  it.effect("accumulates per-turn usage and permits identical plans on later turns", () =>
++    Effect.scoped(
++      Effect.gen(function* () {
++        const fake = makeFakeRuntime();
++        const adapter = yield* makeCopilotAdapter(decodeSettings({ enabled: true }), {
++          instanceId: INSTANCE_ID,
++          clientFactory: () => fake.client,
++        });
++        const threadId = ThreadId.make("thread-copilot-usage");
++        yield* adapter.startSession({
++          threadId,
++          providerInstanceId: INSTANCE_ID,
++          cwd: process.cwd(),
++          runtimeMode: "full-access",
++        });
++
++        const firstTurnEvents = yield* collectUntil(
++          adapter,
++          (event) => event.type === "turn.completed",
++        );
++        yield* adapter.sendTurn({ threadId, input: "first" });
++        fake.getConfig()?.onExitPlanModeRequest?.(
++          {
++            summary: "Same plan",
++            planContent: "1. Same plan",
++            actions: [],
++            recommendedAction: "implement",
++          },
++          { sessionId: "copilot-session-1" },
++        );
++        yield* Effect.yieldNow;
++        fake.emit(
++          sessionEvent(
++            {
++              type: "assistant.usage",
++              data: {
++                model: "gpt-a",
++                inputTokens: 10,
++                cacheReadTokens: 2,
++                cacheWriteTokens: 3,
++                outputTokens: 4,
++                reasoningTokens: 1,
++                duration: 100,
++                copilotUsage: { totalNanoAiu: 20 },
++              },
++            },
++            40,
++          ),
++        );
++        fake.emit(
++          sessionEvent(
++            {
++              type: "assistant.usage",
++              data: {
++                model: "gpt-b",
++                inputTokens: 5,
++                outputTokens: 5,
++                duration: 50,
++                copilotUsage: { totalNanoAiu: 10 },
++              },
++            },
++            41,
++          ),
++        );
++        fake.emit(
++          sessionEvent(
++            {
++              type: "assistant.turn_end",
++              data: { turnId: "native-usage-turn-1", model: "gpt-b" },
++            },
++            42,
++          ),
++        );
++        yield* firstTurnEvents.awaitDone;
++        yield* Fiber.interrupt(firstTurnEvents.fiber);
++        const firstCompletion = firstTurnEvents.events.find(
++          (event) => event.type === "turn.completed",
++        );
++        if (firstCompletion?.type !== "turn.completed") {
++          throw new Error("expected first turn completion");
++        }
++        const { calls, ...usageTotals } = firstCompletion.payload.usage as {
++          readonly calls: ReadonlyArray<unknown>;
++          readonly apiCalls: number;
++          readonly inputTokens: number;
++          readonly cachedInputTokens: number;
++          readonly cacheWriteTokens: number;
++          readonly outputTokens: number;
++          readonly reasoningOutputTokens: number;
++          readonly durationMs: number;
++          readonly totalNanoAiu: number;
++        };
++        NodeAssert.equal(calls.length, 2);
++        NodeAssert.deepEqual(usageTotals, {
++          apiCalls: 2,
++          inputTokens: 15,
++          cachedInputTokens: 2,
++          cacheWriteTokens: 3,
++          outputTokens: 9,
++          reasoningOutputTokens: 1,
++          durationMs: 150,
++          totalNanoAiu: 30,
++        });
++        NodeAssert.deepEqual(Object.keys(firstCompletion.payload.modelUsage ?? {}).sort(), [
++          "gpt-a",
++          "gpt-b",
++        ]);
++
++        const secondPlanEvents = yield* collectUntil(
++          adapter,
++          (event) => event.type === "turn.proposed.completed",
++        );
++        yield* adapter.sendTurn({ threadId, input: "second" });
++        fake.getConfig()?.onExitPlanModeRequest?.(
++          {
++            summary: "Same plan",
++            planContent: "1. Same plan",
++            actions: [],
++            recommendedAction: "implement",
++          },
++          { sessionId: "copilot-session-1" },
++        );
++        yield* secondPlanEvents.awaitDone;
++        yield* Fiber.interrupt(secondPlanEvents.fiber);
++
++        NodeAssert.equal(
++          firstTurnEvents.events.filter((event) => event.type === "turn.proposed.completed").length,
++          1,
++        );
++        NodeAssert.equal(
++          secondPlanEvents.events.filter((event) => event.type === "turn.proposed.completed")
++            .length,
++          1,
++        );
++      }).pipe(Effect.provide(testLayer)),
++    ),
++  );
++
++  it.effect("serializes explicit stop behind event handling and discards late events", () =>
++    Effect.scoped(
++      Effect.gen(function* () {
++        const skillHandlingStarted = yield* Deferred.make<void>();
++        const releaseSkillHandling = yield* Deferred.make<void>();
++        const fake = makeFakeRuntime();
++        const adapter = yield* makeCopilotAdapter(decodeSettings({ enabled: true }), {
++          instanceId: INSTANCE_ID,
++          clientFactory: () => fake.client,
++          onSkillsChanged: ({ skills }) =>
++            skills.length === 0
++              ? Effect.void
++              : Deferred.succeed(skillHandlingStarted, undefined).pipe(
++                  Effect.andThen(Deferred.await(releaseSkillHandling)),
++                ),
++        });
++        const threadId = ThreadId.make("thread-copilot-stop-serialized");
++        yield* adapter.startSession({
++          threadId,
++          providerInstanceId: INSTANCE_ID,
++          cwd: process.cwd(),
++          runtimeMode: "full-access",
++        });
++        const collected = yield* collectUntil(adapter, (event) => event.type === "session.exited");
++        fake.emit(
++          sessionEvent(
++            {
++              type: "session.skills_loaded",
++              ephemeral: true,
++              data: {
++                skills: [
++                  {
++                    name: "personal",
++                    description: "Personal skill",
++                    enabled: true,
++                    source: "personal-copilot",
++                    userInvocable: true,
++                    path: "/skills/personal/SKILL.md",
++                  },
++                ],
++              },
++            },
++            45,
++          ),
++        );
++        yield* Deferred.await(skillHandlingStarted);
++        const stopFiber = yield* adapter.stopSession(threadId).pipe(Effect.forkChild);
++        yield* Effect.yieldNow;
++        NodeAssert.equal(fake.counts().disconnected, 0);
++        yield* Deferred.succeed(releaseSkillHandling, undefined);
++        yield* Fiber.join(stopFiber);
++        yield* collected.awaitDone;
++
++        fake.emit(
++          sessionEvent(
++            {
++              type: "assistant.message",
++              data: { messageId: "late-message", content: "Must stay discarded" },
++            },
++            46,
++          ),
++        );
++        yield* Effect.yieldNow;
++        yield* Fiber.interrupt(collected.fiber);
++        NodeAssert.equal(fake.counts().disconnected, 1);
++        NodeAssert.equal(
++          collected.events.some((event) => event.itemId === "late-message"),
++          false,
++        );
++      }).pipe(Effect.provide(testLayer)),
++    ),
++  );
++
++  it.effect("treats native shutdown as terminal and cannot resurrect the session", () =>
++    Effect.scoped(
++      Effect.gen(function* () {
++        const fake = makeFakeRuntime();
++        const adapter = yield* makeCopilotAdapter(decodeSettings({ enabled: true }), {
++          instanceId: INSTANCE_ID,
++          clientFactory: () => fake.client,
++        });
++        const threadId = ThreadId.make("thread-copilot-shutdown");
++        yield* adapter.startSession({
++          threadId,
++          providerInstanceId: INSTANCE_ID,
++          cwd: process.cwd(),
++          runtimeMode: "full-access",
++        });
++        yield* adapter.sendTurn({ threadId, input: "work" });
++        const collected = yield* collectUntil(adapter, (event) => event.type === "session.exited");
++        fake.emit(
++          sessionEvent(
++            {
++              type: "session.shutdown",
++              data: {
++                codeChanges: { filesModified: [], linesAdded: 0, linesRemoved: 0 },
++                errorReason: "runtime crashed",
++                modelMetrics: {},
++                sessionStartTime: 0,
++                shutdownType: "error",
++                totalApiDurationMs: 0,
++              },
++            },
++            50,
++          ),
++        );
++        fake.emit(
++          sessionEvent(
++            {
++              type: "assistant.message",
++              data: { messageId: "post-shutdown", content: "Must stay discarded" },
++            },
++            51,
++          ),
++        );
++        yield* collected.awaitDone;
++        yield* Effect.yieldNow;
++        yield* Fiber.interrupt(collected.fiber);
++
++        NodeAssert.equal(yield* adapter.hasSession(threadId), false);
++        NodeAssert.equal(fake.counts().disconnected, 0);
++        NodeAssert.equal(
++          collected.events.some(
++            (event) =>
++              event.type === "turn.completed" &&
++              event.payload.state === "failed" &&
++              event.payload.errorMessage === "runtime crashed",
++          ),
++          true,
++        );
++        NodeAssert.equal(
++          collected.events.some((event) => event.itemId === "post-shutdown"),
++          false,
++        );
++        NodeAssert.equal(
++          new Set(collected.events.map((event) => event.eventId)).size,
++          collected.events.length,
++        );
++        const sendAfterShutdown = yield* adapter
++          .sendTurn({ threadId, input: "again" })
++          .pipe(Effect.result);
++        NodeAssert.equal(sendAfterShutdown._tag, "Failure");
++      }).pipe(Effect.provide(testLayer)),
++    ),
++  );
++
+   it.effect("normalizes tools, usage, tasks, compaction, skills, MCP, and commands", () =>
+     Effect.scoped(
+       Effect.gen(function* () {
+@@ -435,7 +886,7 @@ describe("CopilotAdapter", () => {
+         const adapter = yield* makeCopilotAdapter(decodeSettings({ enabled: true }), {
+           instanceId: INSTANCE_ID,
+           clientFactory: () => fake.client,
+-          onSkillsChanged: (skills) =>
++          onSkillsChanged: ({ skills }) =>
+             Effect.sync(() => {
+               discoveredSkills.push(skills);
+             }),
+@@ -547,6 +998,24 @@ describe("CopilotAdapter", () => {
+             16,
+           ),
+         );
++        fake.emit(
++          sessionEvent(
++            {
++              type: "session.truncation",
++              data: {
++                messagesRemovedDuringTruncation: 1,
++                performedBy: "BasicTruncator",
++                postTruncationMessagesLength: 3,
++                postTruncationTokensInMessages: 30,
++                preTruncationMessagesLength: 4,
++                preTruncationTokensInMessages: 60,
++                tokenLimit: 10_000,
++                tokensRemovedDuringTruncation: 30,
++              },
++            },
++            17,
++          ),
++        );
+         fake.emit(
+           sessionEvent(
+             {
+@@ -561,10 +1030,17 @@ describe("CopilotAdapter", () => {
+                     source: "project",
+                     userInvocable: true,
+                   },
++                  {
++                    name: "personal-review",
++                    description: "Review personal changes",
++                    enabled: true,
++                    source: "personal-copilot",
++                    userInvocable: true,
++                  },
+                 ],
+               },
+             },
+-            17,
++            18,
+           ),
+         );
+         fake.emit(
+@@ -574,7 +1050,7 @@ describe("CopilotAdapter", () => {
+               ephemeral: true,
+               data: {},
+             },
+-            18,
++            19,
+           ),
+         );
+         fake.emit(
+@@ -584,7 +1060,7 @@ describe("CopilotAdapter", () => {
+               ephemeral: true,
+               data: { servers: [{ name: "t3-code", status: "connected" }] },
+             },
+-            19,
++            20,
+           ),
+         );
+         fake.emit(
+@@ -594,7 +1070,7 @@ describe("CopilotAdapter", () => {
+               ephemeral: true,
+               data: { command: "/help", requestId: "command-1" },
+             },
+-            20,
++            21,
+           ),
+         );
+         fake.emit(
+@@ -604,7 +1080,7 @@ describe("CopilotAdapter", () => {
+               ephemeral: true,
+               data: { requestId: "command-1" },
+             },
+-            21,
++            22,
+           ),
+         );
+         yield* collected.awaitDone;
+@@ -636,14 +1112,22 @@ describe("CopilotAdapter", () => {
+         NodeAssert.ok(collected.events.some((event) => event.type === "task.completed"));
+         NodeAssert.ok(
+           collected.events.some(
+-            (event) =>
+-              event.type === "item.completed" && event.payload.itemType === "context_compaction",
++            (event) => event.type === "thread.state.changed" && event.payload.state === "compacted",
+           ),
+         );
++        NodeAssert.equal(
++          collected.events.filter(
++            (event) => event.type === "thread.state.changed" && event.payload.state === "compacted",
++          ).length,
++          2,
++        );
+         NodeAssert.ok(collected.events.some((event) => event.type === "mcp.status.updated"));
+         NodeAssert.equal(fake.counts().queuedCommandResponses, 1);
+-        NodeAssert.equal(discoveredSkills.at(-1)?.[0]?.name, "review");
+-        NodeAssert.equal(discoveredSkills.at(-1)?.[0]?.scope, "project");
++        NodeAssert.deepEqual(
++          discoveredSkills.at(-1)?.map((skill) => skill.name),
++          ["personal-review"],
++        );
++        NodeAssert.equal(discoveredSkills.at(-1)?.[0]?.scope, "personal-copilot");
+       }).pipe(Effect.provide(testLayer)),
+     ),
+   );
+diff --git a/apps/server/src/provider/Layers/CopilotAdapter.ts b/apps/server/src/provider/Layers/CopilotAdapter.ts
+index c923b411b..2a9e205ee 100644
+--- a/apps/server/src/provider/Layers/CopilotAdapter.ts
++++ b/apps/server/src/provider/Layers/CopilotAdapter.ts
+@@ -2,6 +2,7 @@
+ import * as NodeCrypto from "node:crypto";
+ 
+ import {
++  type AssistantUsageData,
+   CopilotClient,
+   type CopilotClientOptions,
+   type CopilotSession,
+@@ -57,7 +58,7 @@ import type {
+   ProviderThreadTurnSnapshot,
+ } from "../Services/ProviderAdapter.ts";
+ import type { EventNdjsonLogger } from "./EventNdjsonLogger.ts";
+-import { expandCopilotHomePath, makeCopilotClientOptions } from "./copilotClientOptions.ts";
++import { resolveCopilotClientConfiguration } from "./copilotClientOptions.ts";
+ 
+ const PROVIDER = ProviderDriverKind.make("githubCopilot");
+ const LEGACY_PROVIDER = ProviderDriverKind.make("copilot");
+@@ -115,7 +116,11 @@ export interface CopilotAdapterLiveOptions {
+   readonly environment?: NodeJS.ProcessEnv;
+   readonly nativeEventLogger?: EventNdjsonLogger;
+   readonly clientFactory?: (options: CopilotClientOptions) => CopilotClientHandle;
+-  readonly onSkillsChanged?: (skills: ReadonlyArray<ServerProviderSkill>) => Effect.Effect<void>;
++  readonly onSkillsChanged?: (input: {
++    readonly threadId: ThreadId;
++    readonly skills: ReadonlyArray<ServerProviderSkill>;
++  }) => Effect.Effect<void>;
++  readonly onSessionClosed?: (threadId: ThreadId) => Effect.Effect<void>;
+ }
+ 
+ interface PendingApproval {
+@@ -151,6 +156,22 @@ interface CopilotTaskState {
+   readonly toolUseId?: string;
+ }
+ 
++interface CopilotUsageTotals {
++  readonly apiCalls: number;
++  readonly inputTokens: number;
++  readonly cachedInputTokens: number;
++  readonly cacheWriteTokens: number;
++  readonly outputTokens: number;
++  readonly reasoningOutputTokens: number;
++  readonly durationMs: number;
++  readonly totalNanoAiu: number;
++}
++
++interface CopilotTurnUsage extends CopilotUsageTotals {
++  readonly calls: ReadonlyArray<AssistantUsageData>;
++  readonly models: Readonly<Record<string, CopilotUsageTotals>>;
++}
++
+ interface CopilotSessionContext {
+   session: ProviderSession;
+   sdkSession: CopilotSessionHandle | undefined;
+@@ -163,11 +184,10 @@ interface CopilotSessionContext {
+   readonly terminalTaskIds: Set<string>;
+   readonly seenEventIds: Set<string>;
+   readonly eventSemaphore: Semaphore.Semaphore;
+-  activeCompactionItemId: RuntimeItemId | undefined;
+   activeTurnId: TurnId | undefined;
+   activeTurnCompleted: boolean;
+   lastPlanMarkdown: string | undefined;
+-  lastUsage: unknown;
++  turnUsage: CopilotTurnUsage | undefined;
+   omittedBinaryAssetWarningEmitted: boolean;
+   stopped: boolean;
+ }
+@@ -193,6 +213,69 @@ function boundedText(value: string | undefined, maxChars = MAX_DETAIL_CHARS): st
+   return ownedString(bounded);
+ }
+ 
++function boundedContentText(
++  value: string | undefined,
++  maxChars = MAX_DETAIL_CHARS,
++): string | undefined {
++  if (value === undefined || value.trim().length === 0) return undefined;
++  const bounded =
++    value.length <= maxChars ? value : `${value.slice(0, Math.max(0, maxChars - 1))}…`;
++  return ownedString(bounded);
++}
++
++function boundedStreamText(value: string, maxChars = MAX_STREAM_CHARS): string {
++  const bounded =
++    value.length <= maxChars ? value : `${value.slice(0, Math.max(0, maxChars - 1))}…`;
++  return ownedString(bounded);
++}
++
++const EMPTY_USAGE_TOTALS: CopilotUsageTotals = {
++  apiCalls: 0,
++  inputTokens: 0,
++  cachedInputTokens: 0,
++  cacheWriteTokens: 0,
++  outputTokens: 0,
++  reasoningOutputTokens: 0,
++  durationMs: 0,
++  totalNanoAiu: 0,
++};
++
++function usageCount(value: number | undefined): number {
++  return value === undefined || !Number.isFinite(value) ? 0 : Math.max(0, Math.trunc(value));
++}
++
++function addUsageTotals(
++  current: CopilotUsageTotals,
++  usage: AssistantUsageData,
++): CopilotUsageTotals {
++  return {
++    apiCalls: current.apiCalls + 1,
++    inputTokens: current.inputTokens + usageCount(usage.inputTokens),
++    cachedInputTokens: current.cachedInputTokens + usageCount(usage.cacheReadTokens),
++    cacheWriteTokens: current.cacheWriteTokens + usageCount(usage.cacheWriteTokens),
++    outputTokens: current.outputTokens + usageCount(usage.outputTokens),
++    reasoningOutputTokens: current.reasoningOutputTokens + usageCount(usage.reasoningTokens),
++    durationMs: current.durationMs + usageCount(usage.duration),
++    totalNanoAiu: current.totalNanoAiu + usageCount(usage.copilotUsage?.totalNanoAiu),
++  };
++}
++
++function accumulateTurnUsage(
++  current: CopilotTurnUsage | undefined,
++  usage: AssistantUsageData,
++): CopilotTurnUsage {
++  const previous = current ?? { ...EMPTY_USAGE_TOTALS, calls: [], models: {} };
++  const previousModel = previous.models[usage.model] ?? EMPTY_USAGE_TOTALS;
++  return {
++    ...addUsageTotals(previous, usage),
++    calls: [...previous.calls, usage],
++    models: {
++      ...previous.models,
++      [usage.model]: addUsageTotals(previousModel, usage),
++    },
++  };
++}
++
+ function boundedJson(value: unknown): string {
+   let serialized: string;
+   try {
+@@ -331,15 +414,21 @@ function canApproveForSession(request: PermissionRequest): boolean {
+   );
+ }
+ 
++function canApproveAlways(request: PermissionRequest): boolean {
++  return request.kind === "url"
++    ? urlDomain(request.url) !== undefined
++    : canApproveForSession(request);
++}
++
+ function approvalOptions(request: PermissionRequest): ReadonlyArray<ProviderApprovalOption> {
+   return [
+     { decision: "accept", label: "Allow once" },
+     ...(canApproveForSession(request)
+       ? ([{ decision: "acceptForSession", label: "Allow for session" }] as const)
+       : []),
+-    ...(request.kind === "hook"
+-      ? []
+-      : ([{ decision: "acceptAlways", label: "Always allow" }] as const)),
++    ...(canApproveAlways(request)
++      ? ([{ decision: "acceptAlways", label: "Always allow" }] as const)
++      : []),
+     { decision: "decline", label: "Decline" },
+   ];
+ }
+@@ -386,6 +475,15 @@ function urlDomain(value: string): string | undefined {
+   }
+ }
+ 
++function isApprovalDecisionSupported(
++  request: PermissionRequest,
++  decision: ProviderApprovalDecision,
++): boolean {
++  if (decision === "acceptForSession") return canApproveForSession(request);
++  if (decision === "acceptAlways") return canApproveAlways(request);
++  return true;
++}
++
+ function approvalResult(
+   context: CopilotSessionContext,
+   request: PermissionRequest,
+@@ -403,19 +501,23 @@ function approvalResult(
+ 
+   const approval = canApproveForSession(request) ? sessionApproval(request) : undefined;
+   if (decision === "acceptForSession") {
+-    return approval ? { kind: "approve-for-session", approval } : { kind: "approve-once" };
++    return approval
++      ? { kind: "approve-for-session", approval }
++      : { kind: "reject", feedback: "Session approval is not supported for this request." };
+   }
+ 
+   if (request.kind === "url") {
+     const domain = urlDomain(request.url);
+-    return domain ? { kind: "approve-permanently", domain } : { kind: "approve-once" };
++    return domain
++      ? { kind: "approve-permanently", domain }
++      : { kind: "reject", feedback: "Permanent approval requires a valid URL domain." };
+   }
+   const locationKey = context.session.cwd;
+   return approval && locationKey
+     ? { kind: "approve-for-location", approval, locationKey }
+     : approval
+       ? { kind: "approve-for-session", approval }
+-      : { kind: "approve-once" };
++      : { kind: "reject", feedback: "Persistent approval is not supported for this request." };
+ }
+ 
+ function automaticPermissionResult(
+@@ -588,6 +690,18 @@ export function copilotSkillsFromSdk(
+   return [...skillsByName.values()].sort((left, right) => left.name.localeCompare(right.name));
+ }
+ 
++export function copilotInstanceSnapshotSkills(
++  skills: ReadonlyArray<ServerProviderSkill>,
++): ReadonlyArray<ServerProviderSkill> {
++  return skills.filter(
++    (skill) =>
++      skill.scope === "personal-copilot" ||
++      skill.scope === "personal-agents" ||
++      skill.scope === "plugin" ||
++      skill.scope === "builtin",
++  );
++}
++
+ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+   settings: CopilotSettings,
+   options: CopilotAdapterLiveOptions = {},
+@@ -600,11 +714,12 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+   const runtimeEvents = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+   const sessions = new Map<ThreadId, CopilotSessionContext>();
+   const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
+-  const clientOptions = makeCopilotClientOptions({
++  const clientConfiguration = resolveCopilotClientConfiguration({
+     settings,
+     cwd: serverConfig.cwd,
+     ...(options.environment ? { environment: options.environment } : {}),
+   });
++  const clientOptions = clientConfiguration.options;
+   const client =
+     options.clientFactory?.(clientOptions) ??
+     (new CopilotClient(clientOptions) as CopilotClientHandle);
+@@ -766,16 +881,38 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+     state: "completed" | "failed" | "interrupted",
+     event: SessionEvent,
+     errorMessage?: string,
++    synthetic?: {
++      readonly messageType: string;
++      readonly payload: unknown;
++    },
+   ) {
+     const turnId = context.activeTurnId;
+     if (!turnId || context.activeTurnCompleted) return;
+     context.activeTurnCompleted = true;
++    const base = synthetic
++      ? yield* syntheticBase(context, synthetic.messageType, synthetic.payload, { turnId })
++      : eventBase(context, event, { turnId });
+     yield* emit({
+-      ...eventBase(context, event, { turnId }),
++      ...base,
+       type: "turn.completed",
+       payload: {
+         state,
+-        ...(context.lastUsage !== undefined ? { usage: context.lastUsage } : {}),
++        ...(context.turnUsage !== undefined
++          ? {
++              usage: {
++                apiCalls: context.turnUsage.apiCalls,
++                inputTokens: context.turnUsage.inputTokens,
++                cachedInputTokens: context.turnUsage.cachedInputTokens,
++                cacheWriteTokens: context.turnUsage.cacheWriteTokens,
++                outputTokens: context.turnUsage.outputTokens,
++                reasoningOutputTokens: context.turnUsage.reasoningOutputTokens,
++                durationMs: context.turnUsage.durationMs,
++                totalNanoAiu: context.turnUsage.totalNanoAiu,
++                calls: context.turnUsage.calls,
++              },
++              modelUsage: context.turnUsage.models,
++            }
++          : {}),
+         ...(errorMessage ? { errorMessage } : {}),
+       },
+     });
+@@ -812,7 +949,10 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+   ) {
+     const skills = copilotSkillsFromSdk(input);
+     if (options.onSkillsChanged) {
+-      yield* options.onSkillsChanged(skills);
++      yield* options.onSkillsChanged({
++        threadId: context.session.threadId,
++        skills: copilotInstanceSnapshotSkills(skills),
++      });
+     }
+     if (input.some((skill) => skill.userInvocable && !skill.path)) {
+       yield* emit({
+@@ -978,6 +1118,7 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+     context: CopilotSessionContext,
+     event: SessionEvent,
+   ) {
++    if (context.stopped) return;
+     if (context.seenEventIds.has(event.id)) return;
+     context.seenEventIds.add(event.id);
+     yield* writeNative(context, event);
+@@ -989,68 +1130,93 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+ 
+     switch (event.type) {
+       case "assistant.message_start":
++        if (event.agentId) return;
+         yield* emit({
+           ...eventBase(context, event, { itemId: event.data.messageId }),
+           type: "item.started",
+           payload: {
+             itemType: "assistant_message",
+             status: "inProgress",
+-            ...(event.agentId ? { agentId: event.agentId } : {}),
+           },
+         });
+         return;
+       case "assistant.message_delta":
++        if (event.agentId) return;
+         yield* emit({
+           ...eventBase(context, event, { itemId: event.data.messageId }),
+           type: "content.delta",
+           payload: {
+             streamKind: "assistant_text",
+-            delta: boundedText(event.data.deltaContent, MAX_STREAM_CHARS) ?? "",
++            delta: boundedStreamText(event.data.deltaContent),
+           },
+         });
+         return;
+-      case "assistant.message":
++      case "assistant.message": {
++        if (event.agentId) {
++          const task =
++            context.tasks.get(event.agentId) ??
++            ({
++              taskId: RuntimeTaskId.make(event.agentId),
++              taskType: "subagent",
++              title: "Copilot subagent",
++            } satisfies CopilotTaskState);
++          yield* emitTaskStarted(context, task, event.timestamp);
++          const summary = boundedContentText(event.data.content);
++          if (summary) {
++            yield* emit({
++              ...eventBase(context, event),
++              type: "task.progress",
++              payload: {
++                taskId: task.taskId,
++                description: task.title,
++                summary,
++                ...taskLinkage(task),
++              },
++            });
++          }
++          return;
++        }
++        const detail = boundedContentText(event.data.content, 120_000);
+         yield* emit({
+           ...eventBase(context, event, { itemId: event.data.messageId }),
+           type: "item.completed",
+           payload: {
+             itemType: "assistant_message",
+             status: "completed",
+-            ...(boundedText(event.data.content, 120_000)
+-              ? { detail: boundedText(event.data.content, 120_000) }
+-              : {}),
++            ...(detail ? { detail } : {}),
+             data: {
+               messageId: event.data.messageId,
+               ...(event.data.model ? { model: event.data.model } : {}),
+             },
+-            ...(event.agentId ? { agentId: event.agentId } : {}),
+           },
+         });
+         return;
++      }
+       case "assistant.reasoning_delta":
++        if (event.agentId) return;
+         yield* emit({
+           ...eventBase(context, event, { itemId: event.data.reasoningId }),
+           type: "content.delta",
+           payload: {
+             streamKind: "reasoning_text",
+-            delta: boundedText(event.data.deltaContent, MAX_STREAM_CHARS) ?? "",
++            delta: boundedStreamText(event.data.deltaContent),
+           },
+         });
+         return;
+-      case "assistant.reasoning":
++      case "assistant.reasoning": {
++        if (event.agentId) return;
++        const detail = boundedContentText(event.data.content, 120_000);
+         yield* emit({
+           ...eventBase(context, event, { itemId: event.data.reasoningId }),
+           type: "item.completed",
+           payload: {
+             itemType: "reasoning",
+             status: "completed",
+-            ...(boundedText(event.data.content, 120_000)
+-              ? { detail: boundedText(event.data.content, 120_000) }
+-              : {}),
+-            ...(event.agentId ? { agentId: event.agentId } : {}),
++            ...(detail ? { detail } : {}),
+           },
+         });
+         return;
++      }
+       case "assistant.intent": {
+         if (event.agentId) {
+           const task = context.tasks.get(event.agentId);
+@@ -1125,7 +1291,7 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+           type: "content.delta",
+           payload: {
+             streamKind: tool?.itemType === "command_execution" ? "command_output" : "unknown",
+-            delta: boundedText(event.data.partialOutput, MAX_STREAM_CHARS) ?? "",
++            delta: boundedStreamText(event.data.partialOutput),
+           },
+         });
+         return;
+@@ -1176,7 +1342,7 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+       }
+       case "assistant.usage":
+         if (!event.agentId) {
+-          context.lastUsage = event.data;
++          context.turnUsage = accumulateTurnUsage(context.turnUsage, event.data);
+         }
+         return;
+       case "session.usage_info":
+@@ -1223,6 +1389,29 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+           yield* completeTurn(context, "failed", event, event.data.message);
+         }
+         return;
++      case "session.shutdown": {
++        const isError = event.data.shutdownType === "error";
++        if (context.activeTurnId && !context.activeTurnCompleted) {
++          yield* completeTurn(
++            context,
++            isError ? "failed" : "interrupted",
++            event,
++            isError ? (event.data.errorReason ?? "Copilot runtime shut down.") : undefined,
++            {
++              messageType: "session.shutdown.turn",
++              payload: sanitizedRawPayload(event),
++            },
++          );
++        }
++        yield* closeContextSerialized(context, {
++          disconnect: false,
++          event,
++          reason: event.data.errorReason ?? "Copilot runtime shut down.",
++          exitKind: isError ? "error" : "graceful",
++          recoverable: isError,
++        });
++        return;
++      }
+       case "session.title_changed":
+         yield* emit({
+           ...eventBase(context, event),
+@@ -1256,55 +1445,47 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+         }
+         return;
+       }
+-      case "session.compaction_start": {
+-        const itemId = RuntimeItemId.make(`copilot-compaction-${event.id}`);
+-        context.activeCompactionItemId = itemId;
+-        yield* emit({
+-          ...eventBase(context, event, { itemId }),
+-          type: "item.started",
+-          payload: {
+-            itemType: "context_compaction",
+-            status: "inProgress",
+-            title: "Compacting context",
+-            ...(event.data.model ? { detail: `Using ${event.data.model}` } : {}),
+-          },
+-        });
++      case "session.compaction_start":
+         return;
+-      }
+       case "session.compaction_complete": {
+-        const itemId =
+-          context.activeCompactionItemId ?? RuntimeItemId.make(`copilot-compaction-${event.id}`);
+-        context.activeCompactionItemId = undefined;
+-        yield* emit({
+-          ...eventBase(context, event, { itemId }),
+-          type: "item.completed",
+-          payload: {
+-            itemType: "context_compaction",
+-            status: event.data.success ? "completed" : "failed",
+-            title: "Context compaction",
+-            ...(boundedText(event.data.error) ? { detail: boundedText(event.data.error) } : {}),
+-            data: {
+-              ...(event.data.messagesRemoved !== undefined
+-                ? { messagesRemoved: event.data.messagesRemoved }
+-                : {}),
+-              ...(event.data.postCompactionTokens !== undefined
+-                ? { postCompactionTokens: event.data.postCompactionTokens }
+-                : {}),
++        if (event.data.success) {
++          yield* emit({
++            ...eventBase(context, event),
++            type: "thread.state.changed",
++            payload: {
++              state: "compacted",
++              detail: {
++                kind: "compaction",
++                ...(event.data.messagesRemoved !== undefined
++                  ? { messagesRemoved: event.data.messagesRemoved }
++                  : {}),
++                ...(event.data.postCompactionTokens !== undefined
++                  ? { postCompactionTokens: event.data.postCompactionTokens }
++                  : {}),
++              },
+             },
+-          },
+-        });
++          });
++        } else {
++          yield* emit({
++            ...eventBase(context, event),
++            type: "runtime.warning",
++            payload: {
++              message: "Copilot context compaction failed.",
++              ...(boundedText(event.data.error) ? { detail: event.data.error } : {}),
++            },
++          });
++        }
+         return;
+       }
+       case "session.truncation":
+         yield* emit({
+-          ...eventBase(context, event, { itemId: `copilot-truncation-${event.id}` }),
+-          type: "item.completed",
++          ...eventBase(context, event),
++          type: "thread.state.changed",
+           payload: {
+-            itemType: "context_compaction",
+-            status: "completed",
+-            title: "Context truncated",
+-            detail: `${event.data.tokensRemovedDuringTruncation.toLocaleString()} tokens removed`,
+-            data: {
++            state: "compacted",
++            detail: {
++              kind: "truncation",
++              tokensRemoved: event.data.tokensRemovedDuringTruncation,
+               messagesRemoved: event.data.messagesRemovedDuringTruncation,
+               tokenLimit: event.data.tokenLimit,
+             },
+@@ -1677,12 +1858,22 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+     return Promise.resolve({ approved: false });
+   };
+ 
+-  const stopContext = Effect.fn("CopilotAdapter.stopContext")(function* (
++  const closeContextSerialized = Effect.fn("CopilotAdapter.closeContextSerialized")(function* (
+     context: CopilotSessionContext,
++    input: {
++      readonly disconnect: boolean;
++      readonly event?: SessionEvent;
++      readonly reason: string;
++      readonly exitKind: "graceful" | "error";
++      readonly recoverable?: boolean;
++    },
+   ) {
+     if (context.stopped) return;
+     context.stopped = true;
+     sessions.delete(context.session.threadId);
++    context.activeTurnId = undefined;
++    context.activeTurnCompleted = true;
++    context.tools.clear();
+     for (const pending of context.pendingApprovals.values()) {
+       pending.resolve({ kind: "user-not-available" });
+     }
+@@ -1691,23 +1882,35 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+     }
+     context.pendingApprovals.clear();
+     context.pendingUserInputs.clear();
+-    const disconnectExit = context.sdkSession
+-      ? yield* Effect.tryPromise({
+-          try: () => context.sdkSession!.disconnect(),
+-          catch: (cause) => toRequestError("session.disconnect", cause),
+-        }).pipe(Effect.exit)
+-      : Exit.void;
++    if (options.onSessionClosed) {
++      yield* options.onSessionClosed(context.session.threadId);
++    }
++    const sdkSession = context.sdkSession;
++    context.sdkSession = undefined;
++    const disconnectExit =
++      input.disconnect && sdkSession
++        ? yield* Effect.tryPromise({
++            try: () => sdkSession.disconnect(),
++            catch: (cause) => toRequestError("session.disconnect", cause),
++          }).pipe(Effect.exit)
++        : Exit.void;
+     yield* updateSession(context, { status: "closed" }, "activeTurnId");
++    const base = input.event
++      ? eventBase(context, input.event)
++      : yield* syntheticBase(context, "session.stopped", {
++          sessionId: sdkSession?.sessionId,
++        });
+     yield* emit({
+-      ...(yield* syntheticBase(context, "session.stopped", {
+-        sessionId: context.sdkSession?.sessionId,
+-      })),
++      ...base,
+       type: "session.exited",
+       payload: {
+-        exitKind: Exit.isSuccess(disconnectExit) ? "graceful" : "error",
++        exitKind: Exit.isSuccess(disconnectExit) ? input.exitKind : "error",
+         ...(Exit.isFailure(disconnectExit)
+           ? { reason: "Failed to disconnect the Copilot session.", recoverable: true }
+-          : { reason: "Session stopped" }),
++          : {
++              reason: input.reason,
++              ...(input.recoverable !== undefined ? { recoverable: input.recoverable } : {}),
++            }),
+       },
+     });
+     if (Exit.isFailure(disconnectExit)) {
+@@ -1715,6 +1918,15 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+     }
+   });
+ 
++  const stopContext = (context: CopilotSessionContext) =>
++    context.eventSemaphore.withPermit(
++      closeContextSerialized(context, {
++        disconnect: true,
++        reason: "Session stopped",
++        exitKind: "graceful",
++      }),
++    );
++
+   const startSession: ProviderAdapterShape<CopilotAdapterError>["startSession"] = (input) =>
+     withThreadLock(
+       input.threadId,
+@@ -1785,11 +1997,10 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+           terminalTaskIds: new Set(),
+           seenEventIds: new Set(),
+           eventSemaphore,
+-          activeCompactionItemId: undefined,
+           activeTurnId: undefined,
+           activeTurnCompleted: false,
+           lastPlanMarkdown: undefined,
+-          lastUsage: undefined,
++          turnUsage: undefined,
+           omittedBinaryAssetWarningEmitted: false,
+           stopped: false,
+         };
+@@ -1805,15 +2016,15 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+             }),
+         });
+ 
+-        const configDirectory = expandCopilotHomePath(settings.homePath);
+         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+         const config: SessionConfig = {
+           clientName: "t3-code",
+           workingDirectory: cwd,
+           streaming: true,
+           enableConfigDiscovery: settings.enableConfigDiscovery,
++          skipCustomInstructions: !settings.enableConfigDiscovery,
+           enableSkills: true,
+-          ...(configDirectory ? { configDirectory } : {}),
++          configDirectory: clientConfiguration.effectiveHome,
+           ...(modelSelection?.model ? { model: modelSelection.model } : {}),
+           ...(reasoningEffort ? { reasoningEffort } : {}),
+           ...(mcpSession
+@@ -1835,42 +2046,47 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+             forkLogged(context.eventSemaphore.withPermit(handleEvent(context, event))),
+         };
+         const previousSessionId = parseResumeCursor(input.resumeCursor);
+-        const sdkSession = yield* Effect.tryPromise({
+-          try: () =>
+-            previousSessionId
+-              ? client.resumeSession(previousSessionId, {
+-                  ...config,
+-                  continuePendingWork: false,
+-                })
+-              : client.createSession(config),
+-          catch: (cause) => toRequestError("session.start", cause),
+-        });
+-        context.sdkSession = sdkSession;
+-        context.session = {
+-          ...context.session,
+-          status: "ready",
+-          resumeCursor: resumeCursor(sdkSession.sessionId),
+-          updatedAt: yield* nowIso,
+-        };
+-        sessions.set(input.threadId, context);
+-        yield* emit({
+-          ...(yield* syntheticBase(context, "session.started", {
+-            nativeSessionId: sdkSession.sessionId,
+-            resumed: previousSessionId !== undefined,
+-          })),
+-          type: "session.started",
+-          payload: {
+-            message: "GitHub Copilot session ready",
+-            resume: context.session.resumeCursor,
+-          },
+-        });
+-        yield* emit({
+-          ...(yield* syntheticBase(context, "thread.started", {
+-            nativeSessionId: sdkSession.sessionId,
+-          })),
+-          type: "thread.started",
+-          payload: { providerThreadId: sdkSession.sessionId },
+-        });
++        const sdkSession = yield* context.eventSemaphore.withPermit(
++          Effect.gen(function* () {
++            const createdSession = yield* Effect.tryPromise({
++              try: () =>
++                previousSessionId
++                  ? client.resumeSession(previousSessionId, {
++                      ...config,
++                      continuePendingWork: false,
++                    })
++                  : client.createSession(config),
++              catch: (cause) => toRequestError("session.start", cause),
++            });
++            context.sdkSession = createdSession;
++            context.session = {
++              ...context.session,
++              status: "ready",
++              resumeCursor: resumeCursor(createdSession.sessionId),
++              updatedAt: yield* nowIso,
++            };
++            sessions.set(input.threadId, context);
++            yield* emit({
++              ...(yield* syntheticBase(context, "session.started", {
++                nativeSessionId: createdSession.sessionId,
++                resumed: previousSessionId !== undefined,
++              })),
++              type: "session.started",
++              payload: {
++                message: "GitHub Copilot session ready",
++                resume: context.session.resumeCursor,
++              },
++            });
++            yield* emit({
++              ...(yield* syntheticBase(context, "thread.started", {
++                nativeSessionId: createdSession.sessionId,
++              })),
++              type: "thread.started",
++              payload: { providerThreadId: createdSession.sessionId },
++            });
++            return createdSession;
++          }),
++        );
+ 
+         yield* Effect.tryPromise({
+           try: () => sdkSession.rpc.skills.list(),
+@@ -1988,7 +2204,8 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+         const turnId = TurnId.make(`copilot-turn-${turnUuid}`);
+         context.activeTurnId = turnId;
+         context.activeTurnCompleted = false;
+-        context.lastUsage = undefined;
++        context.lastPlanMarkdown = undefined;
++        context.turnUsage = undefined;
+         context.turns.push({ id: turnId, items: [] });
+         yield* updateSession(context, {
+           status: "running",
+@@ -2102,6 +2319,13 @@ export const makeCopilotAdapter = Effect.fn("makeCopilotAdapter")(function* (
+           issue: `Unknown approval request '${requestId}'.`,
+         });
+       }
++      if (!isApprovalDecisionSupported(pending.request, decision)) {
++        return yield* new ProviderAdapterValidationError({
++          provider: PROVIDER,
++          operation: "respondToRequest",
++          issue: `Approval decision '${decision}' is not supported for this request.`,
++        });
++      }
+       context.pendingApprovals.delete(requestId);
+       pending.resolve(approvalResult(context, pending.request, decision));
+       yield* emit({
+diff --git a/apps/server/src/provider/Layers/copilotClientOptions.test.ts b/apps/server/src/provider/Layers/copilotClientOptions.test.ts
+index af4283e6d..36a75f776 100644
+--- a/apps/server/src/provider/Layers/copilotClientOptions.test.ts
++++ b/apps/server/src/provider/Layers/copilotClientOptions.test.ts
+@@ -8,9 +8,11 @@ import { describe, it } from "@effect/vitest";
+ import * as Schema from "effect/Schema";
+ 
+ import {
++  copilotContinuationGroupKey,
+   expandCopilotHomePath,
+   makeCopilotClientOptions,
+   normalizeCopilotCliPathOverride,
++  resolveCopilotClientConfiguration,
+ } from "./copilotClientOptions.ts";
+ 
+ const decodeSettings = Schema.decodeSync(CopilotSettings);
+@@ -25,6 +27,7 @@ describe("copilotClientOptions", () => {
+     NodeAssert.equal(options.connection, undefined);
+     NodeAssert.equal(options.mode, "copilot-cli");
+     NodeAssert.equal(options.workingDirectory, "/workspace/project");
++    NodeAssert.equal(options.baseDirectory, NodePath.join(NodeOS.homedir(), ".copilot"));
+   });
+ 
+   it("uses explicit runtime and COPILOT_HOME overrides", () => {
+@@ -38,7 +41,7 @@ describe("copilotClientOptions", () => {
+       NodePath.join(NodeOS.homedir(), "work-copilot"),
+     );
+ 
+-    const environment = { PATH: "/usr/bin" };
++    const environment = { PATH: "/usr/bin", COPILOT_HOME: "/ignored/environment-home" };
+     const options = makeCopilotClientOptions({
+       settings: decodeSettings({
+         binaryPath: "/opt/copilot/bin/copilot",
+@@ -55,4 +58,20 @@ describe("copilotClientOptions", () => {
+     NodeAssert.equal(options.baseDirectory, NodePath.join(NodeOS.homedir(), "work-copilot"));
+     NodeAssert.deepEqual(options.env, environment);
+   });
++
++  it("uses normalized environment COPILOT_HOME when the setting is blank", () => {
++    const resolved = resolveCopilotClientConfiguration({
++      settings: decodeSettings({ homePath: "" }),
++      cwd: "/workspace/project",
++      environment: { COPILOT_HOME: "~/environment-copilot" },
++    });
++    const expectedHome = NodePath.join(NodeOS.homedir(), "environment-copilot");
++
++    NodeAssert.equal(resolved.effectiveHome, expectedHome);
++    NodeAssert.equal(resolved.options.baseDirectory, expectedHome);
++    NodeAssert.equal(
++      copilotContinuationGroupKey(resolved.effectiveHome),
++      `githubCopilot:home:${expectedHome}`,
++    );
++  });
+ });
+diff --git a/apps/server/src/provider/Layers/copilotClientOptions.ts b/apps/server/src/provider/Layers/copilotClientOptions.ts
+index cd9aa4c63..b7c4f71de 100644
+--- a/apps/server/src/provider/Layers/copilotClientOptions.ts
++++ b/apps/server/src/provider/Layers/copilotClientOptions.ts
+@@ -29,23 +29,47 @@ export function expandCopilotHomePath(value: string | undefined): string | undef
+   return trimmed;
+ }
+ 
+-export function makeCopilotClientOptions(input: {
++export interface ResolvedCopilotClientConfiguration {
++  readonly options: CopilotClientOptions;
++  readonly effectiveHome: string;
++}
++
++export function resolveCopilotClientConfiguration(input: {
+   readonly settings: CopilotSettings;
+   readonly cwd: string;
+   readonly environment?: NodeJS.ProcessEnv;
+-}): CopilotClientOptions {
++}): ResolvedCopilotClientConfiguration {
+   const cliPath = normalizeCopilotCliPathOverride(input.settings.binaryPath);
+-  const baseDirectory = expandCopilotHomePath(input.settings.homePath);
++  const configuredHome = input.settings.homePath.trim();
++  const environmentHome = input.environment?.COPILOT_HOME?.trim() ?? "";
++  const homeCandidate =
++    configuredHome || environmentHome || NodePath.join(NodeOS.homedir(), ".copilot");
++  const effectiveHome = NodePath.resolve(expandCopilotHomePath(homeCandidate) ?? homeCandidate);
+   return {
+-    mode: "copilot-cli",
+-    workingDirectory: input.cwd,
+-    logLevel: "error",
+-    ...(input.environment ? { env: input.environment } : {}),
+-    ...(baseDirectory ? { baseDirectory } : {}),
+-    ...(cliPath ? { connection: RuntimeConnection.forStdio({ path: cliPath }) } : {}),
++    effectiveHome,
++    options: {
++      mode: "copilot-cli",
++      workingDirectory: input.cwd,
++      logLevel: "error",
++      ...(input.environment ? { env: input.environment } : {}),
++      baseDirectory: effectiveHome,
++      ...(cliPath ? { connection: RuntimeConnection.forStdio({ path: cliPath }) } : {}),
++    },
+   };
+ }
+ 
++export function copilotContinuationGroupKey(effectiveHome: string): string {
++  return `githubCopilot:home:${effectiveHome}`;
++}
++
++export function makeCopilotClientOptions(input: {
++  readonly settings: CopilotSettings;
++  readonly cwd: string;
++  readonly environment?: NodeJS.ProcessEnv;
++}): CopilotClientOptions {
++  return resolveCopilotClientConfiguration(input).options;
++}
++
+ export function createCopilotClient(input: {
+   readonly settings: CopilotSettings;
+   readonly cwd: string;
+diff --git a/apps/server/src/textGeneration/CopilotTextGeneration.test.ts b/apps/server/src/textGeneration/CopilotTextGeneration.test.ts
+index 2f4c11e5a..e9777d53c 100644
+--- a/apps/server/src/textGeneration/CopilotTextGeneration.test.ts
++++ b/apps/server/src/textGeneration/CopilotTextGeneration.test.ts
+@@ -41,6 +41,7 @@ it.effect("generates all bounded text operations with ambient features disabled"
+     const prompts: string[] = [];
+     let disconnects = 0;
+     let stops = 0;
++    const deletedSessionIds: string[] = [];
+     const textGeneration = yield* makeCopilotTextGeneration(
+       decodeSettings({ enabled: true }),
+       undefined,
+@@ -51,9 +52,13 @@ it.effect("generates all bounded text operations with ambient features disabled"
+             stops += 1;
+             return [];
+           },
++          deleteSession: async (sessionId) => {
++            deletedSessionIds.push(sessionId);
++          },
+           createSession: async (config) => {
+             configs.push(config);
+             return {
++              sessionId: `text-session-${configs.length}`,
+               sendAndWait: async (message) => {
+                 prompts.push(typeof message === "string" ? message : message.prompt);
+                 return assistantMessage(responses.shift() ?? "");
+@@ -103,6 +108,12 @@ it.effect("generates all bounded text operations with ambient features disabled"
+     NodeAssert.equal(prompts.length, 4);
+     NodeAssert.equal(disconnects, 4);
+     NodeAssert.equal(stops, 4);
++    NodeAssert.deepEqual(deletedSessionIds, [
++      "text-session-1",
++      "text-session-2",
++      "text-session-3",
++      "text-session-4",
++    ]);
+     for (const config of configs) {
+       NodeAssert.equal(config.model, "gpt-test");
+       NodeAssert.equal(config.reasoningEffort, "high");
+@@ -121,6 +132,7 @@ it.effect("fails malformed output while still disconnecting the session and clie
+   Effect.gen(function* () {
+     let disconnected = false;
+     let stopped = false;
++    let deleted = false;
+     const textGeneration = yield* makeCopilotTextGeneration(
+       decodeSettings({ enabled: true }),
+       undefined,
+@@ -131,7 +143,12 @@ it.effect("fails malformed output while still disconnecting the session and clie
+             stopped = true;
+             return [];
+           },
++          deleteSession: async (sessionId) => {
++            NodeAssert.equal(sessionId, "malformed-session");
++            deleted = true;
++          },
+           createSession: async () => ({
++            sessionId: "malformed-session",
+             sendAndWait: async () => assistantMessage("not json"),
+             disconnect: async () => {
+               disconnected = true;
+@@ -151,6 +168,7 @@ it.effect("fails malformed output while still disconnecting the session and clie
+ 
+     NodeAssert.equal(Result.isFailure(result), true);
+     NodeAssert.equal(disconnected, true);
++    NodeAssert.equal(deleted, true);
+     NodeAssert.equal(stopped, true);
+   }),
+ );
+@@ -159,6 +177,7 @@ it.effect("surfaces SDK timeout failures and still stops the client", () =>
+   Effect.gen(function* () {
+     let disconnected = false;
+     let stopped = false;
++    let deleted = false;
+     const textGeneration = yield* makeCopilotTextGeneration(
+       decodeSettings({ enabled: true }),
+       undefined,
+@@ -170,7 +189,12 @@ it.effect("surfaces SDK timeout failures and still stops the client", () =>
+             stopped = true;
+             return [];
+           },
++          deleteSession: async (sessionId) => {
++            NodeAssert.equal(sessionId, "timeout-session");
++            deleted = true;
++          },
+           createSession: async () => ({
++            sessionId: "timeout-session",
+             sendAndWait: async () => {
+               throw new Error("Timed out");
+             },
+@@ -192,6 +216,7 @@ it.effect("surfaces SDK timeout failures and still stops the client", () =>
+ 
+     NodeAssert.equal(Result.isFailure(result), true);
+     NodeAssert.equal(disconnected, true);
++    NodeAssert.equal(deleted, true);
+     NodeAssert.equal(stopped, true);
+   }),
+ );
+diff --git a/apps/server/src/textGeneration/CopilotTextGeneration.ts b/apps/server/src/textGeneration/CopilotTextGeneration.ts
+index 5f99449ac..a77dd16f1 100644
+--- a/apps/server/src/textGeneration/CopilotTextGeneration.ts
++++ b/apps/server/src/textGeneration/CopilotTextGeneration.ts
+@@ -28,8 +28,11 @@ import {
+ const GENERATION_TIMEOUT_MS = 180_000;
+ const MAX_GENERATION_RESPONSE_CHARS = 20_000;
+ 
+-type CopilotTextGenerationSession = Pick<CopilotSession, "sendAndWait" | "disconnect">;
+-type CopilotTextGenerationClient = Pick<CopilotClient, "start" | "stop"> & {
++type CopilotTextGenerationSession = Pick<
++  CopilotSession,
++  "sessionId" | "sendAndWait" | "disconnect"
++>;
++type CopilotTextGenerationClient = Pick<CopilotClient, "start" | "stop" | "deleteSession"> & {
+   readonly createSession: (config: SessionConfig) => Promise<CopilotTextGenerationSession>;
+ };
+ 
+@@ -121,7 +124,23 @@ export const makeCopilotTextGeneration = Effect.fn("makeCopilotTextGeneration")(
+               options.timeoutMs ?? GENERATION_TIMEOUT_MS,
+             );
+           } finally {
+-            await session.disconnect();
++            const cleanupErrors: unknown[] = [];
++            try {
++              await session.disconnect();
++            } catch (cause) {
++              cleanupErrors.push(cause);
++            }
++            try {
++              await client.deleteSession(session.sessionId);
++            } catch (cause) {
++              cleanupErrors.push(cause);
++            }
++            if (cleanupErrors.length > 0) {
++              throw new AggregateError(
++                cleanupErrors,
++                "GitHub Copilot text generation session cleanup failed.",
++              );
++            }
+           }
+         } finally {
+           const stopErrors = await client.stop();
+diff --git a/apps/web/src/components/settings/ProviderSettingsPanel.tsx b/apps/web/src/components/settings/ProviderSettingsPanel.tsx
+index 6abd1eeb1..599496b98 100644
+--- a/apps/web/src/components/settings/ProviderSettingsPanel.tsx
++++ b/apps/web/src/components/settings/ProviderSettingsPanel.tsx
+@@ -83,6 +83,7 @@ import {
+   backgroundActivityOverrideSettings,
+   buildProviderInstanceUpdatePatch,
+   durationToSeconds,
++  isMigratedLegacyCopilotDefault,
+   normalizeIntervalSeconds,
+   PROVIDER_HEALTH_INTERVAL_STEP_SECONDS,
+ } from "./SettingsPanels.logic";
+@@ -577,6 +578,7 @@ export function EnvironmentProviderSettings({
+     readonly instance: ProviderInstanceConfig;
+     readonly driver: ProviderDriverKind;
+     readonly isDefault: boolean;
++    readonly writesLegacyProviderSettings: boolean;
+     readonly isDirty?: boolean;
+   }
+ 
+@@ -636,7 +638,12 @@ export function EnvironmentProviderSettings({
+       explicitInstance ?? synthesizedInstance();
+     const hasLegacyCopilotDefault =
+       driver === "githubCopilot" &&
+-      (instancesByDriver.get(driver) ?? []).some(([id]) => id === "copilot");
++      Object.entries(settings.providerInstances ?? {}).some(([id, instance]) =>
++        isMigratedLegacyCopilotDefault({
++          driver: instance.driver,
++          instanceId: id as ProviderInstanceId,
++        }),
++      );
+     // Only the default slot depends on the legacy blob; custom instances for
+     // the driver must still render even when the slot has nothing to show.
+     if (effectiveInstance !== undefined && !hasLegacyCopilotDefault) {
+@@ -647,22 +654,38 @@ export function EnvironmentProviderSettings({
+         instance: effectiveInstance,
+         driver,
+         isDefault: true,
++        writesLegacyProviderSettings: true,
+         isDirty,
+       });
+     }
+     for (const [id, instance] of instancesByDriver.get(providerSettings.provider) ?? []) {
+       if (id === defaultInstanceId) continue;
+-      rows.push({ instanceId: id, instance, driver: instance.driver, isDefault: false });
++      const isMigratedDefault = isMigratedLegacyCopilotDefault({
++        driver: instance.driver,
++        instanceId: id,
++      });
++      rows.push({
++        instanceId: id,
++        instance,
++        driver: instance.driver,
++        isDefault: isMigratedDefault,
++        writesLegacyProviderSettings: false,
++      });
+     }
+   }
+   for (const [driver, list] of instancesByDriver) {
+     if (visibleDriverKinds.has(driver)) continue;
+     for (const [id, instance] of list) {
++      const isMigratedDefault = isMigratedLegacyCopilotDefault({
++        driver: instance.driver,
++        instanceId: id,
++      });
+       rows.push({
+         instanceId: id,
+         instance,
+         driver: instance.driver,
+-        isDefault: defaultSlotIdsBySource.has(String(id)),
++        isDefault: isMigratedDefault || defaultSlotIdsBySource.has(String(id)),
++        writesLegacyProviderSettings: !isMigratedDefault && defaultSlotIdsBySource.has(String(id)),
+       });
+     }
+   }
+@@ -684,7 +707,7 @@ export function EnvironmentProviderSettings({
+         instanceId: row.instanceId,
+         instance: next,
+         driver: row.driver,
+-        isDefault: row.isDefault,
++        isDefault: row.writesLegacyProviderSettings,
+         textGenerationModelSelection: options?.textGenerationModelSelection,
+       }),
+     );
+diff --git a/apps/web/src/components/settings/SettingsPanels.logic.test.ts b/apps/web/src/components/settings/SettingsPanels.logic.test.ts
+index 490d24859..85aa1a3a2 100644
+--- a/apps/web/src/components/settings/SettingsPanels.logic.test.ts
++++ b/apps/web/src/components/settings/SettingsPanels.logic.test.ts
+@@ -16,6 +16,7 @@ import {
+   getChangedTypographySettingLabels,
+   isSamePreviewViewport,
+   hasChangedBackgroundActivitySettings,
++  isMigratedLegacyCopilotDefault,
+   isProjectGroupingEnabled,
+   projectGroupingModeFromToggle,
+   resolveBackgroundActivityProfileOption,
+@@ -243,6 +244,34 @@ describe("buildProviderInstanceUpdatePatch", () => {
+     expect(patch.providerInstances?.[instanceId]).toEqual(nextInstance);
+     expect(patch.providers).toBeUndefined();
+   });
++
++  it("treats the migrated Copilot id as a non-deletable default without rewriting mirrors", () => {
++    const instanceId = ProviderInstanceId.make("copilot");
++    const driver = ProviderDriverKind.make("githubCopilot");
++    const nextInstance = {
++      driver,
++      enabled: true,
++      config: { homePath: "/Users/example/.copilot" },
++    } satisfies ProviderInstanceConfig;
++
++    expect(isMigratedLegacyCopilotDefault({ driver, instanceId })).toBe(true);
++    expect(
++      isMigratedLegacyCopilotDefault({
++        driver: ProviderDriverKind.make("copilot"),
++        instanceId,
++      }),
++    ).toBe(true);
++    const patch = buildProviderInstanceUpdatePatch({
++      settings: DEFAULT_SERVER_SETTINGS,
++      instanceId,
++      instance: nextInstance,
++      driver,
++      isDefault: false,
++    });
++
++    expect(patch.providerInstances?.[instanceId]).toEqual(nextInstance);
++    expect(patch.providers).toBeUndefined();
++  });
+ });
+ 
+ describe("getChangedBrowserSettingLabels", () => {
+diff --git a/apps/web/src/components/settings/SettingsPanels.logic.ts b/apps/web/src/components/settings/SettingsPanels.logic.ts
+index 331391dbc..8e79d9cdd 100644
+--- a/apps/web/src/components/settings/SettingsPanels.logic.ts
++++ b/apps/web/src/components/settings/SettingsPanels.logic.ts
+@@ -281,6 +281,16 @@ export function buildProviderInstanceUpdatePatch(input: {
+   };
+ }
+ 
++export function isMigratedLegacyCopilotDefault(input: {
++  readonly driver: ProviderDriverKind;
++  readonly instanceId: ProviderInstanceId;
++}): boolean {
++  return (
++    (input.driver === "githubCopilot" || input.driver === "copilot") &&
++    input.instanceId === "copilot"
++  );
++}
++
+ // ── Background-activity interval helpers ─────────────────────────────
+ // Shared by the General panel's interval rows and the Providers panel's
+ // health-check row.
+diff --git a/docs/user/providers-copilot.md b/docs/user/providers-copilot.md
+index e4b48f2d1..4849508fe 100644
+--- a/docs/user/providers-copilot.md
++++ b/docs/user/providers-copilot.md
+@@ -29,10 +29,17 @@ continuation environment.
+ skills, and MCP server definitions. T3 Code also attaches its own authenticated MCP server when
+ agent browser access is enabled.
+ 
++Turning the setting off also disables custom instruction loading; it is a trust boundary, not only
++an MCP-discovery toggle.
++
+ Copilot permissions, user questions, proposed plans, tools, background agents, context usage,
+ compaction, skills, and MCP status are normalized into the same T3 Code contracts used by web,
+ desktop, and mobile clients.
+ 
++Project and inherited skills remain available to the Copilot session that discovered them. The
++instance-wide Settings catalog only publishes context-independent personal, plugin, and built-in
++skills, so opening one project cannot leak its skill list into another project's picker.
++
+ ## Legacy `copilot` Settings
+ 
+ Early T3 Code feature branches used the driver name `copilot`. The current driver name is
+@@ -40,7 +47,8 @@ Early T3 Code feature branches used the driver name `copilot`. The current drive
+ 
+ When old settings are loaded, T3 Code keeps the legacy instance ID so existing threads remain
+ routable, but runs it through the `githubCopilot` driver. Its configuration is preserved. New
+-instances use `githubCopilot`.
++instances use `githubCopilot`. The migrated `copilot` slot is presented as the default and cannot
++be deleted as if it were a disposable custom instance.
+ 
+ Downgrading to an older feature branch may require changing the driver name back manually. Native
+ Copilot sessions remain in `COPILOT_HOME`; upstream builds without this driver cannot start or

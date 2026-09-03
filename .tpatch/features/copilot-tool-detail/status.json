@@ -8,11 +8,5 @@
   "updated_at": "2026-05-13T07:15:33Z",
   "last_command": "add",
   "apply": {},
-  "reconcile": {},
-  "depends_on": [
-    {
-      "slug": "copilot-cli-provider",
-      "kind": "hard"
-    }
-  ]
+  "reconcile": {}
 }

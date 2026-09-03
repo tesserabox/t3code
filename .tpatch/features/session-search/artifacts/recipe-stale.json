@@ -1,0 +1,5 @@
+{
+  "stale": true,
+  "reason": "patch touches files absent from recipe: apps/web/src/components/CommandPalette.logic.test.ts, apps/web/src/components/CommandPalette.logic.ts, apps/web/src/components/CommandPalette.tsx, apps/web/src/components/chat/MessagesTimeline.logic.test.ts, apps/web/src/components/chat/ProposedPlanCard.tsx, apps/web/src/components/settings/KeybindingsSettings.logic.test.ts, apps/web/src/keybindings.test.ts, apps/web/src/routes/_chat.tsx, apps/web/src/sessionSearchBus.ts, packages/contracts/src/keybindings.test.ts; recipe references files absent from patch: apps/web/src/components/ChatView.tsx",
+  "detected_at": "2026-09-02T20:18:55Z"
+}
