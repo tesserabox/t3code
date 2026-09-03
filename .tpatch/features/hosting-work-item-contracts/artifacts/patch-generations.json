@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "feature": "hosting-work-item-contracts",
+  "current_generation": 1,
+  "generations": [
+    {
+      "generation": 1,
+      "generation_id": "pg_a7cb4d71330e",
+      "kind": "record",
+      "patch_sha256": "5268b20b56b371838563fcda3770cc50c30c1b43ba96a591db4a2058d38e0e86",
+      "git_patch_id": "0dbcb79f758dce2d1ff25444e4232cd2a3eafd31",
+      "git_patch_id_algorithm": "git-patch-id-stable",
+      "recipe_sha256": "a1f9c190d469f54999eeb023102e21f88445f2aedae82b2b581d865ebef8c684",
+      "canonical_patch": "artifacts/post-apply.patch",
+      "audit_patch": "",
+      "base_commit": "3e7848b129fa1e1d438a7e59626c54f2c92c8915",
+      "upper": {
+        "kind": "working-tree",
+        "ref": "working-tree",
+        "commit": ""
+      },
+      "capture": {
+        "mode": "working-tree-all",
+        "pathspecs": [
+          "packages/contracts/src/environment.test.ts",
+          "packages/contracts/src/environment.ts",
+          "packages/contracts/src/index.ts",
+          "packages/contracts/src/workItem.test.ts",
+          "packages/contracts/src/workItem.ts"
+        ],
+        "claim_ids": []
+      },
+      "touched_paths": [
+        "packages/contracts/src/environment.test.ts",
+        "packages/contracts/src/environment.ts",
+        "packages/contracts/src/index.ts",
+        "packages/contracts/src/workItem.test.ts",
+        "packages/contracts/src/workItem.ts"
+      ],
+      "dependencies": [],
+      "refs": {
+        "anchors": "",
+        "fingerprints": "",
+        "relations": "",
+        "vector_manifest": ""
+      }
+    }
+  ]
+}
