@@ -1,0 +1,6 @@
+ .../Layers/ProjectionPipeline.test.ts              | 185 +++++++++++++++++++++
+ .../src/orchestration/Layers/ProjectionPipeline.ts |  43 +++--
+ apps/server/src/persistence/Migrations.ts          |   2 +
+ packages/contracts/src/orchestration.test.ts       |  42 +++++
+ packages/contracts/src/orchestration.ts            |  25 +++
+ 5 files changed, 286 insertions(+), 11 deletions(-)

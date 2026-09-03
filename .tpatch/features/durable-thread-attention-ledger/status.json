@@ -1,0 +1,23 @@
+{
+  "id": "durable-thread-attention-ledger",
+  "slug": "durable-thread-attention-ledger",
+  "title": "Add a server-owned durable thread attention audit ledger as a backward-compatible extension of the existing orchestration model. The first slice must persist idempotent, server-timestamped records for actionable approval/user-input and settled/unsettled transitions, expose bounded restart-safe projection/query data, and leave current web, mobile, relay, push, and TWS behavior unchanged. Do not introduce polling, a coordinator, APNs/FCM, or notification delivery in this feature.",
+  "state": "applied",
+  "compatibility": "unknown",
+  "requested_at": "2026-09-03T08:27:14Z",
+  "updated_at": "2026-09-03T08:43:24Z",
+  "last_command": "verify",
+  "notes": "landed at 2026-09-03T08:43:14Z",
+  "apply": {
+    "completed_at": "2026-09-03T08:42:06Z",
+    "base_commit": "45ae25ab3f1682c87f93a6f2c7be77db10bcc969",
+    "has_patch": true
+  },
+  "reconcile": {},
+  "verify": {
+    "verified_at": "2026-09-03T08:43:21Z",
+    "passed": true,
+    "recipe_hash_at_verify": "e45b16ac455fd4b42b53edcff818f8b1145377f95453b69bb79852b169ae04c0",
+    "patch_hash_at_verify": "6953cbea041b0d8c529f63e9e525c43322ac763ad0b8d65d2fd8bd1074d7ff75"
+  }
+}

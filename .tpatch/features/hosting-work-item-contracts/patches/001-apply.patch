@@ -1,0 +1,478 @@
+diff --git a/packages/contracts/src/environment.test.ts b/packages/contracts/src/environment.test.ts
+index 55633835b..be51c9a46 100644
+--- a/packages/contracts/src/environment.test.ts
++++ b/packages/contracts/src/environment.test.ts
+@@ -27,6 +27,19 @@ describe("ExecutionEnvironmentDescriptor", () => {
+     ).toBe(true);
+   });
+ 
++  it("treats a missing work-item capability as unsupported under version skew", () => {
++    expect(decodeDescriptor(descriptor).capabilities.workItems).toBeUndefined();
++  });
++
++  it("preserves an advertised work-item capability", () => {
++    expect(
++      decodeDescriptor({
++        ...descriptor,
++        capabilities: { ...descriptor.capabilities, workItems: true },
++      }).capabilities.workItems,
++    ).toBe(true);
++  });
++
+   it("treats a missing attachment upload capability as unsupported", () => {
+     expect(decodeDescriptor(descriptor).capabilities.attachmentUploads).toBeUndefined();
+   });
+diff --git a/packages/contracts/src/environment.ts b/packages/contracts/src/environment.ts
+index 08e825990..a3f98bfdd 100644
+--- a/packages/contracts/src/environment.ts
++++ b/packages/contracts/src/environment.ts
+@@ -59,6 +59,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
+   /** Server exposes the pull-request list, detail, activity, diff, and mutation APIs. Absent on
+       servers from before the pull-request workspace shipped, so clients must not probe them. */
+   pullRequests: Schema.optionalKey(Schema.Boolean),
++  /** Server exposes provider-neutral GitHub Issue / Azure Boards work-item APIs. */
++  workItems: Schema.optionalKey(Schema.Boolean),
+   /** Server understands thread.settle / thread.unsettle commands. Absent on
+       pre-settlement servers, so clients treat missing as unsupported and
+       never send the commands under version skew. */
+diff --git a/packages/contracts/src/index.ts b/packages/contracts/src/index.ts
+index c6daef868..f3c7dd57a 100644
+--- a/packages/contracts/src/index.ts
++++ b/packages/contracts/src/index.ts
+@@ -19,6 +19,7 @@ export * from "./git.ts";
+ export * from "./vcs.ts";
+ export * from "./sourceControl.ts";
+ export * from "./pullRequest.ts";
++export * from "./workItem.ts";
+ export * from "./orchestration.ts";
+ export * from "./t3ProjectFile.ts";
+ export * from "./editor.ts";
+diff --git a/packages/contracts/src/workItem.test.ts b/packages/contracts/src/workItem.test.ts
+new file mode 100644
+index 000000000..994746da2
+--- /dev/null
++++ b/packages/contracts/src/workItem.test.ts
+@@ -0,0 +1,221 @@
++import * as Schema from "effect/Schema";
++import { describe, expect, it } from "vite-plus/test";
++
++import { ProjectId } from "./baseSchemas.ts";
++import {
++  WorkItemListInput,
++  WorkItemListResult,
++  WorkItemProviderErrorReason,
++  WorkItemState,
++  WorkItemUnavailableError,
++} from "./workItem.ts";
++
++const decodeListInput = Schema.decodeUnknownSync(WorkItemListInput);
++const decodeListResult = Schema.decodeUnknownSync(WorkItemListResult);
++const decodeWorkItemState = Schema.decodeUnknownSync(WorkItemState);
++const decodeWorkItemProviderErrorReason = Schema.decodeUnknownSync(WorkItemProviderErrorReason);
++
++const githubProjectId = ProjectId.make("project-github");
++const azureProjectId = ProjectId.make("project-azure");
++
++const LIST_RESULT: WorkItemListResult = {
++  providers: [
++    {
++      host: "github.com",
++      kind: "github",
++      searchesOnHost: true,
++      projectCount: 1,
++      configured: true,
++      detail: null,
++    },
++    {
++      host: "dev.azure.com",
++      kind: "azure-devops",
++      searchesOnHost: true,
++      projectCount: 1,
++      configured: true,
++      detail: null,
++    },
++  ],
++  entries: [
++    {
++      projectId: githubProjectId,
++      provider: "github",
++      host: "github.com",
++      containerId: "R_kgDOGitHub",
++      number: 193,
++      projectTitle: "t3code",
++      kind: "issue",
++      containerTitle: "tesseracode/t3code",
++      repository: "tesseracode/t3code",
++      title: "Add Copilot CLI support",
++      url: "https://github.com/tesseracode/t3code/issues/193",
++      state: "open",
++      providerState: "OPEN",
++      author: { login: "octocat", name: null, avatarUrl: null },
++      labels: [{ name: "enhancement", color: "84b6eb" }],
++      createdAt: "2026-01-01T00:00:00Z",
++      updatedAt: "2026-01-02T00:00:00Z",
++    },
++    {
++      projectId: azureProjectId,
++      provider: "azure-devops",
++      host: "dev.azure.com",
++      containerId: "azure-project-guid",
++      number: 42,
++      projectTitle: "Platform",
++      kind: "work-item",
++      containerTitle: "Platform",
++      repository: null,
++      title: "Ship remote agent attention",
++      url: "https://dev.azure.com/example/Platform/_workitems/edit/42",
++      state: "closed",
++      providerState: "Resolved",
++      author: { login: "user@example.com", name: "Example User", avatarUrl: null },
++      labels: [{ name: "remote", color: null }],
++      createdAt: null,
++      updatedAt: "2026-01-03T00:00:00Z",
++    },
++  ],
++  errors: [
++    {
++      projectId: ProjectId.make("project-unavailable"),
++      projectTitle: "Unavailable",
++      provider: "github",
++      reason: "rate-limited",
++      message: "GitHub rate limit reached.",
++    },
++  ],
++  truncated: true,
++  nextCursors: {
++    "github.com R_kgDOGitHub": "cursor-github",
++    "dev.azure.com azure-project-guid": "cursor-azure",
++  },
++};
++
++describe("WorkItemListResult", () => {
++  it("round-trips through the JSON codec used by future RPCs", () => {
++    const codec = Schema.toCodecJson(WorkItemListResult);
++    const decoded = Schema.decodeUnknownSync(codec)(Schema.encodeUnknownSync(codec)(LIST_RESULT));
++
++    expect(decoded).toStrictEqual(LIST_RESULT);
++  });
++
++  it("decodes GitHub repository issues and Azure project work items together", () => {
++    const decoded = decodeListResult(LIST_RESULT);
++
++    expect(decoded.entries.map((entry) => [entry.provider, entry.kind, entry.repository])).toEqual([
++      ["github", "issue", "tesseracode/t3code"],
++      ["azure-devops", "work-item", null],
++    ]);
++    expect(decoded.errors).toHaveLength(1);
++  });
++
++  it("keeps multiple hosts of one provider as separate summaries", () => {
++    const decoded = decodeListResult({
++      ...LIST_RESULT,
++      providers: [
++        LIST_RESULT.providers[0],
++        {
++          ...LIST_RESULT.providers[0],
++          host: "github.example.com",
++        },
++      ],
++    });
++
++    expect(decoded.providers.map((provider) => provider.host)).toEqual([
++      "github.com",
++      "github.example.com",
++    ]);
++  });
++
++  it("rejects unsupported providers and impossible provider-kind-repository combinations", () => {
++    const github = LIST_RESULT.entries[0];
++    const azure = LIST_RESULT.entries[1];
++
++    expect(github).toBeDefined();
++    expect(azure).toBeDefined();
++    if (!github || !azure) return;
++
++    expect(() =>
++      decodeListResult({
++        ...LIST_RESULT,
++        entries: [{ ...github, provider: "gitlab" }],
++      }),
++    ).toThrow();
++    expect(() =>
++      decodeListResult({
++        ...LIST_RESULT,
++        entries: [{ ...github, kind: "work-item" }],
++      }),
++    ).toThrow();
++    expect(() =>
++      decodeListResult({
++        ...LIST_RESULT,
++        entries: [{ ...github, repository: null }],
++      }),
++    ).toThrow();
++    expect(() =>
++      decodeListResult({
++        ...LIST_RESULT,
++        entries: [{ ...azure, repository: "example/repo" }],
++      }),
++    ).toThrow();
++  });
++});
++
++describe("WorkItemListInput", () => {
++  it("trims and bounds host-side search text", () => {
++    expect(decodeListInput({ state: "open", query: "  remote attention  " }).query).toBe(
++      "remote attention",
++    );
++    expect(decodeListInput({ state: "open", query: "q".repeat(200) }).query).toHaveLength(200);
++    expect(() => decodeListInput({ state: "open", query: "q".repeat(201) })).toThrow();
++  });
++
++  it("bounds projects, rows, and opaque cursors", () => {
++    expect(
++      decodeListInput({
++        state: "all",
++        projectIds: Array.from({ length: 100 }, (_, index) => ProjectId.make(`project-${index}`)),
++        limit: 500,
++        cursors: { "github.com repo": "c".repeat(4096) },
++      }).projectIds,
++    ).toHaveLength(100);
++
++    expect(() =>
++      decodeListInput({
++        state: "all",
++        projectIds: Array.from({ length: 101 }, (_, index) => ProjectId.make(`project-${index}`)),
++      }),
++    ).toThrow();
++    expect(() => decodeListInput({ state: "all", limit: 501 })).toThrow();
++    expect(() =>
++      decodeListInput({ state: "all", cursors: { "github.com repo": "c".repeat(4097) } }),
++    ).toThrow();
++  });
++});
++
++describe("work item enums", () => {
++  it("keeps normalized state narrow while allowing provider-native context", () => {
++    expect(decodeWorkItemState("closed")).toBe("closed");
++    expect(() => decodeWorkItemState("resolved")).toThrow();
++    expect(LIST_RESULT.entries[1]?.providerState).toBe("Resolved");
++  });
++
++  it("rejects unknown provider error reasons", () => {
++    expect(decodeWorkItemProviderErrorReason("rate-limited")).toBe("rate-limited");
++    expect(() => decodeWorkItemProviderErrorReason("forbidden")).toThrow();
++  });
++
++  it("derives unavailable messages from closed reasons instead of raw provider output", () => {
++    const error = new WorkItemUnavailableError({
++      reason: "unauthenticated",
++      provider: "github",
++      host: "github.com",
++    });
++
++    expect(error.message).toBe("The work-item provider has no working credentials.");
++    expect(error).not.toHaveProperty("detail");
++  });
++});
+diff --git a/packages/contracts/src/workItem.ts b/packages/contracts/src/workItem.ts
+new file mode 100644
+index 000000000..7ac32a354
+--- /dev/null
++++ b/packages/contracts/src/workItem.ts
+@@ -0,0 +1,196 @@
++import * as Schema from "effect/Schema";
++import * as HttpServerRespondable from "effect/unstable/http/HttpServerRespondable";
++import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
++
++import { IsoDateTime, PositiveInt, ProjectId, TrimmedNonEmptyString } from "./baseSchemas.ts";
++import { PullRequestActor, PullRequestLabel } from "./pullRequest.ts";
++
++export const WorkItemProviderKind = Schema.Literals(["github", "azure-devops"]);
++export type WorkItemProviderKind = typeof WorkItemProviderKind.Type;
++
++export const WorkItemActor = PullRequestActor;
++export type WorkItemActor = typeof WorkItemActor.Type;
++
++export const WorkItemLabel = PullRequestLabel;
++export type WorkItemLabel = typeof WorkItemLabel.Type;
++
++export const WorkItemKind = Schema.Literals(["issue", "work-item"]);
++export type WorkItemKind = typeof WorkItemKind.Type;
++
++export const WorkItemState = Schema.Literals(["open", "closed"]);
++export type WorkItemState = typeof WorkItemState.Type;
++
++export const WorkItemListState = Schema.Literals(["all", "open", "closed"]);
++export type WorkItemListState = typeof WorkItemListState.Type;
++
++const WorkItemRefFields = {
++  projectId: ProjectId,
++  host: TrimmedNonEmptyString,
++  containerId: TrimmedNonEmptyString,
++  number: PositiveInt,
++} as const;
++
++export const GitHubWorkItemRef = Schema.Struct({
++  ...WorkItemRefFields,
++  provider: Schema.Literal("github"),
++});
++export type GitHubWorkItemRef = typeof GitHubWorkItemRef.Type;
++
++export const AzureDevOpsWorkItemRef = Schema.Struct({
++  ...WorkItemRefFields,
++  provider: Schema.Literal("azure-devops"),
++});
++export type AzureDevOpsWorkItemRef = typeof AzureDevOpsWorkItemRef.Type;
++
++export const WorkItemRef = Schema.Union([GitHubWorkItemRef, AzureDevOpsWorkItemRef]);
++export type WorkItemRef = typeof WorkItemRef.Type;
++
++const WorkItemListEntryFields = {
++  ...WorkItemRefFields,
++  projectTitle: TrimmedNonEmptyString,
++  containerTitle: TrimmedNonEmptyString,
++  title: TrimmedNonEmptyString,
++  url: TrimmedNonEmptyString,
++  state: WorkItemState,
++  providerState: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(100))),
++  author: Schema.NullOr(WorkItemActor),
++  labels: Schema.Array(WorkItemLabel),
++  createdAt: Schema.NullOr(IsoDateTime),
++  updatedAt: Schema.NullOr(IsoDateTime),
++} as const;
++
++export const GitHubWorkItemListEntry = Schema.Struct({
++  ...WorkItemListEntryFields,
++  provider: Schema.Literal("github"),
++  kind: Schema.Literal("issue"),
++  repository: TrimmedNonEmptyString,
++});
++export type GitHubWorkItemListEntry = typeof GitHubWorkItemListEntry.Type;
++
++export const AzureDevOpsWorkItemListEntry = Schema.Struct({
++  ...WorkItemListEntryFields,
++  provider: Schema.Literal("azure-devops"),
++  kind: Schema.Literal("work-item"),
++  repository: Schema.Null,
++});
++export type AzureDevOpsWorkItemListEntry = typeof AzureDevOpsWorkItemListEntry.Type;
++
++export const WorkItemListEntry = Schema.Union([
++  GitHubWorkItemListEntry,
++  AzureDevOpsWorkItemListEntry,
++]);
++export type WorkItemListEntry = typeof WorkItemListEntry.Type;
++
++export const GitHubWorkItemDetail = Schema.Struct({
++  ...GitHubWorkItemListEntry.fields,
++  body: Schema.String,
++});
++export type GitHubWorkItemDetail = typeof GitHubWorkItemDetail.Type;
++
++export const AzureDevOpsWorkItemDetail = Schema.Struct({
++  ...AzureDevOpsWorkItemListEntry.fields,
++  body: Schema.String,
++});
++export type AzureDevOpsWorkItemDetail = typeof AzureDevOpsWorkItemDetail.Type;
++
++export const WorkItemDetail = Schema.Union([GitHubWorkItemDetail, AzureDevOpsWorkItemDetail]);
++export type WorkItemDetail = typeof WorkItemDetail.Type;
++
++export const WorkItemListCursors = Schema.Record(
++  TrimmedNonEmptyString,
++  TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
++);
++export type WorkItemListCursors = typeof WorkItemListCursors.Type;
++
++export const WorkItemListInput = Schema.Struct({
++  state: WorkItemListState,
++  projectId: Schema.optional(ProjectId),
++  projectIds: Schema.optional(Schema.Array(ProjectId).check(Schema.isMaxLength(100))),
++  host: Schema.optional(TrimmedNonEmptyString),
++  limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }))),
++  cursors: Schema.optional(WorkItemListCursors),
++  query: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
++});
++export type WorkItemListInput = typeof WorkItemListInput.Type;
++
++export const WorkItemProviderSummary = Schema.Struct({
++  host: TrimmedNonEmptyString,
++  kind: WorkItemProviderKind,
++  searchesOnHost: Schema.Boolean,
++  projectCount: PositiveInt,
++  configured: Schema.Boolean,
++  detail: Schema.NullOr(TrimmedNonEmptyString),
++});
++export type WorkItemProviderSummary = typeof WorkItemProviderSummary.Type;
++
++export const WorkItemProviderErrorReason = Schema.Literals([
++  "missing-tool",
++  "unauthenticated",
++  "rate-limited",
++  "failed",
++]);
++export type WorkItemProviderErrorReason = typeof WorkItemProviderErrorReason.Type;
++
++export const WorkItemListProjectError = Schema.Struct({
++  projectId: ProjectId,
++  projectTitle: TrimmedNonEmptyString,
++  provider: WorkItemProviderKind,
++  reason: WorkItemProviderErrorReason,
++  message: TrimmedNonEmptyString,
++});
++export type WorkItemListProjectError = typeof WorkItemListProjectError.Type;
++
++export const WorkItemListResult = Schema.Struct({
++  providers: Schema.Array(WorkItemProviderSummary),
++  entries: Schema.Array(WorkItemListEntry),
++  errors: Schema.Array(WorkItemListProjectError),
++  truncated: Schema.Boolean,
++  nextCursors: WorkItemListCursors,
++});
++export type WorkItemListResult = typeof WorkItemListResult.Type;
++
++export class WorkItemUnavailableError extends Schema.TaggedErrorClass<WorkItemUnavailableError>()(
++  "WorkItemUnavailableError",
++  {
++    reason: WorkItemProviderErrorReason,
++    provider: Schema.optional(WorkItemProviderKind),
++    host: Schema.optional(TrimmedNonEmptyString),
++    cause: Schema.optional(Schema.Defect()),
++  },
++  { httpApiStatus: 503 },
++) {
++  [HttpServerRespondable.symbol]() {
++    return HttpServerResponse.schemaJson(WorkItemUnavailableError)(this, { status: 503 });
++  }
++
++  override get message(): string {
++    switch (this.reason) {
++      case "missing-tool":
++        return "The tool required to read work items is not installed or configured.";
++      case "unauthenticated":
++        return "The work-item provider has no working credentials.";
++      case "rate-limited":
++        return "The work-item provider rate limit has been reached.";
++      case "failed":
++        return "The work-item provider is unavailable.";
++    }
++  }
++}
++
++export class WorkItemOperationError extends Schema.TaggedErrorClass<WorkItemOperationError>()(
++  "WorkItemOperationError",
++  {
++    operation: TrimmedNonEmptyString,
++    detail: TrimmedNonEmptyString,
++    cause: Schema.optional(Schema.Defect()),
++  },
++  { httpApiStatus: 502 },
++) {
++  [HttpServerRespondable.symbol]() {
++    return HttpServerResponse.schemaJson(WorkItemOperationError)(this, { status: 502 });
++  }
++
++  override get message(): string {
++    return `Work item operation ${this.operation} failed: ${this.detail}`;
++  }
++}

@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "feature": "tws-readonly-cli-adapter",
+  "current_generation": 1,
+  "generations": [
+    {
+      "generation": 1,
+      "generation_id": "pg_e8e943f5e954",
+      "kind": "record",
+      "patch_sha256": "e0aec536d901c1c604647ad10144b4da0e4d6b24df67ae4979cf47a165429cfa",
+      "git_patch_id": "72adc24181dae906a4cb3be628ec1fef1a27db45",
+      "git_patch_id_algorithm": "git-patch-id-stable",
+      "recipe_sha256": "e873e30981f4784c07a95e939af9ed5f1cab9c5548b53e65c6f16892754a3874",
+      "canonical_patch": "artifacts/post-apply.patch",
+      "audit_patch": "",
+      "base_commit": "9b737465b514bc0f879f0dcb6dbd1e707f81dff3",
+      "upper": {
+        "kind": "working-tree",
+        "ref": "working-tree",
+        "commit": ""
+      },
+      "capture": {
+        "mode": "working-tree-all",
+        "pathspecs": [
+          "apps/server/src/tws/TwsCliAdapter.test.ts",
+          "apps/server/src/tws/TwsCliAdapter.ts",
+          "apps/server/src/tws/TwsCliDecoder.test.ts",
+          "apps/server/src/tws/TwsCliDecoder.ts"
+        ],
+        "claim_ids": []
+      },
+      "touched_paths": [
+        "apps/server/src/tws/TwsCliAdapter.test.ts",
+        "apps/server/src/tws/TwsCliAdapter.ts",
+        "apps/server/src/tws/TwsCliDecoder.test.ts",
+        "apps/server/src/tws/TwsCliDecoder.ts"
+      ],
+      "dependencies": [],
+      "refs": {
+        "anchors": "",
+        "fingerprints": "",
+        "relations": "",
+        "vector_manifest": ""
+      }
+    }
+  ]
+}

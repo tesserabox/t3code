@@ -1,0 +1,1223 @@
+diff --git a/apps/server/src/tws/TwsCliAdapter.test.ts b/apps/server/src/tws/TwsCliAdapter.test.ts
+new file mode 100644
+index 000000000..a0d8810ee
+--- /dev/null
++++ b/apps/server/src/tws/TwsCliAdapter.test.ts
+@@ -0,0 +1,239 @@
++import { assert, describe, it } from "@effect/vitest";
++import * as Effect from "effect/Effect";
++import * as Layer from "effect/Layer";
++import * as Schema from "effect/Schema";
++import { ChildProcessSpawner } from "effect/unstable/process";
++
++import { ProcessRunner, type ProcessRunInput, type ProcessRunOutput } from "../processRunner.ts";
++import { TwsCliAdapter, TwsCliAdapterLive } from "./TwsCliAdapter.ts";
++
++const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
++
++const registryEntry = {
++  id: "registry-1",
++  path: "/workspace/example",
++  aliases: ["example"],
++  kind: "checkout-workspace",
++  git_identity: "git-identity",
++  marker_id: "marker-id",
++  added_at: "2026-01-01T00:00:00Z",
++  updated_at: "2026-01-02T00:00:00Z",
++};
++const statusReport = {
++  schema_version: 1,
++  generated_at: "2026-01-01T00:00:00Z",
++  workspace: {},
++  features: [],
++  issues: [],
++  summary: { needs_attention: 0 },
++};
++const stackStatusReport = {
++  schema_version: 1,
++  workspace: {},
++  feature: "feature-a",
++  entries: [],
++  summary: {},
++};
++
++function processOutput(input: {
++  readonly stdout?: string;
++  readonly stderr?: string;
++  readonly code?: number | null;
++  readonly stdoutInvalidUtf8?: boolean;
++  readonly stderrInvalidUtf8?: boolean;
++}): ProcessRunOutput {
++  return {
++    stdout: input.stdout ?? "",
++    stderr: input.stderr ?? "",
++    code: input.code === null ? null : ChildProcessSpawner.ExitCode(input.code ?? 0),
++    timedOut: false,
++    stdoutTruncated: false,
++    stderrTruncated: false,
++    stdoutInvalidUtf8: input.stdoutInvalidUtf8 ?? false,
++    stderrInvalidUtf8: input.stderrInvalidUtf8 ?? false,
++  };
++}
++
++function testLayer(outputs: ReadonlyArray<ProcessRunOutput>, calls: ProcessRunInput[]) {
++  let index = 0;
++  const runner = {
++    run: (input: ProcessRunInput) =>
++      Effect.sync(() => {
++        calls.push(input);
++        const output = outputs[index];
++        index += 1;
++        if (!output) {
++          throw new Error(`Missing fake TWS output for call ${index}`);
++        }
++        return output;
++      }),
++  };
++  return TwsCliAdapterLive.pipe(Layer.provide(Layer.succeed(ProcessRunner, runner)));
++}
++
++describe("TwsCliAdapter", () => {
++  it.effect("uses only read-only direct argument arrays and caches a successful version", () => {
++    const calls: ProcessRunInput[] = [];
++    const layer = testLayer(
++      [
++        processOutput({ stdout: "tws version v1.2.14\n" }),
++        processOutput({ stdout: encodeJson([registryEntry]) }),
++        processOutput({ stdout: encodeJson([{ entry: registryEntry, status: "ok" }]) }),
++        processOutput({ stdout: encodeJson(statusReport) }),
++        processOutput({ stdout: encodeJson(stackStatusReport) }),
++      ],
++      calls,
++    );
++
++    return Effect.gen(function* () {
++      const adapter = yield* TwsCliAdapter;
++      yield* adapter.listRegistry();
++      yield* adapter.checkRegistry();
++      yield* adapter.readStatus({ cwd: "/workspace/example", feature: "feature-a" });
++      yield* adapter.readStackStatus({ cwd: "/workspace/example", feature: "feature-a" });
++
++      assert.deepEqual(
++        calls.map((call) => ({
++          command: call.command,
++          args: call.args,
++          cwd: call.cwd,
++          timeout: call.timeout,
++          maxOutputBytes: call.maxOutputBytes,
++        })),
++        [
++          {
++            command: "tws",
++            args: ["--version"],
++            cwd: undefined,
++            timeout: "15 seconds",
++            maxOutputBytes: 4 * 1024 * 1024,
++          },
++          {
++            command: "tws",
++            args: ["registry", "list", "--json"],
++            cwd: undefined,
++            timeout: "15 seconds",
++            maxOutputBytes: 4 * 1024 * 1024,
++          },
++          {
++            command: "tws",
++            args: ["registry", "check", "--json"],
++            cwd: undefined,
++            timeout: "15 seconds",
++            maxOutputBytes: 4 * 1024 * 1024,
++          },
++          {
++            command: "tws",
++            args: ["status", "feature-a", "--json"],
++            cwd: "/workspace/example",
++            timeout: "15 seconds",
++            maxOutputBytes: 4 * 1024 * 1024,
++          },
++          {
++            command: "tws",
++            args: ["stack", "status", "feature-a", "--json"],
++            cwd: "/workspace/example",
++            timeout: "15 seconds",
++            maxOutputBytes: 4 * 1024 * 1024,
++          },
++        ],
++      );
++    }).pipe(Effect.provide(layer));
++  });
++
++  it.effect("retries a failed version probe instead of caching the failure", () => {
++    const calls: ProcessRunInput[] = [];
++    const layer = testLayer(
++      [
++        processOutput({ code: 1, stderr: "Error: temporary failure\n" }),
++        processOutput({ stdout: "tws version v1.2.14\n" }),
++      ],
++      calls,
++    );
++
++    return Effect.gen(function* () {
++      const adapter = yield* TwsCliAdapter;
++      const first = yield* adapter.probe().pipe(Effect.flip);
++      assert.strictEqual(first._tag, "TwsCommandFailedError");
++      assert.deepEqual(yield* adapter.probe(), { version: "v1.2.14" });
++      assert.strictEqual(calls.length, 2);
++    }).pipe(Effect.provide(layer));
++  });
++
++  it.effect("does not parse valid JSON stdout from a nonzero command", () => {
++    const calls: ProcessRunInput[] = [];
++    const layer = testLayer(
++      [
++        processOutput({ stdout: "tws version v1.2.14\n" }),
++        processOutput({ code: 1, stdout: encodeJson(statusReport) }),
++      ],
++      calls,
++    );
++
++    return Effect.gen(function* () {
++      const adapter = yield* TwsCliAdapter;
++      const result = yield* adapter.readStatus({ cwd: "/outside" }).pipe(Effect.flip);
++      assert.strictEqual(result._tag, "TwsCommandFailedError");
++    }).pipe(Effect.provide(layer));
++  });
++
++  it.effect("rejects invalid UTF-8 observations before decoding", () => {
++    const calls: ProcessRunInput[] = [];
++    const layer = testLayer(
++      [
++        processOutput({ stdout: "tws version v1.2.14\n" }),
++        processOutput({
++          stdout: encodeJson(statusReport),
++          stdoutInvalidUtf8: true,
++        }),
++      ],
++      calls,
++    );
++
++    return Effect.gen(function* () {
++      const adapter = yield* TwsCliAdapter;
++      const result = yield* adapter.readStatus({ cwd: "/workspace/example" }).pipe(Effect.flip);
++      assert.strictEqual(result._tag, "TwsOutputDecodeError");
++    }).pipe(Effect.provide(layer));
++  });
++
++  it.effect("rejects option-like and empty feature identifiers before spawning", () => {
++    const calls: ProcessRunInput[] = [];
++    const layer = testLayer([], calls);
++
++    return Effect.gen(function* () {
++      const adapter = yield* TwsCliAdapter;
++      const optionLike = yield* adapter
++        .readStatus({ cwd: "/workspace/example", feature: "--help" })
++        .pipe(Effect.flip);
++      assert.strictEqual(optionLike._tag, "TwsInvalidFeatureError");
++
++      const empty = yield* adapter
++        .readStackStatus({ cwd: "/workspace/example", feature: "" })
++        .pipe(Effect.flip);
++      assert.strictEqual(empty._tag, "TwsInvalidFeatureError");
++      assert.deepEqual(calls, []);
++    }).pipe(Effect.provide(layer));
++  });
++
++  it.effect("prioritizes invalid UTF-8 over nonzero command output", () => {
++    const calls: ProcessRunInput[] = [];
++    const layer = testLayer(
++      [
++        processOutput({ stdout: "tws version v1.2.14\n" }),
++        processOutput({
++          code: 1,
++          stderr: "corrupted",
++          stderrInvalidUtf8: true,
++        }),
++      ],
++      calls,
++    );
++
++    return Effect.gen(function* () {
++      const adapter = yield* TwsCliAdapter;
++      const result = yield* adapter.readStatus({ cwd: "/workspace/example" }).pipe(Effect.flip);
++      assert.strictEqual(result._tag, "TwsOutputDecodeError");
++    }).pipe(Effect.provide(layer));
++  });
++});
+diff --git a/apps/server/src/tws/TwsCliAdapter.ts b/apps/server/src/tws/TwsCliAdapter.ts
+new file mode 100644
+index 000000000..f99204865
+--- /dev/null
++++ b/apps/server/src/tws/TwsCliAdapter.ts
+@@ -0,0 +1,185 @@
++import * as Context from "effect/Context";
++import * as Effect from "effect/Effect";
++import * as Layer from "effect/Layer";
++
++import {
++  decodeTwsRegistryCheck,
++  decodeTwsRegistryList,
++  decodeTwsStackStatus,
++  decodeTwsStatus,
++  decodeTwsVersionOutput,
++  TwsCommandFailedError,
++  type TwsCliDecodeError,
++  type TwsRegistryCheck,
++  type TwsRegistryEntry,
++  type TwsStackStatusReport,
++  type TwsStatusReport,
++  type TwsVersionInfo,
++  twsCommandFailureLines,
++  TwsInvalidFeatureError,
++  TwsOutputDecodeError,
++  type TwsCommandKind,
++} from "./TwsCliDecoder.ts";
++import { ProcessRunner, type ProcessRunError, type ProcessRunOutput } from "../processRunner.ts";
++
++const TWS_COMMAND = "tws";
++const TWS_TIMEOUT = "15 seconds";
++const TWS_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
++
++export type TwsCliAdapterError = ProcessRunError | TwsCliDecodeError;
++
++export interface TwsStatusInput {
++  readonly cwd: string;
++  readonly feature?: string | undefined;
++}
++
++export interface TwsStackStatusInput {
++  readonly cwd: string;
++  readonly feature: string;
++}
++
++export interface TwsCliAdapterShape {
++  readonly probe: () => Effect.Effect<TwsVersionInfo, TwsCliAdapterError>;
++  readonly listRegistry: () => Effect.Effect<ReadonlyArray<TwsRegistryEntry>, TwsCliAdapterError>;
++  readonly checkRegistry: () => Effect.Effect<ReadonlyArray<TwsRegistryCheck>, TwsCliAdapterError>;
++  readonly readStatus: (
++    input: TwsStatusInput,
++  ) => Effect.Effect<TwsStatusReport, TwsCliAdapterError>;
++  readonly readStackStatus: (
++    input: TwsStackStatusInput,
++  ) => Effect.Effect<TwsStackStatusReport, TwsCliAdapterError>;
++}
++
++export class TwsCliAdapter extends Context.Service<TwsCliAdapter, TwsCliAdapterShape>()(
++  "t3/tws/TwsCliAdapter",
++) {}
++
++function commandOutput(
++  command: TwsCommandKind,
++  output: ProcessRunOutput,
++): Effect.Effect<string, TwsCommandFailedError | TwsOutputDecodeError> {
++  if (output.stdoutInvalidUtf8 || output.stderrInvalidUtf8) {
++    return Effect.fail(
++      new TwsOutputDecodeError({
++        command,
++        reason: "invalid-utf8",
++        detail: "command output was not valid UTF-8",
++      }),
++    );
++  }
++  if (output.code !== 0) {
++    return Effect.fail(
++      new TwsCommandFailedError({
++        command,
++        exitCode: output.code,
++        failures: twsCommandFailureLines(output.stdout, output.stderr, output.code),
++      }),
++    );
++  }
++  return Effect.succeed(output.stdout);
++}
++
++function validateFeature(feature: string): Effect.Effect<string, TwsInvalidFeatureError> {
++  if (feature.length === 0) {
++    return Effect.fail(new TwsInvalidFeatureError({ detail: "TWS feature must not be empty" }));
++  }
++  if (feature.trim() !== feature) {
++    return Effect.fail(
++      new TwsInvalidFeatureError({
++        detail: "TWS feature must not contain leading or trailing whitespace",
++      }),
++    );
++  }
++  if (feature.startsWith("-")) {
++    return Effect.fail(
++      new TwsInvalidFeatureError({ detail: "TWS feature must not be parsed as a CLI option" }),
++    );
++  }
++  if (feature.includes("\0") || feature.length > 256) {
++    return Effect.fail(new TwsInvalidFeatureError({ detail: "TWS feature is invalid" }));
++  }
++  return Effect.succeed(feature);
++}
++
++const makeTwsCliAdapter = Effect.gen(function* () {
++  const processRunner = yield* ProcessRunner;
++  let cachedVersion: TwsVersionInfo | undefined;
++
++  const run = (
++    command: TwsCommandKind,
++    args: ReadonlyArray<string>,
++    cwd?: string,
++  ): Effect.Effect<string, TwsCliAdapterError> =>
++    processRunner
++      .run({
++        command: TWS_COMMAND,
++        args,
++        ...(cwd ? { cwd } : {}),
++        timeout: TWS_TIMEOUT,
++        maxOutputBytes: TWS_MAX_OUTPUT_BYTES,
++      })
++      .pipe(Effect.flatMap((output) => commandOutput(command, output)));
++
++  const probeUncached = () =>
++    run("version", ["--version"]).pipe(Effect.flatMap(decodeTwsVersionOutput));
++
++  const probe: TwsCliAdapterShape["probe"] = () =>
++    cachedVersion
++      ? Effect.succeed(cachedVersion)
++      : probeUncached().pipe(
++          Effect.tap((version) =>
++            Effect.sync(() => {
++              cachedVersion = version;
++            }),
++          ),
++        );
++
++  const withSupportedVersion = <A, E>(
++    effect: Effect.Effect<A, E>,
++  ): Effect.Effect<A, E | TwsCliAdapterError> => probe().pipe(Effect.andThen(effect));
++
++  const listRegistry: TwsCliAdapterShape["listRegistry"] = () =>
++    withSupportedVersion(
++      run("registry-list", ["registry", "list", "--json"]).pipe(
++        Effect.flatMap(decodeTwsRegistryList),
++      ),
++    );
++
++  const checkRegistry: TwsCliAdapterShape["checkRegistry"] = () =>
++    withSupportedVersion(
++      run("registry-check", ["registry", "check", "--json"]).pipe(
++        Effect.flatMap(decodeTwsRegistryCheck),
++      ),
++    );
++
++  const readStatus: TwsCliAdapterShape["readStatus"] = (input) =>
++    Effect.gen(function* () {
++      const feature =
++        input.feature === undefined ? undefined : yield* validateFeature(input.feature);
++      return yield* withSupportedVersion(
++        run("status", ["status", ...(feature ? [feature] : []), "--json"], input.cwd).pipe(
++          Effect.flatMap(decodeTwsStatus),
++        ),
++      );
++    });
++
++  const readStackStatus: TwsCliAdapterShape["readStackStatus"] = (input) =>
++    Effect.gen(function* () {
++      const feature = yield* validateFeature(input.feature);
++      return yield* withSupportedVersion(
++        run("stack-status", ["stack", "status", feature, "--json"], input.cwd).pipe(
++          Effect.flatMap(decodeTwsStackStatus),
++        ),
++      );
++    });
++
++  return {
++    probe,
++    listRegistry,
++    checkRegistry,
++    readStatus,
++    readStackStatus,
++  } satisfies TwsCliAdapterShape;
++});
++
++export const TwsCliAdapterLive = Layer.effect(TwsCliAdapter, makeTwsCliAdapter);
+diff --git a/apps/server/src/tws/TwsCliDecoder.test.ts b/apps/server/src/tws/TwsCliDecoder.test.ts
+new file mode 100644
+index 000000000..6fa0a7ed1
+--- /dev/null
++++ b/apps/server/src/tws/TwsCliDecoder.test.ts
+@@ -0,0 +1,204 @@
++import { assert, describe, it } from "@effect/vitest";
++import * as Effect from "effect/Effect";
++import * as Schema from "effect/Schema";
++
++import {
++  decodeTwsRegistryCheck,
++  decodeTwsRegistryList,
++  decodeTwsStackStatus,
++  decodeTwsStatus,
++  decodeTwsVersionOutput,
++  twsCommandFailureLines,
++} from "./TwsCliDecoder.ts";
++
++const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
++
++const registryEntry = {
++  id: "registry-1",
++  path: "/workspace/example",
++  aliases: ["example"],
++  kind: "checkout-workspace",
++  git_identity: "git-identity",
++  marker_id: "marker-id",
++  added_at: "2026-01-01T00:00:00Z",
++  updated_at: "2026-01-02T00:00:00Z",
++  future_registry_key: true,
++};
++
++const statusReport = {
++  schema_version: 1,
++  generated_at: "2026-01-01T00:00:00Z",
++  workspace: {
++    mode: "checkout",
++    stable_id: "workspace-1",
++    repo_root: "/workspace/example",
++    metadata_root: "/workspace/example/.tws",
++    degraded: false,
++    degraded_reason: null,
++    runtime_presence: "absent",
++    agent_state: "unknown",
++    attention: { status: "idle", issue_count: 0, codes: [] },
++  },
++  features: [],
++  issues: [],
++  summary: { needs_attention: 0 },
++};
++
++const stackStatusReport = {
++  schema_version: 1,
++  workspace: statusReport.workspace,
++  feature: "feature-a",
++  entries: [],
++  summary: { entries: 0 },
++};
++
++describe("TwsCliDecoder", () => {
++  it.effect("decodes the pinned version and rejects malformed or unsupported versions", () =>
++    Effect.gen(function* () {
++      assert.deepEqual(yield* decodeTwsVersionOutput("tws version v1.2.14\n"), {
++        version: "v1.2.14",
++      });
++
++      const unsupported = yield* decodeTwsVersionOutput("tws version v1.3.0").pipe(Effect.flip);
++      assert.strictEqual(unsupported._tag, "TwsUnsupportedVersionError");
++
++      const malformed = yield* decodeTwsVersionOutput("v1.2.14").pipe(Effect.flip);
++      assert.strictEqual(malformed._tag, "TwsMalformedVersionError");
++    }),
++  );
++
++  it.effect("decodes registry list and check while preserving additive fields", () =>
++    Effect.gen(function* () {
++      const listed = yield* decodeTwsRegistryList(encodeJson([registryEntry]));
++      assert.strictEqual(listed[0]?.gitIdentity, "git-identity");
++      assert.strictEqual(listed[0]?.raw.future_registry_key, true);
++
++      const checked = yield* decodeTwsRegistryCheck(
++        encodeJson([{ entry: registryEntry, status: "ok", future_check_key: 42 }]),
++      );
++      assert.strictEqual(checked[0]?.status, "ok");
++      assert.strictEqual(checked[0]?.raw.future_check_key, 42);
++      assert.strictEqual(checked[0]?.entry.raw.future_registry_key, true);
++    }),
++  );
++
++  it.effect("preserves additive status fields and degrades unknown enums", () =>
++    Effect.gen(function* () {
++      const report = yield* decodeTwsStatus(
++        encodeJson({
++          ...statusReport,
++          future_top_level: "preserved",
++          workspace: {
++            ...statusReport.workspace,
++            runtime_presence: "hibernating",
++            future_workspace_key: true,
++          },
++          features: [
++            {
++              feature: "feature-a",
++              agent_state: "awaiting_tool",
++              attention: { status: "escalated", issue_count: 1, codes: ["future-code"] },
++              entries: [],
++            },
++          ],
++        }),
++      );
++
++      assert.strictEqual(report.raw.future_top_level, "preserved");
++      assert.strictEqual(report.workspace.future_workspace_key, true);
++      assert.isTrue(report.decoderDegraded);
++      assert.deepEqual(report.unknownEnums.map((item) => item.raw).toSorted(), [
++        "awaiting_tool",
++        "escalated",
++        "hibernating",
++      ]);
++      assert.isFalse(report.twsNeedsAttention);
++    }),
++  );
++
++  it.effect("derives TWS attention independently from status and summary data", () =>
++    Effect.gen(function* () {
++      const nested = yield* decodeTwsStatus(
++        encodeJson({
++          ...statusReport,
++          features: [
++            {
++              feature: "feature-a",
++              attention: { status: "needs_attention", issue_count: 1, codes: ["ref-missing"] },
++              entries: [],
++            },
++          ],
++        }),
++      );
++      assert.isTrue(nested.twsNeedsAttention);
++
++      const summary = yield* decodeTwsStatus(
++        encodeJson({
++          ...statusReport,
++          summary: { needs_attention: 2 },
++        }),
++      );
++      assert.isTrue(summary.twsNeedsAttention);
++    }),
++  );
++
++  it.effect("decodes stack status and rejects invalid reports", () =>
++    Effect.gen(function* () {
++      const stack = yield* decodeTwsStackStatus(
++        encodeJson({ ...stackStatusReport, future_stack_key: true }),
++      );
++      assert.strictEqual(stack.feature, "feature-a");
++      assert.strictEqual(stack.raw.future_stack_key, true);
++
++      const unsupported = yield* decodeTwsStatus(
++        encodeJson({ ...statusReport, schema_version: 2 }),
++      ).pipe(Effect.flip);
++      assert.strictEqual(unsupported._tag, "TwsUnsupportedSchemaVersionError");
++
++      const missing = yield* decodeTwsStatus(
++        encodeJson({
++          schema_version: 1,
++          generated_at: statusReport.generated_at,
++          workspace: statusReport.workspace,
++        }),
++      ).pipe(Effect.flip);
++      assert.strictEqual(missing._tag, "TwsOutputDecodeError");
++
++      const missingVersion = yield* decodeTwsStatus(
++        encodeJson({
++          generated_at: statusReport.generated_at,
++          workspace: statusReport.workspace,
++          features: [],
++          issues: [],
++          summary: {},
++        }),
++      ).pipe(Effect.flip);
++      assert.strictEqual(missingVersion._tag, "TwsOutputDecodeError");
++      if (missingVersion._tag === "TwsOutputDecodeError") {
++        assert.strictEqual(missingVersion.reason, "missing-required-keys");
++      }
++
++      const invalidJson = yield* decodeTwsStatus("{").pipe(Effect.flip);
++      assert.strictEqual(invalidJson._tag, "TwsOutputDecodeError");
++    }),
++  );
++
++  it("deduplicates canonical error lines across output streams", () => {
++    assert.deepEqual(
++      twsCommandFailureLines(
++        "not inside a git repository or tws workspace\n",
++        "Error: not inside a git repository or tws workspace\n",
++        1,
++      ),
++      [
++        {
++          message: "not inside a git repository or tws workspace",
++          streams: ["stderr", "stdout"],
++        },
++      ],
++    );
++    assert.deepEqual(twsCommandFailureLines("", "", 9), [
++      { message: "tws exited with status 9", streams: [] },
++    ]);
++  });
++});
+diff --git a/apps/server/src/tws/TwsCliDecoder.ts b/apps/server/src/tws/TwsCliDecoder.ts
+new file mode 100644
+index 000000000..661db7651
+--- /dev/null
++++ b/apps/server/src/tws/TwsCliDecoder.ts
+@@ -0,0 +1,571 @@
++import * as Effect from "effect/Effect";
++import * as Schema from "effect/Schema";
++
++export const TWS_SUPPORTED_CLI_VERSION = "v1.2.14";
++export const TWS_SUPPORTED_REPORT_SCHEMA_VERSION = 1;
++
++export const TwsCommandKind = Schema.Literals([
++  "version",
++  "registry-list",
++  "registry-check",
++  "status",
++  "stack-status",
++]);
++export type TwsCommandKind = typeof TwsCommandKind.Type;
++
++const TwsCommandOutputStream = Schema.Literals(["stdout", "stderr"]);
++
++export const TwsCommandFailureLine = Schema.Struct({
++  message: Schema.String,
++  streams: Schema.Array(TwsCommandOutputStream),
++});
++export type TwsCommandFailureLine = typeof TwsCommandFailureLine.Type;
++
++export class TwsCommandFailedError extends Schema.TaggedErrorClass<TwsCommandFailedError>()(
++  "TwsCommandFailedError",
++  {
++    command: TwsCommandKind,
++    exitCode: Schema.NullOr(Schema.Number),
++    failures: Schema.Array(TwsCommandFailureLine),
++  },
++) {
++  override get message(): string {
++    return `TWS ${this.command} failed with exit status ${this.exitCode ?? "unknown"}`;
++  }
++}
++
++export class TwsMalformedVersionError extends Schema.TaggedErrorClass<TwsMalformedVersionError>()(
++  "TwsMalformedVersionError",
++  {
++    detail: Schema.String,
++  },
++) {
++  override get message(): string {
++    return this.detail;
++  }
++}
++
++export class TwsUnsupportedVersionError extends Schema.TaggedErrorClass<TwsUnsupportedVersionError>()(
++  "TwsUnsupportedVersionError",
++  {
++    actualVersion: Schema.String,
++    supportedVersion: Schema.String,
++  },
++) {
++  override get message(): string {
++    return `Unsupported TWS version ${this.actualVersion}; expected ${this.supportedVersion}`;
++  }
++}
++
++export class TwsInvalidFeatureError extends Schema.TaggedErrorClass<TwsInvalidFeatureError>()(
++  "TwsInvalidFeatureError",
++  {
++    detail: Schema.String,
++  },
++) {
++  override get message(): string {
++    return this.detail;
++  }
++}
++
++export const TwsOutputDecodeReason = Schema.Literals([
++  "invalid-json",
++  "invalid-shape",
++  "missing-required-keys",
++  "invalid-utf8",
++]);
++export type TwsOutputDecodeReason = typeof TwsOutputDecodeReason.Type;
++
++export class TwsOutputDecodeError extends Schema.TaggedErrorClass<TwsOutputDecodeError>()(
++  "TwsOutputDecodeError",
++  {
++    command: TwsCommandKind,
++    reason: TwsOutputDecodeReason,
++    detail: Schema.String,
++  },
++) {
++  override get message(): string {
++    return `Could not decode TWS ${this.command} output: ${this.detail}`;
++  }
++}
++
++export class TwsUnsupportedSchemaVersionError extends Schema.TaggedErrorClass<TwsUnsupportedSchemaVersionError>()(
++  "TwsUnsupportedSchemaVersionError",
++  {
++    command: Schema.Literals(["status", "stack-status"]),
++    actualVersion: Schema.Unknown,
++    supportedVersion: Schema.Number,
++  },
++) {
++  override get message(): string {
++    return `Unsupported TWS ${this.command} schema version`;
++  }
++}
++
++export const TwsCliDecodeError = Schema.Union([
++  TwsCommandFailedError,
++  TwsMalformedVersionError,
++  TwsUnsupportedVersionError,
++  TwsInvalidFeatureError,
++  TwsOutputDecodeError,
++  TwsUnsupportedSchemaVersionError,
++]);
++export type TwsCliDecodeError = typeof TwsCliDecodeError.Type;
++
++type RawObject = Readonly<Record<string, unknown>>;
++
++export interface TwsVersionInfo {
++  readonly version: typeof TWS_SUPPORTED_CLI_VERSION;
++}
++
++export interface TwsRegistryEntry {
++  readonly id: string;
++  readonly path: string;
++  readonly aliases: ReadonlyArray<string>;
++  readonly kind: string;
++  readonly gitIdentity: string;
++  readonly markerId: string;
++  readonly addedAt: string;
++  readonly updatedAt: string;
++  readonly raw: RawObject;
++}
++
++export interface TwsRegistryCheck {
++  readonly entry: TwsRegistryEntry;
++  readonly status: string;
++  readonly raw: RawObject;
++}
++
++export interface TwsUnknownEnumObservation {
++  readonly path: string;
++  readonly raw: string;
++  readonly normalized: "unknown";
++}
++
++interface TwsDecodedReportBase {
++  readonly schemaVersion: 1;
++  readonly raw: RawObject;
++  readonly unknownEnums: ReadonlyArray<TwsUnknownEnumObservation>;
++  readonly decoderDegraded: boolean;
++  readonly twsNeedsAttention: boolean;
++}
++
++export interface TwsStatusReport extends TwsDecodedReportBase {
++  readonly generatedAt: string;
++  readonly workspace: RawObject;
++  readonly features: ReadonlyArray<unknown>;
++  readonly issues: ReadonlyArray<unknown>;
++  readonly summary: RawObject;
++}
++
++export interface TwsStackStatusReport extends TwsDecodedReportBase {
++  readonly workspace: RawObject;
++  readonly feature: string;
++  readonly entries: ReadonlyArray<unknown>;
++  readonly summary: RawObject;
++}
++
++const RawObjectSchema = Schema.Record(Schema.String, Schema.Unknown);
++const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
++const decodeRawObject = Schema.decodeUnknownEffect(RawObjectSchema);
++
++const RegistryEntryWire = Schema.Struct({
++  id: Schema.String,
++  path: Schema.String,
++  aliases: Schema.Array(Schema.String),
++  kind: Schema.String,
++  git_identity: Schema.String,
++  marker_id: Schema.String,
++  added_at: Schema.String,
++  updated_at: Schema.String,
++});
++const decodeRegistryEntryWire = Schema.decodeUnknownEffect(RegistryEntryWire);
++
++const RegistryCheckWire = Schema.Struct({
++  entry: Schema.Unknown,
++  status: Schema.String,
++});
++const decodeRegistryCheckWire = Schema.decodeUnknownEffect(RegistryCheckWire);
++
++const STATUS_REQUIRED_KEYS = [
++  "schema_version",
++  "generated_at",
++  "workspace",
++  "features",
++  "issues",
++  "summary",
++] as const;
++const STACK_REQUIRED_KEYS = [
++  "schema_version",
++  "workspace",
++  "feature",
++  "entries",
++  "summary",
++] as const;
++
++const KNOWN_RUNTIME_PRESENCE = new Set(["present", "absent", "stale", "unknown"]);
++const KNOWN_AGENT_STATE = new Set(["working", "ready", "blocked", "done", "unknown"]);
++const KNOWN_ATTENTION_STATUS = new Set(["needs_attention", "active", "idle"]);
++
++function outputDecodeError(
++  command: TwsCommandKind,
++  reason: TwsOutputDecodeReason,
++  detail: string,
++): TwsOutputDecodeError {
++  return new TwsOutputDecodeError({ command, reason, detail });
++}
++
++function decodeJsonValue(
++  command: TwsCommandKind,
++  output: string,
++): Effect.Effect<unknown, TwsOutputDecodeError> {
++  return decodeJson(output).pipe(
++    Effect.mapError(() => outputDecodeError(command, "invalid-json", "invalid JSON")),
++  );
++}
++
++function rawObject(
++  command: TwsCommandKind,
++  value: unknown,
++  detail: string,
++): Effect.Effect<RawObject, TwsOutputDecodeError> {
++  return decodeRawObject(value).pipe(
++    Effect.mapError(() => outputDecodeError(command, "invalid-shape", detail)),
++  );
++}
++
++function missingRequiredKeys(
++  raw: RawObject,
++  required: ReadonlyArray<string>,
++): ReadonlyArray<string> {
++  return required.filter((key) => !Object.hasOwn(raw, key));
++}
++
++function canonicalErrorLine(line: string): string {
++  const trimmed = line.trim();
++  return trimmed.replace(/^error:\s*/iu, "").trim();
++}
++
++export function twsCommandFailureLines(
++  stdout: string,
++  stderr: string,
++  exitCode: number | null,
++): ReadonlyArray<TwsCommandFailureLine> {
++  const failures = new Map<
++    string,
++    { readonly message: string; readonly streams: Set<"stdout" | "stderr"> }
++  >();
++
++  for (const [stream, output] of [
++    ["stdout", stdout],
++    ["stderr", stderr],
++  ] as const) {
++    for (const line of output.split(/\r?\n/u)) {
++      const message = canonicalErrorLine(line);
++      if (!message) {
++        continue;
++      }
++      const key = message.toLowerCase();
++      const existing = failures.get(key);
++      if (existing) {
++        existing.streams.add(stream);
++      } else {
++        failures.set(key, { message, streams: new Set([stream]) });
++      }
++    }
++  }
++
++  if (failures.size === 0) {
++    return [
++      {
++        message: `tws exited with status ${exitCode ?? "unknown"}`,
++        streams: [],
++      },
++    ];
++  }
++
++  return [...failures.values()].map((failure) => ({
++    message: failure.message,
++    streams: [...failure.streams].sort(),
++  }));
++}
++
++export function decodeTwsVersionOutput(
++  output: string,
++): Effect.Effect<TwsVersionInfo, TwsMalformedVersionError | TwsUnsupportedVersionError> {
++  const match = /^tws version (v\d+\.\d+\.\d+)$/u.exec(output.trim());
++  if (!match?.[1]) {
++    return Effect.fail(
++      new TwsMalformedVersionError({
++        detail: "TWS version output did not match 'tws version vX.Y.Z'",
++      }),
++    );
++  }
++  if (match[1] !== TWS_SUPPORTED_CLI_VERSION) {
++    return Effect.fail(
++      new TwsUnsupportedVersionError({
++        actualVersion: match[1],
++        supportedVersion: TWS_SUPPORTED_CLI_VERSION,
++      }),
++    );
++  }
++  return Effect.succeed({ version: TWS_SUPPORTED_CLI_VERSION });
++}
++
++function decodeRegistryEntry(
++  command: "registry-list" | "registry-check",
++  value: unknown,
++): Effect.Effect<TwsRegistryEntry, TwsOutputDecodeError> {
++  return Effect.all({
++    raw: rawObject(command, value, "registry entry must be an object"),
++    entry: decodeRegistryEntryWire(value).pipe(
++      Effect.mapError(() =>
++        outputDecodeError(command, "invalid-shape", "registry entry fields are invalid"),
++      ),
++    ),
++  }).pipe(
++    Effect.map(({ raw, entry }) => ({
++      id: entry.id,
++      path: entry.path,
++      aliases: entry.aliases,
++      kind: entry.kind,
++      gitIdentity: entry.git_identity,
++      markerId: entry.marker_id,
++      addedAt: entry.added_at,
++      updatedAt: entry.updated_at,
++      raw,
++    })),
++  );
++}
++
++export function decodeTwsRegistryList(
++  output: string,
++): Effect.Effect<ReadonlyArray<TwsRegistryEntry>, TwsOutputDecodeError> {
++  return decodeJsonValue("registry-list", output).pipe(
++    Effect.flatMap((value) =>
++      Array.isArray(value)
++        ? Effect.forEach(value, (entry) => decodeRegistryEntry("registry-list", entry), {
++            concurrency: 1,
++          })
++        : Effect.fail(
++            outputDecodeError("registry-list", "invalid-shape", "registry list must be an array"),
++          ),
++    ),
++  );
++}
++
++export function decodeTwsRegistryCheck(
++  output: string,
++): Effect.Effect<ReadonlyArray<TwsRegistryCheck>, TwsOutputDecodeError> {
++  return decodeJsonValue("registry-check", output).pipe(
++    Effect.flatMap((value) =>
++      Array.isArray(value)
++        ? Effect.forEach(
++            value,
++            (item) =>
++              Effect.all({
++                raw: rawObject("registry-check", item, "registry check item must be an object"),
++                item: decodeRegistryCheckWire(item).pipe(
++                  Effect.mapError(() =>
++                    outputDecodeError(
++                      "registry-check",
++                      "invalid-shape",
++                      "registry check fields are invalid",
++                    ),
++                  ),
++                ),
++              }).pipe(
++                Effect.flatMap(({ raw, item: decoded }) =>
++                  decodeRegistryEntry("registry-check", decoded.entry).pipe(
++                    Effect.map((entry) => ({
++                      entry,
++                      status: decoded.status,
++                      raw,
++                    })),
++                  ),
++                ),
++              ),
++            { concurrency: 1 },
++          )
++        : Effect.fail(
++            outputDecodeError("registry-check", "invalid-shape", "registry check must be an array"),
++          ),
++    ),
++  );
++}
++
++function observeUnknownEnums(
++  value: unknown,
++  path: ReadonlyArray<string> = [],
++): ReadonlyArray<TwsUnknownEnumObservation> {
++  if (Array.isArray(value)) {
++    return value.flatMap((entry, index) => observeUnknownEnums(entry, [...path, String(index)]));
++  }
++  if (typeof value !== "object" || value === null) {
++    return [];
++  }
++
++  const raw = value as RawObject;
++  const observations: TwsUnknownEnumObservation[] = [];
++  const runtimePresence = raw.runtime_presence;
++  if (typeof runtimePresence === "string" && !KNOWN_RUNTIME_PRESENCE.has(runtimePresence)) {
++    observations.push({
++      path: [...path, "runtime_presence"].join("."),
++      raw: runtimePresence,
++      normalized: "unknown",
++    });
++  }
++  const agentState = raw.agent_state;
++  if (typeof agentState === "string" && !KNOWN_AGENT_STATE.has(agentState)) {
++    observations.push({
++      path: [...path, "agent_state"].join("."),
++      raw: agentState,
++      normalized: "unknown",
++    });
++  }
++  const attention = raw.attention;
++  if (typeof attention === "object" && attention !== null && !Array.isArray(attention)) {
++    const attentionStatus = (attention as RawObject).status;
++    if (typeof attentionStatus === "string" && !KNOWN_ATTENTION_STATUS.has(attentionStatus)) {
++      observations.push({
++        path: [...path, "attention", "status"].join("."),
++        raw: attentionStatus,
++        normalized: "unknown",
++      });
++    }
++  }
++
++  for (const [key, nested] of Object.entries(raw)) {
++    observations.push(...observeUnknownEnums(nested, [...path, key]));
++  }
++  return observations;
++}
++
++function hasTwsAttention(value: unknown): boolean {
++  if (Array.isArray(value)) {
++    return value.some(hasTwsAttention);
++  }
++  if (typeof value !== "object" || value === null) {
++    return false;
++  }
++  const raw = value as RawObject;
++  const attention = raw.attention;
++  if (
++    typeof attention === "object" &&
++    attention !== null &&
++    !Array.isArray(attention) &&
++    (attention as RawObject).status === "needs_attention"
++  ) {
++    return true;
++  }
++  return Object.values(raw).some(hasTwsAttention);
++}
++
++function decodeVersionedReport(
++  command: "status" | "stack-status",
++  output: string,
++  requiredKeys: ReadonlyArray<string>,
++): Effect.Effect<RawObject, TwsOutputDecodeError | TwsUnsupportedSchemaVersionError> {
++  return Effect.gen(function* () {
++    const value = yield* decodeJsonValue(command, output);
++    const raw = yield* rawObject(command, value, "report must be an object");
++    const missing = missingRequiredKeys(raw, requiredKeys);
++    if (missing.length > 0) {
++      return yield* outputDecodeError(
++        command,
++        "missing-required-keys",
++        `missing required keys: ${missing.join(", ")}`,
++      );
++    }
++    const schemaVersion = raw.schema_version;
++    if (
++      typeof schemaVersion !== "number" ||
++      !Number.isInteger(schemaVersion) ||
++      schemaVersion !== TWS_SUPPORTED_REPORT_SCHEMA_VERSION
++    ) {
++      return yield* new TwsUnsupportedSchemaVersionError({
++        command,
++        actualVersion: schemaVersion,
++        supportedVersion: TWS_SUPPORTED_REPORT_SCHEMA_VERSION,
++      });
++    }
++    return raw;
++  });
++}
++
++export function decodeTwsStatus(
++  output: string,
++): Effect.Effect<TwsStatusReport, TwsOutputDecodeError | TwsUnsupportedSchemaVersionError> {
++  return decodeVersionedReport("status", output, STATUS_REQUIRED_KEYS).pipe(
++    Effect.flatMap((raw) =>
++      Effect.all({
++        workspace: rawObject("status", raw.workspace, "workspace must be an object"),
++        summary: rawObject("status", raw.summary, "summary must be an object"),
++      }).pipe(
++        Effect.flatMap(({ workspace, summary }) => {
++          if (
++            typeof raw.generated_at !== "string" ||
++            !Array.isArray(raw.features) ||
++            !Array.isArray(raw.issues)
++          ) {
++            return Effect.fail(
++              outputDecodeError("status", "invalid-shape", "status report fields are invalid"),
++            );
++          }
++          const unknownEnums = observeUnknownEnums(raw);
++          const summaryNeedsAttention =
++            typeof summary.needs_attention === "number" && summary.needs_attention > 0;
++          return Effect.succeed({
++            schemaVersion: 1 as const,
++            generatedAt: raw.generated_at,
++            workspace,
++            features: raw.features,
++            issues: raw.issues,
++            summary,
++            raw,
++            unknownEnums,
++            decoderDegraded: unknownEnums.length > 0,
++            twsNeedsAttention: summaryNeedsAttention || hasTwsAttention(raw),
++          });
++        }),
++      ),
++    ),
++  );
++}
++
++export function decodeTwsStackStatus(
++  output: string,
++): Effect.Effect<TwsStackStatusReport, TwsOutputDecodeError | TwsUnsupportedSchemaVersionError> {
++  return decodeVersionedReport("stack-status", output, STACK_REQUIRED_KEYS).pipe(
++    Effect.flatMap((raw) =>
++      Effect.all({
++        workspace: rawObject("stack-status", raw.workspace, "workspace must be an object"),
++        summary: rawObject("stack-status", raw.summary, "summary must be an object"),
++      }).pipe(
++        Effect.flatMap(({ workspace, summary }) => {
++          if (typeof raw.feature !== "string" || !Array.isArray(raw.entries)) {
++            return Effect.fail(
++              outputDecodeError(
++                "stack-status",
++                "invalid-shape",
++                "stack status report fields are invalid",
++              ),
++            );
++          }
++          const unknownEnums = observeUnknownEnums(raw);
++          return Effect.succeed({
++            schemaVersion: 1 as const,
++            workspace,
++            feature: raw.feature,
++            entries: raw.entries,
++            summary,
++            raw,
++            unknownEnums,
++            decoderDegraded: unknownEnums.length > 0,
++            twsNeedsAttention: hasTwsAttention(raw),
++          });
++        }),
++      ),
++    ),
++  );
++}

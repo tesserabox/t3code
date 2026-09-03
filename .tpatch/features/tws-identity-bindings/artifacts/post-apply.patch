@@ -1,0 +1,1881 @@
+diff --git a/apps/server/src/persistence/Layers/TwsBindings.test.ts b/apps/server/src/persistence/Layers/TwsBindings.test.ts
+new file mode 100644
+index 000000000..f52c405aa
+--- /dev/null
++++ b/apps/server/src/persistence/Layers/TwsBindings.test.ts
+@@ -0,0 +1,371 @@
++import {
++  EnvironmentId,
++  ProjectId,
++  TwsFeatureBindingId,
++  TwsStackNodeBindingId,
++  TwsWorkspaceBindingId,
++} from "@t3tools/contracts";
++import { assert, it } from "@effect/vitest";
++import * as Effect from "effect/Effect";
++import * as Layer from "effect/Layer";
++import * as SqlClient from "effect/unstable/sql/SqlClient";
++
++import { TwsBindingRepository } from "../Services/TwsBindings.ts";
++import { SqlitePersistenceMemory } from "./Sqlite.ts";
++import { TwsBindingRepositoryLive } from "./TwsBindings.ts";
++
++const layer = it.layer(TwsBindingRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)));
++
++const environmentId = EnvironmentId.make("environment-tws");
++const workspaceId = TwsWorkspaceBindingId.make("workspace-binding-1");
++const secondWorkspaceId = TwsWorkspaceBindingId.make("workspace-binding-2");
++const featureId = TwsFeatureBindingId.make("feature-binding-1");
++const secondFeatureId = TwsFeatureBindingId.make("feature-binding-2");
++const firstProjectId = ProjectId.make("project-web");
++const secondProjectId = ProjectId.make("project-api");
++const seenAt = "2026-01-01T00:00:00Z";
++
++const repositoryIdentity = {
++  canonicalKey: "github.com/acme/web",
++  locator: {
++    source: "git-remote" as const,
++    remoteName: "origin",
++    remoteUrl: "git@github.com:acme/web.git",
++  },
++};
++
++layer("TwsBindingRepository", (it) => {
++  it.effect("round-trips a multi-project workspace and multi-repo feature", () =>
++    Effect.gen(function* () {
++      const repository = yield* TwsBindingRepository;
++
++      yield* repository.upsertWorkspace({
++        workspaceBindingId: workspaceId,
++        environmentId,
++        canonicalLocator: { kind: "stable-id", value: "workspace-stable-1" },
++        locators: [
++          { kind: "stable-id", value: "workspace-stable-1" },
++          { kind: "registry-entry", value: "registry-1" },
++          { kind: "path", value: "/workspaces/old" },
++        ],
++        repositoryIdentity,
++        firstSeenAt: seenAt,
++        lastSeenAt: seenAt,
++        retiredAt: null,
++      });
++      for (const projectId of [firstProjectId, secondProjectId]) {
++        yield* repository.upsertWorkspaceProject({
++          environmentId,
++          workspaceBindingId: workspaceId,
++          projectId,
++          firstSeenAt: seenAt,
++          lastSeenAt: seenAt,
++          retiredAt: null,
++        });
++      }
++      yield* repository.upsertFeature({
++        featureBindingId: featureId,
++        workspaceBindingId: workspaceId,
++        environmentId,
++        canonicalLocator: { kind: "name", value: "remote-agents" },
++        locators: [
++          { kind: "name", value: "remote-agents" },
++          { kind: "path", value: "/workspaces/old/.tws/features/remote-agents" },
++        ],
++        repositoryIdentity: null,
++        firstSeenAt: seenAt,
++        lastSeenAt: seenAt,
++        retiredAt: null,
++      });
++      yield* repository.upsertStackNode({
++        stackNodeBindingId: TwsStackNodeBindingId.make("stack-node-web"),
++        featureBindingId: featureId,
++        projectId: firstProjectId,
++        gitBranch: "feature/remote-agents-web",
++        worktreePath: "/worktrees/remote-agents-web",
++        archived: false,
++        environmentId,
++        canonicalLocator: { kind: "git-branch", value: "feature/remote-agents-web" },
++        locators: [
++          { kind: "name", value: "web" },
++          { kind: "git-branch", value: "feature/remote-agents-web" },
++          { kind: "repository", value: "github.com/acme/web" },
++        ],
++        repositoryIdentity,
++        firstSeenAt: seenAt,
++        lastSeenAt: seenAt,
++        retiredAt: null,
++      });
++      yield* repository.upsertStackNode({
++        stackNodeBindingId: TwsStackNodeBindingId.make("stack-node-api"),
++        featureBindingId: featureId,
++        projectId: secondProjectId,
++        gitBranch: "feature/remote-agents-api",
++        worktreePath: null,
++        archived: true,
++        environmentId,
++        canonicalLocator: { kind: "git-branch", value: "feature/remote-agents-api" },
++        locators: [
++          { kind: "name", value: "api" },
++          { kind: "git-branch", value: "feature/remote-agents-api" },
++          { kind: "repository", value: "github.com/acme/api" },
++        ],
++        repositoryIdentity: {
++          ...repositoryIdentity,
++          canonicalKey: "github.com/acme/api",
++          locator: {
++            ...repositoryIdentity.locator,
++            remoteUrl: "git@github.com:acme/api.git",
++          },
++        },
++        firstSeenAt: seenAt,
++        lastSeenAt: seenAt,
++        retiredAt: null,
++      });
++
++      assert.strictEqual(
++        (yield* repository.listWorkspaceProjects({
++          environmentId,
++          workspaceBindingId: workspaceId,
++        })).length,
++        2,
++      );
++      const nodes = yield* repository.listStackNodes({
++        environmentId,
++        featureBindingId: featureId,
++      });
++      assert.deepEqual(
++        nodes.map((node) => [node.projectId, node.archived, node.worktreePath]),
++        [
++          [secondProjectId, true, null],
++          [firstProjectId, false, "/worktrees/remote-agents-web"],
++        ],
++      );
++      assert.strictEqual(nodes[0]?.repositoryIdentity?.canonicalKey, "github.com/acme/api");
++
++      const alternateMatch = yield* repository.findWorkspacesByLocator({
++        environmentId,
++        locator: { kind: "registry-entry", value: "registry-1" },
++      });
++      assert.deepEqual(
++        alternateMatch.map((binding) => binding.workspaceBindingId),
++        [workspaceId],
++      );
++
++      yield* repository.upsertWorkspace({
++        ...alternateMatch[0]!,
++        canonicalLocator: { kind: "path", value: "/workspaces/new" },
++        locators: [{ kind: "path", value: "/workspaces/new" }, ...alternateMatch[0]!.locators],
++        firstSeenAt: "2026-01-02T00:00:00Z",
++        lastSeenAt: "2026-01-02T00:00:00Z",
++      });
++      const renamed = yield* repository.listWorkspaces({ environmentId });
++      assert.strictEqual(renamed[0]?.workspaceBindingId, workspaceId);
++      assert.strictEqual(renamed[0]?.canonicalLocator.value, "/workspaces/new");
++      assert.strictEqual(renamed[0]?.firstSeenAt, seenAt);
++    }),
++  );
++
++  it.effect("scopes equal feature names, filters retired rows, and deletes one subtree", () =>
++    Effect.gen(function* () {
++      const repository = yield* TwsBindingRepository;
++
++      yield* repository.upsertWorkspace({
++        workspaceBindingId: secondWorkspaceId,
++        environmentId,
++        canonicalLocator: { kind: "path", value: "/workspaces/second" },
++        locators: [{ kind: "path", value: "/workspaces/second" }],
++        repositoryIdentity: null,
++        firstSeenAt: seenAt,
++        lastSeenAt: seenAt,
++        retiredAt: null,
++      });
++      yield* repository.upsertFeature({
++        featureBindingId: secondFeatureId,
++        workspaceBindingId: secondWorkspaceId,
++        environmentId,
++        canonicalLocator: { kind: "name", value: "remote-agents" },
++        locators: [{ kind: "name", value: "remote-agents" }],
++        repositoryIdentity: null,
++        firstSeenAt: seenAt,
++        lastSeenAt: seenAt,
++        retiredAt: null,
++      });
++
++      const secondMatch = yield* repository.findFeaturesByLocator({
++        environmentId,
++        workspaceBindingId: secondWorkspaceId,
++        locator: { kind: "name", value: "remote-agents" },
++      });
++      assert.deepEqual(
++        secondMatch.map((binding) => binding.featureBindingId),
++        [secondFeatureId],
++      );
++
++      yield* repository.upsertFeature({
++        ...secondMatch[0]!,
++        retiredAt: "2026-01-03T00:00:00Z",
++      });
++      assert.deepEqual(
++        yield* repository.listFeatures({ environmentId, workspaceBindingId: secondWorkspaceId }),
++        [],
++      );
++      assert.strictEqual(
++        (yield* repository.listFeatures({
++          environmentId,
++          workspaceBindingId: secondWorkspaceId,
++          includeRetired: true,
++        })).length,
++        1,
++      );
++
++      yield* repository.deleteWorkspace({ environmentId, workspaceBindingId: workspaceId });
++      assert.deepEqual(yield* repository.listWorkspaces({ environmentId }), [
++        {
++          workspaceBindingId: secondWorkspaceId,
++          environmentId,
++          canonicalLocator: { kind: "path", value: "/workspaces/second" },
++          locators: [{ kind: "path", value: "/workspaces/second" }],
++          repositoryIdentity: null,
++          firstSeenAt: seenAt,
++          lastSeenAt: seenAt,
++          retiredAt: null,
++        },
++      ]);
++      assert.deepEqual(
++        yield* repository.listWorkspaceProjects({
++          environmentId,
++          workspaceBindingId: workspaceId,
++          includeRetired: true,
++        }),
++        [],
++      );
++      assert.deepEqual(
++        yield* repository.listFeatures({
++          environmentId,
++          workspaceBindingId: workspaceId,
++          includeRetired: true,
++        }),
++        [],
++      );
++      assert.deepEqual(
++        yield* repository.listStackNodes({
++          environmentId,
++          featureBindingId: featureId,
++          includeRetired: true,
++        }),
++        [],
++      );
++    }),
++  );
++
++  it.effect("scopes IDs, parent constraints, and deletion by environment", () =>
++    Effect.gen(function* () {
++      const repository = yield* TwsBindingRepository;
++      const firstEnvironment = EnvironmentId.make("environment-scope-1");
++      const secondEnvironment = EnvironmentId.make("environment-scope-2");
++      const sharedWorkspaceId = TwsWorkspaceBindingId.make("workspace-shared-id");
++
++      for (const [scopedEnvironmentId, path] of [
++        [firstEnvironment, "/workspaces/first"],
++        [secondEnvironment, "/workspaces/second"],
++      ] as const) {
++        yield* repository.upsertWorkspace({
++          workspaceBindingId: sharedWorkspaceId,
++          environmentId: scopedEnvironmentId,
++          canonicalLocator: { kind: "path", value: path },
++          locators: [{ kind: "path", value: path }],
++          repositoryIdentity: null,
++          firstSeenAt: seenAt,
++          lastSeenAt: seenAt,
++          retiredAt: null,
++        });
++      }
++
++      assert.strictEqual(
++        (yield* repository.listWorkspaces({ environmentId: firstEnvironment })).length,
++        1,
++      );
++      assert.strictEqual(
++        (yield* repository.listWorkspaces({ environmentId: secondEnvironment })).length,
++        1,
++      );
++
++      const invalidParent = yield* repository
++        .upsertFeature({
++          featureBindingId: TwsFeatureBindingId.make("feature-invalid-parent"),
++          workspaceBindingId: TwsWorkspaceBindingId.make("workspace-missing"),
++          environmentId: firstEnvironment,
++          canonicalLocator: { kind: "name", value: "invalid" },
++          locators: [{ kind: "name", value: "invalid" }],
++          repositoryIdentity: null,
++          firstSeenAt: seenAt,
++          lastSeenAt: seenAt,
++          retiredAt: null,
++        })
++        .pipe(Effect.flip);
++      assert.strictEqual(invalidParent._tag, "PersistenceSqlError");
++
++      yield* repository.deleteWorkspace({
++        environmentId: firstEnvironment,
++        workspaceBindingId: sharedWorkspaceId,
++      });
++      assert.deepEqual(yield* repository.listWorkspaces({ environmentId: firstEnvironment }), []);
++      assert.strictEqual(
++        (yield* repository.listWorkspaces({ environmentId: secondEnvironment })).length,
++        1,
++      );
++    }),
++  );
++
++  it.effect("uses list indexes without temporary sort trees", () =>
++    Effect.gen(function* () {
++      const sql = yield* SqlClient.SqlClient;
++      const plans = [
++        yield* sql<{ readonly detail: string }>`
++          EXPLAIN QUERY PLAN
++          SELECT workspace_binding_id
++          FROM tws_workspace_bindings
++          WHERE environment_id = 'environment'
++            AND retired_at IS NULL
++          ORDER BY last_seen_at DESC, workspace_binding_id ASC
++          LIMIT 100
++        `,
++        yield* sql<{ readonly detail: string }>`
++          EXPLAIN QUERY PLAN
++          SELECT project_id
++          FROM tws_workspace_project_bindings
++          WHERE environment_id = 'environment'
++            AND workspace_binding_id = 'workspace'
++            AND retired_at IS NULL
++          ORDER BY last_seen_at DESC, project_id ASC
++          LIMIT 100
++        `,
++        yield* sql<{ readonly detail: string }>`
++          EXPLAIN QUERY PLAN
++          SELECT feature_binding_id
++          FROM tws_feature_bindings
++          WHERE environment_id = 'environment'
++            AND workspace_binding_id = 'workspace'
++            AND retired_at IS NULL
++          ORDER BY last_seen_at DESC, feature_binding_id ASC
++          LIMIT 100
++        `,
++        yield* sql<{ readonly detail: string }>`
++          EXPLAIN QUERY PLAN
++          SELECT stack_node_binding_id
++          FROM tws_stack_node_bindings
++          WHERE environment_id = 'environment'
++            AND feature_binding_id = 'feature'
++            AND retired_at IS NULL
++          ORDER BY last_seen_at DESC, stack_node_binding_id ASC
++          LIMIT 100
++        `,
++      ];
++
++      for (const plan of plans) {
++        assert.isFalse(plan.some((row) => row.detail.includes("USE TEMP B-TREE")));
++      }
++    }),
++  );
++});
+diff --git a/apps/server/src/persistence/Layers/TwsBindings.ts b/apps/server/src/persistence/Layers/TwsBindings.ts
+new file mode 100644
+index 000000000..5598dc451
+--- /dev/null
++++ b/apps/server/src/persistence/Layers/TwsBindings.ts
+@@ -0,0 +1,696 @@
++import {
++  EnvironmentId,
++  IsoDateTime,
++  ProjectId,
++  RepositoryIdentity,
++  TrimmedNonEmptyString,
++  TwsFeatureBinding,
++  TwsFeatureBindingId,
++  TwsLocator,
++  TwsLocators,
++  TwsStackNodeBinding,
++  TwsStackNodeBindingId,
++  TwsWorkspaceBinding,
++  TwsWorkspaceBindingId,
++  TwsWorkspaceProjectBinding,
++} from "@t3tools/contracts";
++import * as Effect from "effect/Effect";
++import * as Layer from "effect/Layer";
++import * as Schema from "effect/Schema";
++import * as SqlClient from "effect/unstable/sql/SqlClient";
++import * as SqlSchema from "effect/unstable/sql/SqlSchema";
++
++import { toPersistenceDecodeError, toPersistenceSqlError } from "../Errors.ts";
++import {
++  FindTwsFeatureByLocatorInput,
++  FindTwsStackNodeByLocatorInput,
++  FindTwsWorkspaceByLocatorInput,
++  ListTwsFeaturesInput,
++  ListTwsProjectWorkspacesInput,
++  ListTwsStackNodesInput,
++  ListTwsWorkspaceProjectsInput,
++  ListTwsWorkspacesInput,
++  TwsBindingRepository,
++  type TwsBindingRepositoryShape,
++} from "../Services/TwsBindings.ts";
++
++const DEFAULT_BINDING_QUERY_LIMIT = 100;
++const MAX_BINDING_QUERY_LIMIT = 500;
++
++const RepositoryIdentityJson = Schema.NullOr(Schema.fromJsonString(RepositoryIdentity));
++const TwsLocatorJson = Schema.fromJsonString(TwsLocator);
++const TwsLocatorsJson = Schema.fromJsonString(TwsLocators);
++
++const TwsWorkspaceBindingDbRow = Schema.Struct({
++  workspaceBindingId: TwsWorkspaceBindingId,
++  environmentId: EnvironmentId,
++  canonicalLocator: TwsLocatorJson,
++  locators: TwsLocatorsJson,
++  repositoryIdentity: RepositoryIdentityJson,
++  firstSeenAt: IsoDateTime,
++  lastSeenAt: IsoDateTime,
++  retiredAt: Schema.NullOr(IsoDateTime),
++});
++
++const TwsWorkspaceProjectBindingDbRow = TwsWorkspaceProjectBinding;
++
++const TwsFeatureBindingDbRow = Schema.Struct({
++  featureBindingId: TwsFeatureBindingId,
++  workspaceBindingId: TwsWorkspaceBindingId,
++  environmentId: EnvironmentId,
++  canonicalLocator: TwsLocatorJson,
++  locators: TwsLocatorsJson,
++  repositoryIdentity: RepositoryIdentityJson,
++  firstSeenAt: IsoDateTime,
++  lastSeenAt: IsoDateTime,
++  retiredAt: Schema.NullOr(IsoDateTime),
++});
++
++const TwsStackNodeBindingDbRow = Schema.Struct({
++  stackNodeBindingId: TwsStackNodeBindingId,
++  featureBindingId: TwsFeatureBindingId,
++  projectId: Schema.NullOr(ProjectId),
++  gitBranch: TrimmedNonEmptyString,
++  worktreePath: Schema.NullOr(TrimmedNonEmptyString),
++  archived: Schema.Literals([0, 1]),
++  environmentId: EnvironmentId,
++  canonicalLocator: TwsLocatorJson,
++  locators: TwsLocatorsJson,
++  repositoryIdentity: RepositoryIdentityJson,
++  firstSeenAt: IsoDateTime,
++  lastSeenAt: IsoDateTime,
++  retiredAt: Schema.NullOr(IsoDateTime),
++});
++
++const decodeStackNodeBinding = Schema.decodeUnknownEffect(TwsStackNodeBinding);
++
++function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: string) {
++  return (cause: unknown) =>
++    Schema.isSchemaError(cause)
++      ? toPersistenceDecodeError(decodeOperation)(cause)
++      : toPersistenceSqlError(sqlOperation)(cause);
++}
++
++function queryLimit(limit: number | undefined): number {
++  return Math.min(limit ?? DEFAULT_BINDING_QUERY_LIMIT, MAX_BINDING_QUERY_LIMIT);
++}
++
++const makeTwsBindingRepository = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  const retiredFilter = (includeRetired: boolean | undefined) =>
++    includeRetired ? sql`1 = 1` : sql`retired_at IS NULL`;
++
++  const upsertWorkspaceRow = SqlSchema.void({
++    Request: TwsWorkspaceBinding,
++    execute: (binding) =>
++      sql`
++        INSERT INTO tws_workspace_bindings (
++          workspace_binding_id,
++          environment_id,
++          canonical_locator_kind,
++          canonical_locator_value,
++          locators_json,
++          repository_identity_json,
++          first_seen_at,
++          last_seen_at,
++          retired_at
++        )
++        VALUES (
++          ${binding.workspaceBindingId},
++          ${binding.environmentId},
++          ${binding.canonicalLocator.kind},
++          ${binding.canonicalLocator.value},
++          ${JSON.stringify(binding.locators)},
++          ${
++            binding.repositoryIdentity === null ? null : JSON.stringify(binding.repositoryIdentity)
++          },
++          ${binding.firstSeenAt},
++          ${binding.lastSeenAt},
++          ${binding.retiredAt}
++        )
++        ON CONFLICT (environment_id, workspace_binding_id)
++        DO UPDATE SET
++          canonical_locator_kind = excluded.canonical_locator_kind,
++          canonical_locator_value = excluded.canonical_locator_value,
++          locators_json = excluded.locators_json,
++          repository_identity_json = excluded.repository_identity_json,
++          first_seen_at = MIN(first_seen_at, excluded.first_seen_at),
++          last_seen_at = MAX(last_seen_at, excluded.last_seen_at),
++          retired_at = excluded.retired_at
++      `,
++  });
++
++  const upsertWorkspaceProjectRow = SqlSchema.void({
++    Request: TwsWorkspaceProjectBinding,
++    execute: (binding) =>
++      sql`
++        INSERT INTO tws_workspace_project_bindings (
++          environment_id,
++          workspace_binding_id,
++          project_id,
++          first_seen_at,
++          last_seen_at,
++          retired_at
++        )
++        VALUES (
++          ${binding.environmentId},
++          ${binding.workspaceBindingId},
++          ${binding.projectId},
++          ${binding.firstSeenAt},
++          ${binding.lastSeenAt},
++          ${binding.retiredAt}
++        )
++        ON CONFLICT (environment_id, workspace_binding_id, project_id)
++        DO UPDATE SET
++          first_seen_at = MIN(first_seen_at, excluded.first_seen_at),
++          last_seen_at = MAX(last_seen_at, excluded.last_seen_at),
++          retired_at = excluded.retired_at
++      `,
++  });
++
++  const upsertFeatureRow = SqlSchema.void({
++    Request: TwsFeatureBinding,
++    execute: (binding) =>
++      sql`
++        INSERT INTO tws_feature_bindings (
++          feature_binding_id,
++          environment_id,
++          workspace_binding_id,
++          canonical_locator_kind,
++          canonical_locator_value,
++          locators_json,
++          repository_identity_json,
++          first_seen_at,
++          last_seen_at,
++          retired_at
++        )
++        VALUES (
++          ${binding.featureBindingId},
++          ${binding.environmentId},
++          ${binding.workspaceBindingId},
++          ${binding.canonicalLocator.kind},
++          ${binding.canonicalLocator.value},
++          ${JSON.stringify(binding.locators)},
++          ${
++            binding.repositoryIdentity === null ? null : JSON.stringify(binding.repositoryIdentity)
++          },
++          ${binding.firstSeenAt},
++          ${binding.lastSeenAt},
++          ${binding.retiredAt}
++        )
++        ON CONFLICT (environment_id, feature_binding_id)
++        DO UPDATE SET
++          workspace_binding_id = excluded.workspace_binding_id,
++          canonical_locator_kind = excluded.canonical_locator_kind,
++          canonical_locator_value = excluded.canonical_locator_value,
++          locators_json = excluded.locators_json,
++          repository_identity_json = excluded.repository_identity_json,
++          first_seen_at = MIN(first_seen_at, excluded.first_seen_at),
++          last_seen_at = MAX(last_seen_at, excluded.last_seen_at),
++          retired_at = excluded.retired_at
++      `,
++  });
++
++  const upsertStackNodeRow = SqlSchema.void({
++    Request: TwsStackNodeBinding,
++    execute: (binding) =>
++      sql`
++        INSERT INTO tws_stack_node_bindings (
++          stack_node_binding_id,
++          environment_id,
++          feature_binding_id,
++          project_id,
++          canonical_locator_kind,
++          canonical_locator_value,
++          locators_json,
++          repository_identity_json,
++          git_branch,
++          worktree_path,
++          archived,
++          first_seen_at,
++          last_seen_at,
++          retired_at
++        )
++        VALUES (
++          ${binding.stackNodeBindingId},
++          ${binding.environmentId},
++          ${binding.featureBindingId},
++          ${binding.projectId},
++          ${binding.canonicalLocator.kind},
++          ${binding.canonicalLocator.value},
++          ${JSON.stringify(binding.locators)},
++          ${
++            binding.repositoryIdentity === null ? null : JSON.stringify(binding.repositoryIdentity)
++          },
++          ${binding.gitBranch},
++          ${binding.worktreePath},
++          ${binding.archived ? 1 : 0},
++          ${binding.firstSeenAt},
++          ${binding.lastSeenAt},
++          ${binding.retiredAt}
++        )
++        ON CONFLICT (environment_id, stack_node_binding_id)
++        DO UPDATE SET
++          feature_binding_id = excluded.feature_binding_id,
++          project_id = excluded.project_id,
++          canonical_locator_kind = excluded.canonical_locator_kind,
++          canonical_locator_value = excluded.canonical_locator_value,
++          locators_json = excluded.locators_json,
++          repository_identity_json = excluded.repository_identity_json,
++          git_branch = excluded.git_branch,
++          worktree_path = excluded.worktree_path,
++          archived = excluded.archived,
++          first_seen_at = MIN(first_seen_at, excluded.first_seen_at),
++          last_seen_at = MAX(last_seen_at, excluded.last_seen_at),
++          retired_at = excluded.retired_at
++      `,
++  });
++
++  const listWorkspaceRows = SqlSchema.findAll({
++    Request: ListTwsWorkspacesInput,
++    Result: TwsWorkspaceBindingDbRow,
++    execute: ({ environmentId, includeRetired, limit }) =>
++      sql`
++        SELECT
++          workspace_binding_id AS "workspaceBindingId",
++          environment_id AS "environmentId",
++          json_object(
++            'kind', canonical_locator_kind,
++            'value', canonical_locator_value
++          ) AS "canonicalLocator",
++          locators_json AS locators,
++          repository_identity_json AS "repositoryIdentity",
++          first_seen_at AS "firstSeenAt",
++          last_seen_at AS "lastSeenAt",
++          retired_at AS "retiredAt"
++        FROM tws_workspace_bindings
++        WHERE environment_id = ${environmentId}
++          AND ${retiredFilter(includeRetired)}
++        ORDER BY last_seen_at DESC, workspace_binding_id ASC
++        LIMIT ${queryLimit(limit)}
++      `,
++  });
++
++  const listWorkspaceProjectRows = SqlSchema.findAll({
++    Request: ListTwsWorkspaceProjectsInput,
++    Result: TwsWorkspaceProjectBindingDbRow,
++    execute: ({ environmentId, workspaceBindingId, includeRetired, limit }) =>
++      sql`
++        SELECT
++          environment_id AS "environmentId",
++          workspace_binding_id AS "workspaceBindingId",
++          project_id AS "projectId",
++          first_seen_at AS "firstSeenAt",
++          last_seen_at AS "lastSeenAt",
++          retired_at AS "retiredAt"
++        FROM tws_workspace_project_bindings
++        WHERE environment_id = ${environmentId}
++          AND workspace_binding_id = ${workspaceBindingId}
++          AND ${retiredFilter(includeRetired)}
++        ORDER BY last_seen_at DESC, project_id ASC
++        LIMIT ${queryLimit(limit)}
++      `,
++  });
++
++  const listProjectWorkspaceRows = SqlSchema.findAll({
++    Request: ListTwsProjectWorkspacesInput,
++    Result: TwsWorkspaceProjectBindingDbRow,
++    execute: ({ environmentId, projectId, includeRetired, limit }) =>
++      sql`
++        SELECT
++          environment_id AS "environmentId",
++          workspace_binding_id AS "workspaceBindingId",
++          project_id AS "projectId",
++          first_seen_at AS "firstSeenAt",
++          last_seen_at AS "lastSeenAt",
++          retired_at AS "retiredAt"
++        FROM tws_workspace_project_bindings
++        WHERE environment_id = ${environmentId}
++          AND project_id = ${projectId}
++          AND ${retiredFilter(includeRetired)}
++        ORDER BY last_seen_at DESC, workspace_binding_id ASC
++        LIMIT ${queryLimit(limit)}
++      `,
++  });
++
++  const listFeatureRows = SqlSchema.findAll({
++    Request: ListTwsFeaturesInput,
++    Result: TwsFeatureBindingDbRow,
++    execute: ({ environmentId, workspaceBindingId, includeRetired, limit }) =>
++      sql`
++        SELECT
++          feature_binding_id AS "featureBindingId",
++          workspace_binding_id AS "workspaceBindingId",
++          environment_id AS "environmentId",
++          json_object(
++            'kind', canonical_locator_kind,
++            'value', canonical_locator_value
++          ) AS "canonicalLocator",
++          locators_json AS locators,
++          repository_identity_json AS "repositoryIdentity",
++          first_seen_at AS "firstSeenAt",
++          last_seen_at AS "lastSeenAt",
++          retired_at AS "retiredAt"
++        FROM tws_feature_bindings
++        WHERE environment_id = ${environmentId}
++          AND workspace_binding_id = ${workspaceBindingId}
++          AND ${retiredFilter(includeRetired)}
++        ORDER BY last_seen_at DESC, feature_binding_id ASC
++        LIMIT ${queryLimit(limit)}
++      `,
++  });
++
++  const listStackNodeRows = SqlSchema.findAll({
++    Request: ListTwsStackNodesInput,
++    Result: TwsStackNodeBindingDbRow,
++    execute: ({ environmentId, featureBindingId, includeRetired, limit }) =>
++      sql`
++        SELECT
++          stack_node_binding_id AS "stackNodeBindingId",
++          feature_binding_id AS "featureBindingId",
++          project_id AS "projectId",
++          git_branch AS "gitBranch",
++          worktree_path AS "worktreePath",
++          archived,
++          environment_id AS "environmentId",
++          json_object(
++            'kind', canonical_locator_kind,
++            'value', canonical_locator_value
++          ) AS "canonicalLocator",
++          locators_json AS locators,
++          repository_identity_json AS "repositoryIdentity",
++          first_seen_at AS "firstSeenAt",
++          last_seen_at AS "lastSeenAt",
++          retired_at AS "retiredAt"
++        FROM tws_stack_node_bindings
++        WHERE environment_id = ${environmentId}
++          AND feature_binding_id = ${featureBindingId}
++          AND ${retiredFilter(includeRetired)}
++        ORDER BY last_seen_at DESC, stack_node_binding_id ASC
++        LIMIT ${queryLimit(limit)}
++      `,
++  });
++
++  const findWorkspaceRows = SqlSchema.findAll({
++    Request: FindTwsWorkspaceByLocatorInput,
++    Result: TwsWorkspaceBindingDbRow,
++    execute: ({ environmentId, locator, includeRetired, limit }) =>
++      sql`
++        WITH matching_ids AS (
++          SELECT workspace_binding_id
++          FROM tws_workspace_bindings
++          WHERE environment_id = ${environmentId}
++            AND ${retiredFilter(includeRetired)}
++            AND canonical_locator_kind = ${locator.kind}
++            AND canonical_locator_value = ${locator.value}
++          UNION
++          SELECT workspace_binding_id
++          FROM tws_workspace_bindings
++          WHERE environment_id = ${environmentId}
++            AND ${retiredFilter(includeRetired)}
++            AND EXISTS (
++              SELECT 1
++              FROM json_each(tws_workspace_bindings.locators_json) AS item
++              WHERE json_extract(item.value, '$.kind') = ${locator.kind}
++                AND json_extract(item.value, '$.value') = ${locator.value}
++            )
++        )
++        SELECT
++          workspace_binding_id AS "workspaceBindingId",
++          environment_id AS "environmentId",
++          json_object(
++            'kind', canonical_locator_kind,
++            'value', canonical_locator_value
++          ) AS "canonicalLocator",
++          locators_json AS locators,
++          repository_identity_json AS "repositoryIdentity",
++          first_seen_at AS "firstSeenAt",
++          last_seen_at AS "lastSeenAt",
++          retired_at AS "retiredAt"
++        FROM tws_workspace_bindings
++        WHERE environment_id = ${environmentId}
++          AND workspace_binding_id IN (SELECT workspace_binding_id FROM matching_ids)
++        ORDER BY workspace_binding_id ASC
++        LIMIT ${queryLimit(limit)}
++      `,
++  });
++
++  const findFeatureRows = SqlSchema.findAll({
++    Request: FindTwsFeatureByLocatorInput,
++    Result: TwsFeatureBindingDbRow,
++    execute: ({ environmentId, workspaceBindingId, locator, includeRetired, limit }) =>
++      sql`
++        WITH matching_ids AS (
++          SELECT feature_binding_id
++          FROM tws_feature_bindings
++          WHERE environment_id = ${environmentId}
++            AND workspace_binding_id = ${workspaceBindingId}
++            AND ${retiredFilter(includeRetired)}
++            AND canonical_locator_kind = ${locator.kind}
++            AND canonical_locator_value = ${locator.value}
++          UNION
++          SELECT feature_binding_id
++          FROM tws_feature_bindings
++          WHERE environment_id = ${environmentId}
++            AND workspace_binding_id = ${workspaceBindingId}
++            AND ${retiredFilter(includeRetired)}
++            AND EXISTS (
++              SELECT 1
++              FROM json_each(tws_feature_bindings.locators_json) AS item
++              WHERE json_extract(item.value, '$.kind') = ${locator.kind}
++                AND json_extract(item.value, '$.value') = ${locator.value}
++            )
++        )
++        SELECT
++          feature_binding_id AS "featureBindingId",
++          workspace_binding_id AS "workspaceBindingId",
++          environment_id AS "environmentId",
++          json_object(
++            'kind', canonical_locator_kind,
++            'value', canonical_locator_value
++          ) AS "canonicalLocator",
++          locators_json AS locators,
++          repository_identity_json AS "repositoryIdentity",
++          first_seen_at AS "firstSeenAt",
++          last_seen_at AS "lastSeenAt",
++          retired_at AS "retiredAt"
++        FROM tws_feature_bindings
++        WHERE environment_id = ${environmentId}
++          AND workspace_binding_id = ${workspaceBindingId}
++          AND feature_binding_id IN (SELECT feature_binding_id FROM matching_ids)
++        ORDER BY feature_binding_id ASC
++        LIMIT ${queryLimit(limit)}
++      `,
++  });
++
++  const findStackNodeRows = SqlSchema.findAll({
++    Request: FindTwsStackNodeByLocatorInput,
++    Result: TwsStackNodeBindingDbRow,
++    execute: ({ environmentId, featureBindingId, locator, includeRetired, limit }) =>
++      sql`
++        WITH matching_ids AS (
++          SELECT stack_node_binding_id
++          FROM tws_stack_node_bindings
++          WHERE environment_id = ${environmentId}
++            AND feature_binding_id = ${featureBindingId}
++            AND ${retiredFilter(includeRetired)}
++            AND canonical_locator_kind = ${locator.kind}
++            AND canonical_locator_value = ${locator.value}
++          UNION
++          SELECT stack_node_binding_id
++          FROM tws_stack_node_bindings
++          WHERE environment_id = ${environmentId}
++            AND feature_binding_id = ${featureBindingId}
++            AND ${retiredFilter(includeRetired)}
++            AND EXISTS (
++              SELECT 1
++              FROM json_each(tws_stack_node_bindings.locators_json) AS item
++              WHERE json_extract(item.value, '$.kind') = ${locator.kind}
++                AND json_extract(item.value, '$.value') = ${locator.value}
++            )
++        )
++        SELECT
++          stack_node_binding_id AS "stackNodeBindingId",
++          feature_binding_id AS "featureBindingId",
++          project_id AS "projectId",
++          git_branch AS "gitBranch",
++          worktree_path AS "worktreePath",
++          archived,
++          environment_id AS "environmentId",
++          json_object(
++            'kind', canonical_locator_kind,
++            'value', canonical_locator_value
++          ) AS "canonicalLocator",
++          locators_json AS locators,
++          repository_identity_json AS "repositoryIdentity",
++          first_seen_at AS "firstSeenAt",
++          last_seen_at AS "lastSeenAt",
++          retired_at AS "retiredAt"
++        FROM tws_stack_node_bindings
++        WHERE environment_id = ${environmentId}
++          AND feature_binding_id = ${featureBindingId}
++          AND stack_node_binding_id IN (SELECT stack_node_binding_id FROM matching_ids)
++        ORDER BY stack_node_binding_id ASC
++        LIMIT ${queryLimit(limit)}
++      `,
++  });
++
++  const decodeStackNodeRows = (
++    rows: ReadonlyArray<Schema.Schema.Type<typeof TwsStackNodeBindingDbRow>>,
++  ) =>
++    Effect.forEach(
++      rows,
++      (row) =>
++        decodeStackNodeBinding({
++          ...row,
++          archived: row.archived === 1,
++        }),
++      { concurrency: 1 },
++    ).pipe(Effect.mapError(toPersistenceDecodeError("TwsBindingRepository.decodeStackNodeRows")));
++
++  const repositoryError = (sqlOperation: string, decodeOperation: string) => (cause: unknown) =>
++    toPersistenceSqlOrDecodeError(sqlOperation, decodeOperation)(cause);
++
++  const upsertWorkspace: TwsBindingRepositoryShape["upsertWorkspace"] = (binding) =>
++    upsertWorkspaceRow(binding).pipe(
++      Effect.mapError(
++        repositoryError(
++          "TwsBindingRepository.upsertWorkspace:query",
++          "TwsBindingRepository.upsertWorkspace:encodeRequest",
++        ),
++      ),
++    );
++  const upsertWorkspaceProject: TwsBindingRepositoryShape["upsertWorkspaceProject"] = (binding) =>
++    upsertWorkspaceProjectRow(binding).pipe(
++      Effect.mapError(
++        repositoryError(
++          "TwsBindingRepository.upsertWorkspaceProject:query",
++          "TwsBindingRepository.upsertWorkspaceProject:encodeRequest",
++        ),
++      ),
++    );
++  const upsertFeature: TwsBindingRepositoryShape["upsertFeature"] = (binding) =>
++    upsertFeatureRow(binding).pipe(
++      Effect.mapError(
++        repositoryError(
++          "TwsBindingRepository.upsertFeature:query",
++          "TwsBindingRepository.upsertFeature:encodeRequest",
++        ),
++      ),
++    );
++  const upsertStackNode: TwsBindingRepositoryShape["upsertStackNode"] = (binding) =>
++    upsertStackNodeRow(binding).pipe(
++      Effect.mapError(
++        repositoryError(
++          "TwsBindingRepository.upsertStackNode:query",
++          "TwsBindingRepository.upsertStackNode:encodeRequest",
++        ),
++      ),
++    );
++
++  const listWorkspaces: TwsBindingRepositoryShape["listWorkspaces"] = (input) =>
++    listWorkspaceRows(input).pipe(
++      Effect.mapError(
++        repositoryError(
++          "TwsBindingRepository.listWorkspaces:query",
++          "TwsBindingRepository.listWorkspaces:decodeRows",
++        ),
++      ),
++    );
++  const listWorkspaceProjects: TwsBindingRepositoryShape["listWorkspaceProjects"] = (input) =>
++    listWorkspaceProjectRows(input).pipe(
++      Effect.mapError(
++        repositoryError(
++          "TwsBindingRepository.listWorkspaceProjects:query",
++          "TwsBindingRepository.listWorkspaceProjects:decodeRows",
++        ),
++      ),
++    );
++  const listProjectWorkspaces: TwsBindingRepositoryShape["listProjectWorkspaces"] = (input) =>
++    listProjectWorkspaceRows(input).pipe(
++      Effect.mapError(
++        repositoryError(
++          "TwsBindingRepository.listProjectWorkspaces:query",
++          "TwsBindingRepository.listProjectWorkspaces:decodeRows",
++        ),
++      ),
++    );
++  const listFeatures: TwsBindingRepositoryShape["listFeatures"] = (input) =>
++    listFeatureRows(input).pipe(
++      Effect.mapError(
++        repositoryError(
++          "TwsBindingRepository.listFeatures:query",
++          "TwsBindingRepository.listFeatures:decodeRows",
++        ),
++      ),
++    );
++  const listStackNodes: TwsBindingRepositoryShape["listStackNodes"] = (input) =>
++    listStackNodeRows(input).pipe(
++      Effect.mapError(
++        repositoryError(
++          "TwsBindingRepository.listStackNodes:query",
++          "TwsBindingRepository.listStackNodes:decodeRows",
++        ),
++      ),
++      Effect.flatMap(decodeStackNodeRows),
++    );
++  const findWorkspacesByLocator: TwsBindingRepositoryShape["findWorkspacesByLocator"] = (input) =>
++    findWorkspaceRows(input).pipe(
++      Effect.mapError(
++        repositoryError(
++          "TwsBindingRepository.findWorkspacesByLocator:query",
++          "TwsBindingRepository.findWorkspacesByLocator:decodeRows",
++        ),
++      ),
++    );
++  const findFeaturesByLocator: TwsBindingRepositoryShape["findFeaturesByLocator"] = (input) =>
++    findFeatureRows(input).pipe(
++      Effect.mapError(
++        repositoryError(
++          "TwsBindingRepository.findFeaturesByLocator:query",
++          "TwsBindingRepository.findFeaturesByLocator:decodeRows",
++        ),
++      ),
++    );
++  const findStackNodesByLocator: TwsBindingRepositoryShape["findStackNodesByLocator"] = (input) =>
++    findStackNodeRows(input).pipe(
++      Effect.mapError(
++        repositoryError(
++          "TwsBindingRepository.findStackNodesByLocator:query",
++          "TwsBindingRepository.findStackNodesByLocator:decodeRows",
++        ),
++      ),
++      Effect.flatMap(decodeStackNodeRows),
++    );
++
++  const deleteWorkspace: TwsBindingRepositoryShape["deleteWorkspace"] = ({
++    environmentId,
++    workspaceBindingId,
++  }) =>
++    sql`
++      DELETE FROM tws_workspace_bindings
++      WHERE environment_id = ${environmentId}
++        AND workspace_binding_id = ${workspaceBindingId}
++    `.pipe(Effect.mapError(toPersistenceSqlError("TwsBindingRepository.deleteWorkspace:query")));
++
++  return {
++    upsertWorkspace,
++    upsertWorkspaceProject,
++    upsertFeature,
++    upsertStackNode,
++    listWorkspaces,
++    listWorkspaceProjects,
++    listProjectWorkspaces,
++    listFeatures,
++    listStackNodes,
++    findWorkspacesByLocator,
++    findFeaturesByLocator,
++    findStackNodesByLocator,
++    deleteWorkspace,
++  } satisfies TwsBindingRepositoryShape;
++});
++
++export const TwsBindingRepositoryLive = Layer.effect(
++  TwsBindingRepository,
++  makeTwsBindingRepository,
++);
+diff --git a/apps/server/src/persistence/Migrations.ts b/apps/server/src/persistence/Migrations.ts
+index 4271dfd29..e0f5f0e32 100644
+--- a/apps/server/src/persistence/Migrations.ts
++++ b/apps/server/src/persistence/Migrations.ts
+@@ -57,6 +57,7 @@ import Migration0041 from "./Migrations/041_AuthSessionClientConnection.ts";
+ import Migration0042 from "./Migrations/042_ProjectionThreadLinkedPullRequest.ts";
+ import Migration0043 from "./Migrations/043_ProjectionThreadsUnsettledAt.ts";
+ import Migration0044 from "./Migrations/044_ProjectionThreadAttentionAudit.ts";
++import Migration0045 from "./Migrations/045_TwsBindings.ts";
+ 
+ /**
+  * Migration loader with all migrations defined inline.
+@@ -113,6 +114,7 @@ export const migrationEntries = [
+   [42, "ProjectionThreadLinkedPullRequest", Migration0042],
+   [43, "ProjectionThreadsUnsettledAt", Migration0043],
+   [44, "ProjectionThreadAttentionAudit", Migration0044],
++  [45, "TwsBindings", Migration0045],
+ ] as const;
+ 
+ export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
+diff --git a/apps/server/src/persistence/Migrations/045_TwsBindings.test.ts b/apps/server/src/persistence/Migrations/045_TwsBindings.test.ts
+new file mode 100644
+index 000000000..8dd80b522
+--- /dev/null
++++ b/apps/server/src/persistence/Migrations/045_TwsBindings.test.ts
+@@ -0,0 +1,42 @@
++import { assert, it } from "@effect/vitest";
++import * as Effect from "effect/Effect";
++import * as Layer from "effect/Layer";
++import * as SqlClient from "effect/unstable/sql/SqlClient";
++
++import { runMigrations } from "../Migrations.ts";
++import * as NodeSqliteClient from "../NodeSqliteClient.ts";
++
++const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
++
++layer("045_TwsBindings", (it) => {
++  it.effect("creates binding tables and locator indexes", () =>
++    Effect.gen(function* () {
++      const sql = yield* SqlClient.SqlClient;
++      yield* runMigrations({ toMigrationInclusive: 44 });
++      yield* runMigrations({ toMigrationInclusive: 45 });
++
++      const tables = yield* sql<{ readonly name: string }>`
++        SELECT name
++        FROM sqlite_master
++        WHERE type = 'table' AND name LIKE 'tws_%_bindings'
++        ORDER BY name
++      `;
++      assert.deepEqual(
++        tables.map((table) => table.name),
++        [
++          "tws_feature_bindings",
++          "tws_stack_node_bindings",
++          "tws_workspace_bindings",
++          "tws_workspace_project_bindings",
++        ],
++      );
++
++      const indexes = yield* sql<{ readonly name: string }>`
++        SELECT name
++        FROM sqlite_master
++        WHERE type = 'index' AND name LIKE 'idx_tws_%'
++      `;
++      assert.strictEqual(indexes.length, 14);
++    }),
++  );
++});
+diff --git a/apps/server/src/persistence/Migrations/045_TwsBindings.ts b/apps/server/src/persistence/Migrations/045_TwsBindings.ts
+new file mode 100644
+index 000000000..66ba2ac6b
+--- /dev/null
++++ b/apps/server/src/persistence/Migrations/045_TwsBindings.ts
+@@ -0,0 +1,208 @@
++import * as Effect from "effect/Effect";
++import * as SqlClient from "effect/unstable/sql/SqlClient";
++
++export default Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++
++  yield* sql`
++    CREATE TABLE IF NOT EXISTS tws_workspace_bindings (
++      environment_id TEXT NOT NULL,
++      workspace_binding_id TEXT NOT NULL,
++      canonical_locator_kind TEXT NOT NULL,
++      canonical_locator_value TEXT NOT NULL,
++      locators_json TEXT NOT NULL,
++      repository_identity_json TEXT,
++      first_seen_at TEXT NOT NULL,
++      last_seen_at TEXT NOT NULL,
++      retired_at TEXT,
++      PRIMARY KEY (environment_id, workspace_binding_id)
++    )
++  `;
++
++  yield* sql`
++    CREATE TABLE IF NOT EXISTS tws_workspace_project_bindings (
++      environment_id TEXT NOT NULL,
++      workspace_binding_id TEXT NOT NULL,
++      project_id TEXT NOT NULL,
++      first_seen_at TEXT NOT NULL,
++      last_seen_at TEXT NOT NULL,
++      retired_at TEXT,
++      PRIMARY KEY (environment_id, workspace_binding_id, project_id),
++      FOREIGN KEY (environment_id, workspace_binding_id)
++        REFERENCES tws_workspace_bindings(environment_id, workspace_binding_id)
++        ON DELETE CASCADE
++    )
++  `;
++
++  yield* sql`
++    CREATE TABLE IF NOT EXISTS tws_feature_bindings (
++      environment_id TEXT NOT NULL,
++      feature_binding_id TEXT NOT NULL,
++      workspace_binding_id TEXT NOT NULL,
++      canonical_locator_kind TEXT NOT NULL,
++      canonical_locator_value TEXT NOT NULL,
++      locators_json TEXT NOT NULL,
++      repository_identity_json TEXT,
++      first_seen_at TEXT NOT NULL,
++      last_seen_at TEXT NOT NULL,
++      retired_at TEXT,
++      PRIMARY KEY (environment_id, feature_binding_id),
++      FOREIGN KEY (environment_id, workspace_binding_id)
++        REFERENCES tws_workspace_bindings(environment_id, workspace_binding_id)
++        ON DELETE CASCADE
++    )
++  `;
++
++  yield* sql`
++    CREATE TABLE IF NOT EXISTS tws_stack_node_bindings (
++      environment_id TEXT NOT NULL,
++      stack_node_binding_id TEXT NOT NULL,
++      feature_binding_id TEXT NOT NULL,
++      project_id TEXT,
++      canonical_locator_kind TEXT NOT NULL,
++      canonical_locator_value TEXT NOT NULL,
++      locators_json TEXT NOT NULL,
++      repository_identity_json TEXT,
++      git_branch TEXT NOT NULL,
++      worktree_path TEXT,
++      archived INTEGER NOT NULL,
++      first_seen_at TEXT NOT NULL,
++      last_seen_at TEXT NOT NULL,
++      retired_at TEXT,
++      PRIMARY KEY (environment_id, stack_node_binding_id),
++      FOREIGN KEY (environment_id, feature_binding_id)
++        REFERENCES tws_feature_bindings(environment_id, feature_binding_id)
++        ON DELETE CASCADE
++    )
++  `;
++
++  yield* sql`
++    CREATE INDEX IF NOT EXISTS idx_tws_workspace_bindings_environment_locator
++    ON tws_workspace_bindings(
++      environment_id,
++      canonical_locator_kind,
++      canonical_locator_value
++    )
++  `;
++  yield* sql`
++    CREATE INDEX IF NOT EXISTS idx_tws_workspace_bindings_environment_retired
++    ON tws_workspace_bindings(
++      environment_id,
++      retired_at,
++      last_seen_at DESC,
++      workspace_binding_id ASC
++    )
++  `;
++  yield* sql`
++    CREATE INDEX IF NOT EXISTS idx_tws_workspace_bindings_environment_seen
++    ON tws_workspace_bindings(
++      environment_id,
++      last_seen_at DESC,
++      workspace_binding_id ASC
++    )
++  `;
++  yield* sql`
++    CREATE INDEX IF NOT EXISTS idx_tws_workspace_project_bindings_workspace_retired
++    ON tws_workspace_project_bindings(
++      environment_id,
++      workspace_binding_id,
++      retired_at,
++      last_seen_at DESC,
++      project_id ASC
++    )
++  `;
++  yield* sql`
++    CREATE INDEX IF NOT EXISTS idx_tws_workspace_project_bindings_workspace_seen
++    ON tws_workspace_project_bindings(
++      environment_id,
++      workspace_binding_id,
++      last_seen_at DESC,
++      project_id ASC
++    )
++  `;
++  yield* sql`
++    CREATE INDEX IF NOT EXISTS idx_tws_workspace_project_bindings_project
++    ON tws_workspace_project_bindings(
++      environment_id,
++      project_id,
++      retired_at,
++      last_seen_at DESC,
++      workspace_binding_id ASC
++    )
++  `;
++  yield* sql`
++    CREATE INDEX IF NOT EXISTS idx_tws_workspace_project_bindings_project_seen
++    ON tws_workspace_project_bindings(
++      environment_id,
++      project_id,
++      last_seen_at DESC,
++      workspace_binding_id ASC
++    )
++  `;
++  yield* sql`
++    CREATE INDEX IF NOT EXISTS idx_tws_feature_bindings_workspace_locator
++    ON tws_feature_bindings(
++      environment_id,
++      workspace_binding_id,
++      canonical_locator_kind,
++      canonical_locator_value
++    )
++  `;
++  yield* sql`
++    CREATE INDEX IF NOT EXISTS idx_tws_feature_bindings_workspace_retired
++    ON tws_feature_bindings(
++      environment_id,
++      workspace_binding_id,
++      retired_at,
++      last_seen_at DESC,
++      feature_binding_id ASC
++    )
++  `;
++  yield* sql`
++    CREATE INDEX IF NOT EXISTS idx_tws_feature_bindings_workspace_seen
++    ON tws_feature_bindings(
++      environment_id,
++      workspace_binding_id,
++      last_seen_at DESC,
++      feature_binding_id ASC
++    )
++  `;
++  yield* sql`
++    CREATE INDEX IF NOT EXISTS idx_tws_stack_node_bindings_feature_locator
++    ON tws_stack_node_bindings(
++      environment_id,
++      feature_binding_id,
++      canonical_locator_kind,
++      canonical_locator_value
++    )
++  `;
++  yield* sql`
++    CREATE INDEX IF NOT EXISTS idx_tws_stack_node_bindings_project
++    ON tws_stack_node_bindings(
++      environment_id,
++      project_id,
++      retired_at,
++      last_seen_at DESC,
++      stack_node_binding_id ASC
++    )
++  `;
++  yield* sql`
++    CREATE INDEX IF NOT EXISTS idx_tws_stack_node_bindings_feature_retired
++    ON tws_stack_node_bindings(
++      environment_id,
++      feature_binding_id,
++      retired_at,
++      last_seen_at DESC,
++      stack_node_binding_id ASC
++    )
++  `;
++  yield* sql`
++    CREATE INDEX IF NOT EXISTS idx_tws_stack_node_bindings_feature_seen
++    ON tws_stack_node_bindings(
++      environment_id,
++      feature_binding_id,
++      last_seen_at DESC,
++      stack_node_binding_id ASC
++    )
++  `;
++});
+diff --git a/apps/server/src/persistence/Services/TwsBindings.ts b/apps/server/src/persistence/Services/TwsBindings.ts
+new file mode 100644
+index 000000000..c076672a8
+--- /dev/null
++++ b/apps/server/src/persistence/Services/TwsBindings.ts
+@@ -0,0 +1,133 @@
++import {
++  EnvironmentId,
++  ProjectId,
++  TwsFeatureBinding,
++  TwsFeatureBindingId,
++  TwsLocator,
++  TwsStackNodeBinding,
++  TwsWorkspaceBinding,
++  TwsWorkspaceBindingId,
++  TwsWorkspaceProjectBinding,
++} from "@t3tools/contracts";
++import * as Context from "effect/Context";
++import type * as Effect from "effect/Effect";
++import * as Schema from "effect/Schema";
++
++import type { ProjectionRepositoryError } from "../Errors.ts";
++
++const BindingQueryLimit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }));
++
++const BindingListOptions = {
++  includeRetired: Schema.optional(Schema.Boolean),
++  limit: Schema.optional(BindingQueryLimit),
++} as const;
++
++export const ListTwsWorkspacesInput = Schema.Struct({
++  environmentId: EnvironmentId,
++  ...BindingListOptions,
++});
++export type ListTwsWorkspacesInput = typeof ListTwsWorkspacesInput.Type;
++
++export const ListTwsWorkspaceProjectsInput = Schema.Struct({
++  environmentId: EnvironmentId,
++  workspaceBindingId: TwsWorkspaceBindingId,
++  ...BindingListOptions,
++});
++export type ListTwsWorkspaceProjectsInput = typeof ListTwsWorkspaceProjectsInput.Type;
++
++export const ListTwsProjectWorkspacesInput = Schema.Struct({
++  environmentId: EnvironmentId,
++  projectId: ProjectId,
++  ...BindingListOptions,
++});
++export type ListTwsProjectWorkspacesInput = typeof ListTwsProjectWorkspacesInput.Type;
++
++export const ListTwsFeaturesInput = Schema.Struct({
++  environmentId: EnvironmentId,
++  workspaceBindingId: TwsWorkspaceBindingId,
++  ...BindingListOptions,
++});
++export type ListTwsFeaturesInput = typeof ListTwsFeaturesInput.Type;
++
++export const ListTwsStackNodesInput = Schema.Struct({
++  environmentId: EnvironmentId,
++  featureBindingId: TwsFeatureBindingId,
++  ...BindingListOptions,
++});
++export type ListTwsStackNodesInput = typeof ListTwsStackNodesInput.Type;
++
++export const FindTwsWorkspaceByLocatorInput = Schema.Struct({
++  environmentId: EnvironmentId,
++  locator: TwsLocator,
++  ...BindingListOptions,
++});
++export type FindTwsWorkspaceByLocatorInput = typeof FindTwsWorkspaceByLocatorInput.Type;
++
++export const FindTwsFeatureByLocatorInput = Schema.Struct({
++  environmentId: EnvironmentId,
++  workspaceBindingId: TwsWorkspaceBindingId,
++  locator: TwsLocator,
++  ...BindingListOptions,
++});
++export type FindTwsFeatureByLocatorInput = typeof FindTwsFeatureByLocatorInput.Type;
++
++export const FindTwsStackNodeByLocatorInput = Schema.Struct({
++  environmentId: EnvironmentId,
++  featureBindingId: TwsFeatureBindingId,
++  locator: TwsLocator,
++  ...BindingListOptions,
++});
++export type FindTwsStackNodeByLocatorInput = typeof FindTwsStackNodeByLocatorInput.Type;
++
++export const DeleteTwsWorkspaceInput = Schema.Struct({
++  environmentId: EnvironmentId,
++  workspaceBindingId: TwsWorkspaceBindingId,
++});
++export type DeleteTwsWorkspaceInput = typeof DeleteTwsWorkspaceInput.Type;
++
++export interface TwsBindingRepositoryShape {
++  readonly upsertWorkspace: (
++    binding: TwsWorkspaceBinding,
++  ) => Effect.Effect<void, ProjectionRepositoryError>;
++  readonly upsertWorkspaceProject: (
++    binding: TwsWorkspaceProjectBinding,
++  ) => Effect.Effect<void, ProjectionRepositoryError>;
++  readonly upsertFeature: (
++    binding: TwsFeatureBinding,
++  ) => Effect.Effect<void, ProjectionRepositoryError>;
++  readonly upsertStackNode: (
++    binding: TwsStackNodeBinding,
++  ) => Effect.Effect<void, ProjectionRepositoryError>;
++  readonly listWorkspaces: (
++    input: ListTwsWorkspacesInput,
++  ) => Effect.Effect<ReadonlyArray<TwsWorkspaceBinding>, ProjectionRepositoryError>;
++  readonly listWorkspaceProjects: (
++    input: ListTwsWorkspaceProjectsInput,
++  ) => Effect.Effect<ReadonlyArray<TwsWorkspaceProjectBinding>, ProjectionRepositoryError>;
++  readonly listProjectWorkspaces: (
++    input: ListTwsProjectWorkspacesInput,
++  ) => Effect.Effect<ReadonlyArray<TwsWorkspaceProjectBinding>, ProjectionRepositoryError>;
++  readonly listFeatures: (
++    input: ListTwsFeaturesInput,
++  ) => Effect.Effect<ReadonlyArray<TwsFeatureBinding>, ProjectionRepositoryError>;
++  readonly listStackNodes: (
++    input: ListTwsStackNodesInput,
++  ) => Effect.Effect<ReadonlyArray<TwsStackNodeBinding>, ProjectionRepositoryError>;
++  readonly findWorkspacesByLocator: (
++    input: FindTwsWorkspaceByLocatorInput,
++  ) => Effect.Effect<ReadonlyArray<TwsWorkspaceBinding>, ProjectionRepositoryError>;
++  readonly findFeaturesByLocator: (
++    input: FindTwsFeatureByLocatorInput,
++  ) => Effect.Effect<ReadonlyArray<TwsFeatureBinding>, ProjectionRepositoryError>;
++  readonly findStackNodesByLocator: (
++    input: FindTwsStackNodeByLocatorInput,
++  ) => Effect.Effect<ReadonlyArray<TwsStackNodeBinding>, ProjectionRepositoryError>;
++  readonly deleteWorkspace: (
++    input: DeleteTwsWorkspaceInput,
++  ) => Effect.Effect<void, ProjectionRepositoryError>;
++}
++
++export class TwsBindingRepository extends Context.Service<
++  TwsBindingRepository,
++  TwsBindingRepositoryShape
++>()("t3/persistence/Services/TwsBindings/TwsBindingRepository") {}
+diff --git a/apps/server/src/tws/TwsBindingMatch.test.ts b/apps/server/src/tws/TwsBindingMatch.test.ts
+new file mode 100644
+index 000000000..63621bee8
+--- /dev/null
++++ b/apps/server/src/tws/TwsBindingMatch.test.ts
+@@ -0,0 +1,54 @@
++import { TwsWorkspaceBindingId } from "@t3tools/contracts";
++import { assert, describe, it } from "@effect/vitest";
++
++import { matchTwsBindingByLocators, mergeTwsLocators } from "./TwsBindingMatch.ts";
++
++describe("TwsBindingMatch", () => {
++  it("matches by retained locator and merges a rename under the same product id", () => {
++    const id = TwsWorkspaceBindingId.make("workspace-binding-1");
++    const existing = {
++      id,
++      canonicalLocator: { kind: "path" as const, value: "/old/path" },
++      locators: [{ kind: "registry-entry" as const, value: "registry-1" }],
++    };
++
++    assert.deepEqual(
++      matchTwsBindingByLocators(
++        [existing],
++        [
++          { kind: "registry-entry", value: "registry-1" },
++          { kind: "path", value: "/new/path" },
++        ],
++      ),
++      { kind: "matched", id },
++    );
++    assert.deepEqual(
++      mergeTwsLocators({ kind: "path", value: "/new/path" }, existing.locators, [
++        existing.canonicalLocator,
++      ]),
++      [
++        { kind: "path", value: "/new/path" },
++        { kind: "registry-entry", value: "registry-1" },
++        { kind: "path", value: "/old/path" },
++      ],
++    );
++  });
++
++  it("returns new or ambiguous without consulting repository identity", () => {
++    assert.deepEqual(matchTwsBindingByLocators([], [{ kind: "name", value: "feature-a" }]), {
++      kind: "new",
++    });
++
++    const observed = [{ kind: "name" as const, value: "feature-a" }];
++    const bindings = ["binding-b", "binding-a"].map((value) => ({
++      id: TwsWorkspaceBindingId.make(value),
++      canonicalLocator: observed[0]!,
++      locators: observed,
++      repositoryIdentity: value,
++    }));
++    assert.deepEqual(matchTwsBindingByLocators(bindings, observed), {
++      kind: "ambiguous",
++      ids: [TwsWorkspaceBindingId.make("binding-a"), TwsWorkspaceBindingId.make("binding-b")],
++    });
++  });
++});
+diff --git a/apps/server/src/tws/TwsBindingMatch.ts b/apps/server/src/tws/TwsBindingMatch.ts
+new file mode 100644
+index 000000000..63a32da26
+--- /dev/null
++++ b/apps/server/src/tws/TwsBindingMatch.ts
+@@ -0,0 +1,57 @@
++import { TWS_BINDING_MAX_LOCATORS, type TwsLocator } from "@t3tools/contracts";
++
++export type TwsBindingMatch<Id extends string> =
++  | { readonly kind: "new" }
++  | { readonly kind: "matched"; readonly id: Id }
++  | { readonly kind: "ambiguous"; readonly ids: ReadonlyArray<Id> };
++
++function locatorKey(locator: TwsLocator): string {
++  return `${locator.kind}\0${locator.value}`;
++}
++
++export function mergeTwsLocators(
++  canonicalLocator: TwsLocator,
++  ...collections: ReadonlyArray<ReadonlyArray<TwsLocator>>
++): ReadonlyArray<TwsLocator> {
++  const merged = new Map<string, TwsLocator>();
++  merged.set(locatorKey(canonicalLocator), canonicalLocator);
++  for (const locators of collections) {
++    for (const locator of locators) {
++      const key = locatorKey(locator);
++      if (!merged.has(key)) {
++        merged.set(key, locator);
++      }
++    }
++  }
++  return [...merged.values()].slice(0, TWS_BINDING_MAX_LOCATORS);
++}
++
++export function matchTwsBindingByLocators<Id extends string>(
++  bindings: ReadonlyArray<{
++    readonly id: Id;
++    readonly canonicalLocator: TwsLocator;
++    readonly locators: ReadonlyArray<TwsLocator>;
++  }>,
++  observedLocators: ReadonlyArray<TwsLocator>,
++): TwsBindingMatch<Id> {
++  const observed = new Set(observedLocators.map(locatorKey));
++  const ids = [
++    ...new Set(
++      bindings.flatMap((binding) =>
++        [binding.canonicalLocator, ...binding.locators].some((locator) =>
++          observed.has(locatorKey(locator)),
++        )
++          ? [binding.id]
++          : [],
++      ),
++    ),
++  ].toSorted();
++
++  if (ids.length === 0) {
++    return { kind: "new" };
++  }
++  if (ids.length === 1) {
++    return { kind: "matched", id: ids[0]! };
++  }
++  return { kind: "ambiguous", ids };
++}
+diff --git a/packages/contracts/src/index.ts b/packages/contracts/src/index.ts
+index f3c7dd57a..7b73363fe 100644
+--- a/packages/contracts/src/index.ts
++++ b/packages/contracts/src/index.ts
+@@ -20,6 +20,7 @@ export * from "./vcs.ts";
+ export * from "./sourceControl.ts";
+ export * from "./pullRequest.ts";
+ export * from "./workItem.ts";
++export * from "./twsBindings.ts";
+ export * from "./orchestration.ts";
+ export * from "./t3ProjectFile.ts";
+ export * from "./editor.ts";
+diff --git a/packages/contracts/src/twsBindings.test.ts b/packages/contracts/src/twsBindings.test.ts
+new file mode 100644
+index 000000000..6b940b442
+--- /dev/null
++++ b/packages/contracts/src/twsBindings.test.ts
+@@ -0,0 +1,148 @@
++import * as Schema from "effect/Schema";
++import { describe, expect, it } from "vite-plus/test";
++
++import { EnvironmentId, ProjectId } from "./baseSchemas.ts";
++import {
++  TWS_BINDING_MAX_LOCATOR_LENGTH,
++  TWS_BINDING_MAX_LOCATORS,
++  TwsFeatureBinding,
++  TwsStackNodeBinding,
++  TwsWorkspaceBinding,
++  TwsWorkspaceBindingId,
++  TwsWorkspaceProjectBinding,
++} from "./twsBindings.ts";
++
++const decodeWorkspace = Schema.decodeUnknownSync(TwsWorkspaceBinding);
++const decodeFeature = Schema.decodeUnknownSync(TwsFeatureBinding);
++const decodeStackNode = Schema.decodeUnknownSync(TwsStackNodeBinding);
++const decodeWorkspaceProject = Schema.decodeUnknownSync(TwsWorkspaceProjectBinding);
++const decodeWorkspaceId = Schema.decodeUnknownSync(TwsWorkspaceBindingId);
++
++const environmentId = EnvironmentId.make("environment-1");
++const workspaceBindingId = TwsWorkspaceBindingId.make("workspace-binding-1");
++const repositoryIdentity = {
++  canonicalKey: "github.com/acme/web",
++  locator: {
++    source: "git-remote" as const,
++    remoteName: "origin",
++    remoteUrl: "git@github.com:acme/web.git",
++  },
++};
++
++describe("TWS binding contracts", () => {
++  it("round-trips workspace, feature, project, and multi-repo stack-node bindings", () => {
++    const workspace = decodeWorkspace({
++      workspaceBindingId,
++      environmentId,
++      canonicalLocator: { kind: "stable-id", value: "workspace-stable-id" },
++      locators: [
++        { kind: "stable-id", value: "workspace-stable-id" },
++        { kind: "registry-entry", value: "registry-entry-1" },
++        { kind: "path", value: "/workspaces/acme" },
++      ],
++      repositoryIdentity,
++      firstSeenAt: "2026-01-01T00:00:00Z",
++      lastSeenAt: "2026-01-02T00:00:00Z",
++      retiredAt: null,
++    });
++    const project = decodeWorkspaceProject({
++      environmentId,
++      workspaceBindingId,
++      projectId: ProjectId.make("project-web"),
++      firstSeenAt: "2026-01-01T00:00:00Z",
++      lastSeenAt: "2026-01-02T00:00:00Z",
++      retiredAt: null,
++    });
++    const feature = decodeFeature({
++      featureBindingId: "feature-binding-1",
++      workspaceBindingId,
++      environmentId,
++      canonicalLocator: { kind: "name", value: "remote-agents" },
++      locators: [
++        { kind: "name", value: "remote-agents" },
++        { kind: "path", value: "/workspaces/acme/.tws/features/remote-agents" },
++      ],
++      repositoryIdentity: null,
++      firstSeenAt: "2026-01-01T00:00:00Z",
++      lastSeenAt: "2026-01-02T00:00:00Z",
++      retiredAt: null,
++    });
++    const node = decodeStackNode({
++      stackNodeBindingId: "stack-node-binding-1",
++      featureBindingId: feature.featureBindingId,
++      projectId: project.projectId,
++      gitBranch: "feature/remote-agents-api",
++      worktreePath: null,
++      archived: true,
++      environmentId,
++      canonicalLocator: { kind: "git-branch", value: "feature/remote-agents-api" },
++      locators: [
++        { kind: "name", value: "api" },
++        { kind: "git-branch", value: "feature/remote-agents-api" },
++        { kind: "repository", value: "github.com/acme/api" },
++      ],
++      repositoryIdentity: {
++        ...repositoryIdentity,
++        canonicalKey: "github.com/acme/api",
++        locator: {
++          ...repositoryIdentity.locator,
++          remoteUrl: "git@github.com:acme/api.git",
++        },
++      },
++      firstSeenAt: "2026-01-01T00:00:00Z",
++      lastSeenAt: "2026-01-02T00:00:00Z",
++      retiredAt: null,
++    });
++
++    const codec = Schema.toCodecJson(TwsStackNodeBinding);
++    expect(Schema.decodeUnknownSync(codec)(Schema.encodeUnknownSync(codec)(node))).toStrictEqual(
++      node,
++    );
++    expect(workspace.workspaceBindingId).toBe(workspaceBindingId);
++    expect(feature.workspaceBindingId).toBe(workspaceBindingId);
++    expect(node.repositoryIdentity?.canonicalKey).toBe("github.com/acme/api");
++  });
++
++  it("rejects empty IDs and unbounded locator collections", () => {
++    expect(() => decodeWorkspaceId("")).toThrow();
++    expect(() =>
++      decodeWorkspace({
++        workspaceBindingId,
++        environmentId,
++        canonicalLocator: { kind: "path", value: "/workspace" },
++        locators: [],
++        repositoryIdentity: null,
++        firstSeenAt: "2026-01-01T00:00:00Z",
++        lastSeenAt: "2026-01-01T00:00:00Z",
++        retiredAt: null,
++      }),
++    ).toThrow();
++    expect(() =>
++      decodeWorkspace({
++        workspaceBindingId,
++        environmentId,
++        canonicalLocator: { kind: "path", value: "/workspace" },
++        locators: Array.from({ length: TWS_BINDING_MAX_LOCATORS + 1 }, (_, index) => ({
++          kind: "name",
++          value: `alias-${index}`,
++        })),
++        repositoryIdentity: null,
++        firstSeenAt: "2026-01-01T00:00:00Z",
++        lastSeenAt: "2026-01-01T00:00:00Z",
++        retiredAt: null,
++      }),
++    ).toThrow();
++    expect(() =>
++      decodeWorkspace({
++        workspaceBindingId,
++        environmentId,
++        canonicalLocator: { kind: "path", value: "/workspace" },
++        locators: [{ kind: "path", value: "x".repeat(TWS_BINDING_MAX_LOCATOR_LENGTH + 1) }],
++        repositoryIdentity: null,
++        firstSeenAt: "2026-01-01T00:00:00Z",
++        lastSeenAt: "2026-01-01T00:00:00Z",
++        retiredAt: null,
++      }),
++    ).toThrow();
++  });
++});
+diff --git a/packages/contracts/src/twsBindings.ts b/packages/contracts/src/twsBindings.ts
+new file mode 100644
+index 000000000..6a98d38ad
+--- /dev/null
++++ b/packages/contracts/src/twsBindings.ts
+@@ -0,0 +1,86 @@
++import * as Schema from "effect/Schema";
++
++import { EnvironmentId, IsoDateTime, ProjectId, TrimmedNonEmptyString } from "./baseSchemas.ts";
++import { RepositoryIdentity } from "./environment.ts";
++
++export const TWS_BINDING_MAX_LOCATORS = 32;
++export const TWS_BINDING_MAX_LOCATOR_LENGTH = 4096;
++
++export const TwsWorkspaceBindingId = TrimmedNonEmptyString.pipe(
++  Schema.brand("TwsWorkspaceBindingId"),
++);
++export type TwsWorkspaceBindingId = typeof TwsWorkspaceBindingId.Type;
++
++export const TwsFeatureBindingId = TrimmedNonEmptyString.pipe(Schema.brand("TwsFeatureBindingId"));
++export type TwsFeatureBindingId = typeof TwsFeatureBindingId.Type;
++
++export const TwsStackNodeBindingId = TrimmedNonEmptyString.pipe(
++  Schema.brand("TwsStackNodeBindingId"),
++);
++export type TwsStackNodeBindingId = typeof TwsStackNodeBindingId.Type;
++
++export const TwsLocatorKind = Schema.Literals([
++  "stable-id",
++  "registry-entry",
++  "path",
++  "name",
++  "git-branch",
++  "repository",
++]);
++export type TwsLocatorKind = typeof TwsLocatorKind.Type;
++
++export const TwsLocator = Schema.Struct({
++  kind: TwsLocatorKind,
++  value: TrimmedNonEmptyString.check(Schema.isMaxLength(TWS_BINDING_MAX_LOCATOR_LENGTH)),
++});
++export type TwsLocator = typeof TwsLocator.Type;
++
++export const TwsLocators = Schema.Array(TwsLocator).check(
++  Schema.isMinLength(1),
++  Schema.isMaxLength(TWS_BINDING_MAX_LOCATORS),
++);
++export type TwsLocators = typeof TwsLocators.Type;
++
++const TwsBindingLifecycleFields = {
++  environmentId: EnvironmentId,
++  canonicalLocator: TwsLocator,
++  locators: TwsLocators,
++  repositoryIdentity: Schema.NullOr(RepositoryIdentity),
++  firstSeenAt: IsoDateTime,
++  lastSeenAt: IsoDateTime,
++  retiredAt: Schema.NullOr(IsoDateTime),
++} as const;
++
++export const TwsWorkspaceBinding = Schema.Struct({
++  workspaceBindingId: TwsWorkspaceBindingId,
++  ...TwsBindingLifecycleFields,
++});
++export type TwsWorkspaceBinding = typeof TwsWorkspaceBinding.Type;
++
++export const TwsWorkspaceProjectBinding = Schema.Struct({
++  environmentId: EnvironmentId,
++  workspaceBindingId: TwsWorkspaceBindingId,
++  projectId: ProjectId,
++  firstSeenAt: IsoDateTime,
++  lastSeenAt: IsoDateTime,
++  retiredAt: Schema.NullOr(IsoDateTime),
++});
++export type TwsWorkspaceProjectBinding = typeof TwsWorkspaceProjectBinding.Type;
++
++export const TwsFeatureBinding = Schema.Struct({
++  featureBindingId: TwsFeatureBindingId,
++  workspaceBindingId: TwsWorkspaceBindingId,
++  ...TwsBindingLifecycleFields,
++});
++export type TwsFeatureBinding = typeof TwsFeatureBinding.Type;
++
++export const TwsStackNodeBinding = Schema.Struct({
++  stackNodeBindingId: TwsStackNodeBindingId,
++  featureBindingId: TwsFeatureBindingId,
++  projectId: Schema.NullOr(ProjectId),
++  gitBranch: TrimmedNonEmptyString,
++  worktreePath: Schema.NullOr(TrimmedNonEmptyString),
++  archived: Schema.Boolean,
++  ...TwsBindingLifecycleFields,
++});
++export type TwsStackNodeBinding = typeof TwsStackNodeBinding.Type;

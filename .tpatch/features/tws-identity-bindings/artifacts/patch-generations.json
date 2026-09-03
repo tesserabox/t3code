@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "feature": "tws-identity-bindings",
+  "current_generation": 1,
+  "generations": [
+    {
+      "generation": 1,
+      "generation_id": "pg_c2a8c06e686a",
+      "kind": "record",
+      "patch_sha256": "2aff1a6c2726968b459e9282584f83e05798580a82ac77d9a0ecc9e90b05645e",
+      "git_patch_id": "53274ac665d615c250d0a8d50c8b54e71fe2b2f6",
+      "git_patch_id_algorithm": "git-patch-id-stable",
+      "recipe_sha256": "63b18576300252c49752400e437a32d5e390d34ddd19cc92e84336fbf7760217",
+      "canonical_patch": "artifacts/post-apply.patch",
+      "audit_patch": "",
+      "base_commit": "ae62583898a1853f5f248d082054ccce0d259f50",
+      "upper": {
+        "kind": "working-tree",
+        "ref": "working-tree",
+        "commit": ""
+      },
+      "capture": {
+        "mode": "working-tree-all",
+        "pathspecs": [
+          "apps/server/src/persistence/Layers/TwsBindings.test.ts",
+          "apps/server/src/persistence/Layers/TwsBindings.ts",
+          "apps/server/src/persistence/Migrations.ts",
+          "apps/server/src/persistence/Migrations/045_TwsBindings.test.ts",
+          "apps/server/src/persistence/Migrations/045_TwsBindings.ts",
+          "apps/server/src/persistence/Services/TwsBindings.ts",
+          "apps/server/src/tws/TwsBindingMatch.test.ts",
+          "apps/server/src/tws/TwsBindingMatch.ts",
+          "packages/contracts/src/index.ts",
+          "packages/contracts/src/twsBindings.test.ts",
+          "packages/contracts/src/twsBindings.ts"
+        ],
+        "claim_ids": []
+      },
+      "touched_paths": [
+        "apps/server/src/persistence/Layers/TwsBindings.test.ts",
+        "apps/server/src/persistence/Layers/TwsBindings.ts",
+        "apps/server/src/persistence/Migrations.ts",
+        "apps/server/src/persistence/Migrations/045_TwsBindings.test.ts",
+        "apps/server/src/persistence/Migrations/045_TwsBindings.ts",
+        "apps/server/src/persistence/Services/TwsBindings.ts",
+        "apps/server/src/tws/TwsBindingMatch.test.ts",
+        "apps/server/src/tws/TwsBindingMatch.ts",
+        "packages/contracts/src/index.ts",
+        "packages/contracts/src/twsBindings.test.ts",
+        "packages/contracts/src/twsBindings.ts"
+      ],
+      "dependencies": [
+        {
+          "slug": "tws-readonly-cli-adapter",
+          "kind": "soft",
+          "satisfied_by": "",
+          "parent_generation": 1,
+          "parent_patch_sha256": "e0aec536d901c1c604647ad10144b4da0e4d6b24df67ae4979cf47a165429cfa",
+          "parent_recipe_sha256": "e873e30981f4784c07a95e939af9ed5f1cab9c5548b53e65c6f16892754a3874"
+        }
+      ],
+      "refs": {
+        "anchors": "",
+        "fingerprints": "",
+        "relations": "",
+        "vector_manifest": ""
+      }
+    }
+  ]
+}

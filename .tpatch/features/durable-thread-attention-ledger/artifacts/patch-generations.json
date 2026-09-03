@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "feature": "durable-thread-attention-ledger",
+  "current_generation": 1,
+  "generations": [
+    {
+      "generation": 1,
+      "generation_id": "pg_9ccdc8d03fbe",
+      "kind": "record",
+      "patch_sha256": "6953cbea041b0d8c529f63e9e525c43322ac763ad0b8d65d2fd8bd1074d7ff75",
+      "git_patch_id": "abd0c306af66d6028795dbae93b812f38e4f1267",
+      "git_patch_id_algorithm": "git-patch-id-stable",
+      "recipe_sha256": "e45b16ac455fd4b42b53edcff818f8b1145377f95453b69bb79852b169ae04c0",
+      "canonical_patch": "artifacts/post-apply.patch",
+      "audit_patch": "patches/001-record.patch",
+      "base_commit": "45ae25ab3f1682c87f93a6f2c7be77db10bcc969",
+      "upper": {
+        "kind": "working-tree",
+        "ref": "working-tree",
+        "commit": ""
+      },
+      "capture": {
+        "mode": "working-tree-all",
+        "pathspecs": [
+          "apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts",
+          "apps/server/src/orchestration/Layers/ProjectionPipeline.ts",
+          "apps/server/src/orchestration/ThreadAttentionAudit.test.ts",
+          "apps/server/src/orchestration/ThreadAttentionAudit.ts",
+          "apps/server/src/persistence/Layers/ProjectionThreadAttentionAudit.test.ts",
+          "apps/server/src/persistence/Layers/ProjectionThreadAttentionAudit.ts",
+          "apps/server/src/persistence/Migrations.ts",
+          "apps/server/src/persistence/Migrations/044_ProjectionThreadAttentionAudit.test.ts",
+          "apps/server/src/persistence/Migrations/044_ProjectionThreadAttentionAudit.ts",
+          "apps/server/src/persistence/Services/ProjectionThreadAttentionAudit.ts",
+          "packages/contracts/src/orchestration.test.ts",
+          "packages/contracts/src/orchestration.ts"
+        ],
+        "claim_ids": []
+      },
+      "touched_paths": [
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts",
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.ts",
+        "apps/server/src/orchestration/ThreadAttentionAudit.test.ts",
+        "apps/server/src/orchestration/ThreadAttentionAudit.ts",
+        "apps/server/src/persistence/Layers/ProjectionThreadAttentionAudit.test.ts",
+        "apps/server/src/persistence/Layers/ProjectionThreadAttentionAudit.ts",
+        "apps/server/src/persistence/Migrations.ts",
+        "apps/server/src/persistence/Migrations/044_ProjectionThreadAttentionAudit.test.ts",
+        "apps/server/src/persistence/Migrations/044_ProjectionThreadAttentionAudit.ts",
+        "apps/server/src/persistence/Services/ProjectionThreadAttentionAudit.ts",
+        "packages/contracts/src/orchestration.test.ts",
+        "packages/contracts/src/orchestration.ts"
+      ],
+      "dependencies": [],
+      "refs": {
+        "anchors": "",
+        "fingerprints": "",
+        "relations": "",
+        "vector_manifest": ""
+      }
+    }
+  ]
+}
