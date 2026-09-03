@@ -1,0 +1,8 @@
+{
+  "slug": "durable-thread-attention-ledger",
+  "completed_at": "2026-09-03T08:42:06Z",
+  "base_commit": "45ae25ab3f1682c87f93a6f2c7be77db10bcc969",
+  "has_patch": true,
+  "validation_status": "passed",
+  "validation_notes": "tpatch test — command: pnpm exec vp test run packages/contracts/src/orchestration.test.ts apps/server/src/persistence/Migrations/044_ProjectionThreadAttentionAudit.test.ts apps/server/src/persistence/Layers/ProjectionThreadAttentionAudit.test.ts apps/server/src/orchestration/ThreadAttentionAudit.test.ts apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts"
+}

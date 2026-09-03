@@ -1,0 +1,1034 @@
+diff --git a/apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts b/apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts
+index 32551643b..58464d1b0 100644
+--- a/apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts
++++ b/apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts
+@@ -1,4 +1,5 @@
+ import {
++  ApprovalRequestId,
+   CheckpointRef,
+   CommandId,
+   CorrelationId,
+@@ -325,6 +326,190 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
+       ]);
+     }),
+   );
++
++  it.effect("persists compact attention audit rows without changing visible activities", () =>
++    Effect.gen(function* () {
++      const projectionPipeline = yield* OrchestrationProjectionPipeline;
++      const eventStore = yield* OrchestrationEventStore;
++      const sql = yield* SqlClient.SqlClient;
++      const threadId = ThreadId.make("thread-attention-audit");
++      const now = "2026-01-01T00:00:00.000Z";
++
++      yield* eventStore.append({
++        type: "thread.created",
++        eventId: EventId.make("event-attention-thread-created"),
++        aggregateKind: "thread",
++        aggregateId: threadId,
++        occurredAt: now,
++        commandId: CommandId.make("command-attention-thread-created"),
++        causationEventId: null,
++        correlationId: CommandId.make("command-attention-thread-created"),
++        metadata: {},
++        payload: {
++          threadId,
++          projectId: ProjectId.make("project-attention-audit"),
++          title: "Attention audit",
++          modelSelection: {
++            instanceId: ProviderInstanceId.make("codex"),
++            model: "gpt-5.6-sol",
++          },
++          runtimeMode: "full-access",
++          branch: null,
++          worktreePath: null,
++          createdAt: now,
++          updatedAt: now,
++        },
++      });
++
++      const appendActivity = (
++        eventId: string,
++        kind: string,
++        payload: unknown,
++        metadataRequestId?: string,
++      ) =>
++        eventStore.append({
++          type: "thread.activity-appended",
++          eventId: EventId.make(eventId),
++          aggregateKind: "thread",
++          aggregateId: threadId,
++          occurredAt: now,
++          commandId: null,
++          causationEventId: null,
++          correlationId: null,
++          metadata: metadataRequestId
++            ? { requestId: ApprovalRequestId.make(metadataRequestId) }
++            : {},
++          payload: {
++            threadId,
++            activity: {
++              id: EventId.make(`activity-${eventId}`),
++              tone: "approval" as const,
++              kind,
++              summary: "Attention changed",
++              payload,
++              turnId: TurnId.make("turn-attention-audit"),
++              createdAt: now,
++            },
++          },
++        });
++
++      yield* appendActivity("event-routine", "tool.updated", {});
++      yield* appendActivity("event-approval-requested", "approval.requested", {
++        requestId: "request-approval",
++        sensitive: "not copied",
++      });
++      yield* appendActivity("event-approval-resolved", "approval.resolved", {}, "request-approval");
++      yield* appendActivity("event-user-input-requested", "user-input.requested", {
++        requestId: "request-user-input",
++      });
++      yield* appendActivity("event-user-input-failed", "provider.user-input.respond.failed", {
++        requestId: "request-user-input",
++      });
++      yield* eventStore.append({
++        type: "thread.settled",
++        eventId: EventId.make("event-attention-settled"),
++        aggregateKind: "thread",
++        aggregateId: threadId,
++        occurredAt: "2026-01-01T00:00:01.000Z",
++        commandId: null,
++        causationEventId: null,
++        correlationId: null,
++        metadata: {},
++        payload: {
++          threadId,
++          settledAt: "2026-01-01T00:00:01.000Z",
++          updatedAt: "2026-01-01T00:00:01.000Z",
++        },
++      });
++      yield* eventStore.append({
++        type: "thread.unsettled",
++        eventId: EventId.make("event-attention-unsettled"),
++        aggregateKind: "thread",
++        aggregateId: threadId,
++        occurredAt: "2026-01-01T00:00:02.000Z",
++        commandId: null,
++        causationEventId: null,
++        correlationId: null,
++        metadata: {},
++        payload: {
++          threadId,
++          reason: "activity",
++          updatedAt: "2026-01-01T00:00:02.000Z",
++        },
++      });
++
++      yield* projectionPipeline.bootstrap;
++
++      const auditRows = yield* sql<{
++        readonly eventId: string;
++        readonly kind: string;
++        readonly requestId: string | null;
++      }>`
++        SELECT
++          event_id AS "eventId",
++          kind,
++          request_id AS "requestId"
++        FROM projection_thread_attention_audit
++        WHERE thread_id = ${threadId}
++        ORDER BY sequence ASC
++      `;
++      assert.deepEqual(auditRows, [
++        {
++          eventId: "event-approval-requested",
++          kind: "approval.requested",
++          requestId: "request-approval",
++        },
++        {
++          eventId: "event-approval-resolved",
++          kind: "approval.resolved",
++          requestId: "request-approval",
++        },
++        {
++          eventId: "event-user-input-requested",
++          kind: "user-input.requested",
++          requestId: "request-user-input",
++        },
++        {
++          eventId: "event-user-input-failed",
++          kind: "provider.user-input.respond.failed",
++          requestId: "request-user-input",
++        },
++        {
++          eventId: "event-attention-settled",
++          kind: "thread.settled",
++          requestId: null,
++        },
++        {
++          eventId: "event-attention-unsettled",
++          kind: "thread.unsettled",
++          requestId: null,
++        },
++      ]);
++
++      const visibleActivityRows = yield* sql<{ readonly kind: string }>`
++        SELECT kind
++        FROM projection_thread_activities
++        WHERE thread_id = ${threadId}
++        ORDER BY created_at ASC, activity_id ASC
++      `;
++      assert.strictEqual(visibleActivityRows.length, 5);
++      assert.isFalse(visibleActivityRows.some((row) => row.kind.startsWith("thread.")));
++
++      yield* sql`
++        UPDATE projection_state
++        SET last_applied_sequence = 0
++        WHERE projector = ${ORCHESTRATION_PROJECTOR_NAMES.threadAttentionAudit}
++      `;
++      yield* projectionPipeline.bootstrap;
++
++      const replayedRows = yield* sql<{ readonly count: number }>`
++        SELECT COUNT(*) AS count
++        FROM projection_thread_attention_audit
++        WHERE thread_id = ${threadId}
++      `;
++      assert.deepEqual(replayedRows, [{ count: 6 }]);
++    }),
++  );
+ });
+ 
+ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-base-")))(
+diff --git a/apps/server/src/orchestration/Layers/ProjectionPipeline.ts b/apps/server/src/orchestration/Layers/ProjectionPipeline.ts
+index 22daeee69..2b150a8e8 100644
+--- a/apps/server/src/orchestration/Layers/ProjectionPipeline.ts
++++ b/apps/server/src/orchestration/Layers/ProjectionPipeline.ts
+@@ -1,5 +1,4 @@
+ import {
+-  ApprovalRequestId,
+   type ChatAttachment,
+   type OrchestrationEvent,
+   type OrchestrationSessionStatus,
+@@ -18,6 +17,7 @@ import { OrchestrationEventStore } from "../../persistence/Services/Orchestratio
+ import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
+ import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
+ import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
++import { ProjectionThreadAttentionAuditRepository } from "../../persistence/Services/ProjectionThreadAttentionAudit.ts";
+ import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
+ import { type ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
+ import {
+@@ -37,6 +37,7 @@ import { ProjectionThreadRepository } from "../../persistence/Services/Projectio
+ import { ProjectionPendingApprovalRepositoryLive } from "../../persistence/Layers/ProjectionPendingApprovals.ts";
+ import { ProjectionProjectRepositoryLive } from "../../persistence/Layers/ProjectionProjects.ts";
+ import { ProjectionStateRepositoryLive } from "../../persistence/Layers/ProjectionState.ts";
++import { ProjectionThreadAttentionAuditRepositoryLive } from "../../persistence/Layers/ProjectionThreadAttentionAudit.ts";
+ import { ProjectionThreadActivityRepositoryLive } from "../../persistence/Layers/ProjectionThreadActivities.ts";
+ import { ProjectionThreadMessageRepositoryLive } from "../../persistence/Layers/ProjectionThreadMessages.ts";
+ import { ProjectionThreadProposedPlanRepositoryLive } from "../../persistence/Layers/ProjectionThreadProposedPlans.ts";
+@@ -48,6 +49,10 @@ import {
+   OrchestrationProjectionPipeline,
+   type OrchestrationProjectionPipelineShape,
+ } from "../Services/ProjectionPipeline.ts";
++import {
++  approvalRequestIdFromActivityPayload,
++  threadAttentionAuditEntryFromEvent,
++} from "../ThreadAttentionAudit.ts";
+ import {
+   attachmentRelativePath,
+   parseAttachmentIdFromRelativePath,
+@@ -61,6 +66,7 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
+   threadMessages: "projection.thread-messages",
+   threadProposedPlans: "projection.thread-proposed-plans",
+   threadActivities: "projection.thread-activities",
++  threadAttentionAudit: "projection.thread-attention-audit",
+   threadSessions: "projection.thread-sessions",
+   threadTurns: "projection.thread-turns",
+   checkpoints: "projection.checkpoints",
+@@ -111,14 +117,6 @@ const materializeAttachmentsForProjection = Effect.fn("materializeAttachmentsFor
+     Effect.succeed(input.attachments.length === 0 ? [] : input.attachments),
+ );
+ 
+-function extractActivityRequestId(payload: unknown): ApprovalRequestId | null {
+-  if (typeof payload !== "object" || payload === null) {
+-    return null;
+-  }
+-  const requestId = (payload as Record<string, unknown>).requestId;
+-  return typeof requestId === "string" ? ApprovalRequestId.make(requestId) : null;
+-}
+-
+ function isStalePendingApprovalFailureDetail(detail: string | null): boolean {
+   if (detail === null) {
+     return false;
+@@ -164,7 +162,7 @@ function derivePendingUserInputCountFromActivities(
+   );
+ 
+   for (const activity of ordered) {
+-    const requestId = extractActivityRequestId(activity.payload);
++    const requestId = approvalRequestIdFromActivityPayload(activity.payload);
+     if (requestId === null) {
+       continue;
+     }
+@@ -499,6 +497,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
+     const projectionThreadRepository = yield* ProjectionThreadRepository;
+     const projectionThreadMessageRepository = yield* ProjectionThreadMessageRepository;
+     const projectionThreadProposedPlanRepository = yield* ProjectionThreadProposedPlanRepository;
++    const projectionThreadAttentionAuditRepository =
++      yield* ProjectionThreadAttentionAuditRepository;
+     const projectionThreadActivityRepository = yield* ProjectionThreadActivityRepository;
+     const projectionThreadSessionRepository = yield* ProjectionThreadSessionRepository;
+     const projectionTurnRepository = yield* ProjectionTurnRepository;
+@@ -1210,6 +1210,22 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
+       }
+     });
+ 
++    const applyThreadAttentionAuditProjection: ProjectorDefinition["apply"] = Effect.fn(
++      "applyThreadAttentionAuditProjection",
++    )(function* (event, _attachmentSideEffects) {
++      if (event.type === "thread.created") {
++        yield* projectionThreadAttentionAuditRepository.deleteByThreadId({
++          threadId: event.payload.threadId,
++        });
++        return;
++      }
++
++      const entry = threadAttentionAuditEntryFromEvent(event);
++      if (entry !== null) {
++        yield* projectionThreadAttentionAuditRepository.upsert(entry);
++      }
++    });
++
+     const applyThreadSessionsProjection: ProjectorDefinition["apply"] = Effect.fn(
+       "applyThreadSessionsProjection",
+     )(function* (event, _attachmentSideEffects) {
+@@ -1589,7 +1605,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
+ 
+         case "thread.activity-appended": {
+           const requestId =
+-            extractActivityRequestId(event.payload.activity.payload) ??
++            approvalRequestIdFromActivityPayload(event.payload.activity.payload) ??
+             event.metadata.requestId ??
+             null;
+           if (requestId === null) {
+@@ -1725,6 +1741,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
+         name: ORCHESTRATION_PROJECTOR_NAMES.threadActivities,
+         apply: applyThreadActivitiesProjection,
+       },
++      {
++        name: ORCHESTRATION_PROJECTOR_NAMES.threadAttentionAudit,
++        apply: applyThreadAttentionAuditProjection,
++      },
+       {
+         name: ORCHESTRATION_PROJECTOR_NAMES.threadSessions,
+         apply: applyThreadSessionsProjection,
+@@ -1844,6 +1864,7 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
+   Layer.provideMerge(ProjectionThreadRepositoryLive),
+   Layer.provideMerge(ProjectionThreadMessageRepositoryLive),
+   Layer.provideMerge(ProjectionThreadProposedPlanRepositoryLive),
++  Layer.provideMerge(ProjectionThreadAttentionAuditRepositoryLive),
+   Layer.provideMerge(ProjectionThreadActivityRepositoryLive),
+   Layer.provideMerge(ProjectionThreadSessionRepositoryLive),
+   Layer.provideMerge(ProjectionTurnRepositoryLive),
+diff --git a/apps/server/src/orchestration/ThreadAttentionAudit.test.ts b/apps/server/src/orchestration/ThreadAttentionAudit.test.ts
+new file mode 100644
+index 000000000..505115d82
+--- /dev/null
++++ b/apps/server/src/orchestration/ThreadAttentionAudit.test.ts
+@@ -0,0 +1,134 @@
++import {
++  ApprovalRequestId,
++  EventId,
++  OrchestrationEvent,
++  ThreadId,
++  TurnId,
++} from "@t3tools/contracts";
++import { assert, it } from "@effect/vitest";
++import * as Schema from "effect/Schema";
++
++import {
++  approvalRequestIdFromActivityPayload,
++  threadAttentionAuditEntryFromEvent,
++} from "./ThreadAttentionAudit.ts";
++
++const decodeEvent = Schema.decodeUnknownSync(OrchestrationEvent);
++
++function activityEvent(input: {
++  readonly kind: string;
++  readonly payload?: unknown;
++  readonly metadataRequestId?: string;
++}) {
++  return decodeEvent({
++    sequence: 7,
++    eventId: `event-${input.kind}`,
++    aggregateKind: "thread",
++    aggregateId: "thread-1",
++    type: "thread.activity-appended",
++    occurredAt: "2026-01-01T00:00:07.000Z",
++    commandId: null,
++    causationEventId: null,
++    correlationId: null,
++    metadata: input.metadataRequestId ? { requestId: input.metadataRequestId } : {},
++    payload: {
++      threadId: "thread-1",
++      activity: {
++        id: `activity-${input.kind}`,
++        tone: "approval",
++        kind: input.kind,
++        summary: "Attention changed",
++        payload: input.payload ?? {},
++        turnId: "turn-1",
++        sequence: 3,
++        createdAt: "2026-01-01T00:00:06.000Z",
++      },
++    },
++  });
++}
++
++it("maps accepted activity lifecycle events without copying their payload", () => {
++  const kinds = [
++    "approval.requested",
++    "approval.resolved",
++    "provider.approval.respond.failed",
++    "user-input.requested",
++    "user-input.resolved",
++    "provider.user-input.respond.failed",
++  ] as const;
++
++  for (const kind of kinds) {
++    assert.deepEqual(
++      threadAttentionAuditEntryFromEvent(
++        activityEvent({
++          kind,
++          payload: { requestId: "request-from-payload", sensitive: "not persisted" },
++          metadataRequestId: "request-from-metadata",
++        }),
++      ),
++      {
++        eventId: EventId.make(`event-${kind}`),
++        threadId: ThreadId.make("thread-1"),
++        turnId: TurnId.make("turn-1"),
++        requestId: ApprovalRequestId.make("request-from-payload"),
++        kind,
++        sequence: 7,
++        occurredAt: "2026-01-01T00:00:07.000Z",
++      },
++    );
++  }
++});
++
++it("maps thread lifecycle and request-id fallback while ignoring routine activity", () => {
++  const settled = decodeEvent({
++    sequence: 8,
++    eventId: "event-settled",
++    aggregateKind: "thread",
++    aggregateId: "thread-1",
++    type: "thread.settled",
++    occurredAt: "2026-01-01T00:00:08.000Z",
++    commandId: null,
++    causationEventId: null,
++    correlationId: null,
++    metadata: {},
++    payload: {
++      threadId: "thread-1",
++      settledAt: "2026-01-01T00:00:08.000Z",
++      updatedAt: "2026-01-01T00:00:08.000Z",
++    },
++  });
++  const unsettled = decodeEvent({
++    sequence: 9,
++    eventId: "event-unsettled",
++    aggregateKind: "thread",
++    aggregateId: "thread-1",
++    type: "thread.unsettled",
++    occurredAt: "2026-01-01T00:00:09.000Z",
++    commandId: null,
++    causationEventId: null,
++    correlationId: null,
++    metadata: {},
++    payload: {
++      threadId: "thread-1",
++      reason: "activity",
++      updatedAt: "2026-01-01T00:00:09.000Z",
++    },
++  });
++
++  assert.strictEqual(threadAttentionAuditEntryFromEvent(settled)?.kind, "thread.settled");
++  assert.strictEqual(threadAttentionAuditEntryFromEvent(unsettled)?.kind, "thread.unsettled");
++  assert.strictEqual(
++    threadAttentionAuditEntryFromEvent(
++      activityEvent({
++        kind: "approval.requested",
++        metadataRequestId: "request-from-metadata",
++      }),
++    )?.requestId,
++    "request-from-metadata",
++  );
++  assert.strictEqual(
++    threadAttentionAuditEntryFromEvent(activityEvent({ kind: "tool.updated" })),
++    null,
++  );
++  assert.strictEqual(approvalRequestIdFromActivityPayload({ requestId: 42 }), null);
++});
+diff --git a/apps/server/src/orchestration/ThreadAttentionAudit.ts b/apps/server/src/orchestration/ThreadAttentionAudit.ts
+new file mode 100644
+index 000000000..3124ba421
+--- /dev/null
++++ b/apps/server/src/orchestration/ThreadAttentionAudit.ts
+@@ -0,0 +1,68 @@
++import {
++  ApprovalRequestId,
++  type OrchestrationEvent,
++  type OrchestrationThreadAttentionAuditEntry,
++  type OrchestrationThreadAttentionAuditKind,
++} from "@t3tools/contracts";
++
++export function approvalRequestIdFromActivityPayload(payload: unknown): ApprovalRequestId | null {
++  if (typeof payload !== "object" || payload === null) {
++    return null;
++  }
++  const requestId = (payload as Record<string, unknown>).requestId;
++  return typeof requestId === "string" ? ApprovalRequestId.make(requestId) : null;
++}
++
++function attentionActivityKind(kind: string): OrchestrationThreadAttentionAuditKind | null {
++  switch (kind) {
++    case "approval.requested":
++    case "approval.resolved":
++    case "provider.approval.respond.failed":
++    case "user-input.requested":
++    case "user-input.resolved":
++    case "provider.user-input.respond.failed":
++      return kind;
++    default:
++      return null;
++  }
++}
++
++export function threadAttentionAuditEntryFromEvent(
++  event: OrchestrationEvent,
++): OrchestrationThreadAttentionAuditEntry | null {
++  switch (event.type) {
++    case "thread.settled":
++    case "thread.unsettled":
++      return {
++        eventId: event.eventId,
++        threadId: event.payload.threadId,
++        turnId: null,
++        requestId: null,
++        kind: event.type,
++        sequence: event.sequence,
++        occurredAt: event.occurredAt,
++      };
++
++    case "thread.activity-appended": {
++      const kind = attentionActivityKind(event.payload.activity.kind);
++      if (kind === null) {
++        return null;
++      }
++      return {
++        eventId: event.eventId,
++        threadId: event.payload.threadId,
++        turnId: event.payload.activity.turnId,
++        requestId:
++          approvalRequestIdFromActivityPayload(event.payload.activity.payload) ??
++          event.metadata.requestId ??
++          null,
++        kind,
++        sequence: event.sequence,
++        occurredAt: event.occurredAt,
++      };
++    }
++
++    default:
++      return null;
++  }
++}
+diff --git a/apps/server/src/persistence/Layers/ProjectionThreadAttentionAudit.test.ts b/apps/server/src/persistence/Layers/ProjectionThreadAttentionAudit.test.ts
+new file mode 100644
+index 000000000..c46123b89
+--- /dev/null
++++ b/apps/server/src/persistence/Layers/ProjectionThreadAttentionAudit.test.ts
+@@ -0,0 +1,98 @@
++import { ApprovalRequestId, EventId, ThreadId, TurnId } from "@t3tools/contracts";
++import { assert, it } from "@effect/vitest";
++import * as Effect from "effect/Effect";
++import * as Layer from "effect/Layer";
++
++import { ProjectionThreadAttentionAuditRepository } from "../Services/ProjectionThreadAttentionAudit.ts";
++import { SqlitePersistenceMemory } from "./Sqlite.ts";
++import { ProjectionThreadAttentionAuditRepositoryLive } from "./ProjectionThreadAttentionAudit.ts";
++
++const layer = it.layer(
++  ProjectionThreadAttentionAuditRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
++);
++
++layer("ProjectionThreadAttentionAuditRepository", (it) => {
++  it.effect("upserts idempotently and bounds newest-first reads", () =>
++    Effect.gen(function* () {
++      const repository = yield* ProjectionThreadAttentionAuditRepository;
++      const threadId = ThreadId.make("thread-attention-audit");
++
++      yield* Effect.forEach(
++        Array.from({ length: 105 }, (_, index) => index + 1),
++        (sequence) =>
++          repository.upsert({
++            eventId: EventId.make(`event-${String(sequence).padStart(3, "0")}`),
++            threadId,
++            turnId: sequence === 105 ? TurnId.make("turn-latest") : null,
++            requestId: null,
++            kind: sequence % 2 === 0 ? "thread.settled" : "thread.unsettled",
++            sequence,
++            occurredAt: "2026-01-01T00:00:00.000Z",
++          }),
++        { concurrency: 1 },
++      );
++
++      const bounded = yield* repository.listByThreadId({ threadId, limit: 1_000 });
++      assert.strictEqual(bounded.length, 100);
++      assert.strictEqual(bounded[0]?.sequence, 105);
++      assert.strictEqual(bounded.at(-1)?.sequence, 6);
++
++      yield* repository.upsert({
++        eventId: EventId.make("event-105"),
++        threadId,
++        turnId: TurnId.make("turn-latest"),
++        requestId: ApprovalRequestId.make("request-latest"),
++        kind: "approval.resolved",
++        sequence: 105,
++        occurredAt: "2026-01-02T00:00:00.000Z",
++      });
++
++      const latest = yield* repository.listByThreadId({ threadId, limit: 1 });
++      assert.deepEqual(latest, [
++        {
++          eventId: EventId.make("event-105"),
++          threadId,
++          turnId: TurnId.make("turn-latest"),
++          requestId: ApprovalRequestId.make("request-latest"),
++          kind: "approval.resolved",
++          sequence: 105,
++          occurredAt: "2026-01-02T00:00:00.000Z",
++        },
++      ]);
++    }),
++  );
++
++  it.effect("deletes only the selected thread ledger", () =>
++    Effect.gen(function* () {
++      const repository = yield* ProjectionThreadAttentionAuditRepository;
++      const firstThreadId = ThreadId.make("thread-attention-delete-1");
++      const secondThreadId = ThreadId.make("thread-attention-delete-2");
++
++      for (const [eventId, threadId] of [
++        [EventId.make("event-delete-1"), firstThreadId],
++        [EventId.make("event-delete-2"), secondThreadId],
++      ] as const) {
++        yield* repository.upsert({
++          eventId,
++          threadId,
++          turnId: null,
++          requestId: null,
++          kind: "thread.settled",
++          sequence: 1,
++          occurredAt: "2026-01-01T00:00:00.000Z",
++        });
++      }
++
++      yield* repository.deleteByThreadId({ threadId: firstThreadId });
++
++      assert.deepEqual(
++        yield* repository.listByThreadId({ threadId: firstThreadId, limit: 10 }),
++        [],
++      );
++      assert.strictEqual(
++        (yield* repository.listByThreadId({ threadId: secondThreadId, limit: 10 })).length,
++        1,
++      );
++    }),
++  );
++});
+diff --git a/apps/server/src/persistence/Layers/ProjectionThreadAttentionAudit.ts b/apps/server/src/persistence/Layers/ProjectionThreadAttentionAudit.ts
+new file mode 100644
+index 000000000..fdcd24a18
+--- /dev/null
++++ b/apps/server/src/persistence/Layers/ProjectionThreadAttentionAudit.ts
+@@ -0,0 +1,129 @@
++import { OrchestrationThreadAttentionAuditEntry } from "@t3tools/contracts";
++import * as Effect from "effect/Effect";
++import * as Layer from "effect/Layer";
++import * as Schema from "effect/Schema";
++import * as SqlClient from "effect/unstable/sql/SqlClient";
++import * as SqlSchema from "effect/unstable/sql/SqlSchema";
++
++import { toPersistenceDecodeError, toPersistenceSqlError } from "../Errors.ts";
++import {
++  DeleteProjectionThreadAttentionAuditInput,
++  ListProjectionThreadAttentionAuditInput,
++  ProjectionThreadAttentionAuditRepository,
++  type ProjectionThreadAttentionAuditRepositoryShape,
++} from "../Services/ProjectionThreadAttentionAudit.ts";
++
++const MAX_THREAD_ATTENTION_AUDIT_ROWS = 100;
++
++function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: string) {
++  return (cause: unknown) =>
++    Schema.isSchemaError(cause)
++      ? toPersistenceDecodeError(decodeOperation)(cause)
++      : toPersistenceSqlError(sqlOperation)(cause);
++}
++
++const makeProjectionThreadAttentionAuditRepository = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++
++  const upsertProjectionThreadAttentionAuditRow = SqlSchema.void({
++    Request: OrchestrationThreadAttentionAuditEntry,
++    execute: (entry) =>
++      sql`
++        INSERT INTO projection_thread_attention_audit (
++          event_id,
++          thread_id,
++          turn_id,
++          request_id,
++          kind,
++          sequence,
++          occurred_at
++        )
++        VALUES (
++          ${entry.eventId},
++          ${entry.threadId},
++          ${entry.turnId},
++          ${entry.requestId},
++          ${entry.kind},
++          ${entry.sequence},
++          ${entry.occurredAt}
++        )
++        ON CONFLICT (event_id)
++        DO UPDATE SET
++          thread_id = excluded.thread_id,
++          turn_id = excluded.turn_id,
++          request_id = excluded.request_id,
++          kind = excluded.kind,
++          sequence = excluded.sequence,
++          occurred_at = excluded.occurred_at
++      `,
++  });
++
++  const listProjectionThreadAttentionAuditRows = SqlSchema.findAll({
++    Request: ListProjectionThreadAttentionAuditInput,
++    Result: OrchestrationThreadAttentionAuditEntry,
++    execute: ({ threadId, limit }) =>
++      sql`
++        SELECT
++          event_id AS "eventId",
++          thread_id AS "threadId",
++          turn_id AS "turnId",
++          request_id AS "requestId",
++          kind,
++          sequence,
++          occurred_at AS "occurredAt"
++        FROM projection_thread_attention_audit
++        WHERE thread_id = ${threadId}
++        ORDER BY sequence DESC, event_id DESC
++        LIMIT ${Math.min(limit, MAX_THREAD_ATTENTION_AUDIT_ROWS)}
++      `,
++  });
++
++  const deleteProjectionThreadAttentionAuditRows = SqlSchema.void({
++    Request: DeleteProjectionThreadAttentionAuditInput,
++    execute: ({ threadId }) =>
++      sql`
++        DELETE FROM projection_thread_attention_audit
++        WHERE thread_id = ${threadId}
++      `,
++  });
++
++  const upsert: ProjectionThreadAttentionAuditRepositoryShape["upsert"] = (entry) =>
++    upsertProjectionThreadAttentionAuditRow(entry).pipe(
++      Effect.mapError(
++        toPersistenceSqlOrDecodeError(
++          "ProjectionThreadAttentionAuditRepository.upsert:query",
++          "ProjectionThreadAttentionAuditRepository.upsert:encodeRequest",
++        ),
++      ),
++    );
++
++  const listByThreadId: ProjectionThreadAttentionAuditRepositoryShape["listByThreadId"] = (input) =>
++    listProjectionThreadAttentionAuditRows(input).pipe(
++      Effect.mapError(
++        toPersistenceSqlOrDecodeError(
++          "ProjectionThreadAttentionAuditRepository.listByThreadId:query",
++          "ProjectionThreadAttentionAuditRepository.listByThreadId:decodeRows",
++        ),
++      ),
++    );
++
++  const deleteByThreadId: ProjectionThreadAttentionAuditRepositoryShape["deleteByThreadId"] = (
++    input,
++  ) =>
++    deleteProjectionThreadAttentionAuditRows(input).pipe(
++      Effect.mapError(
++        toPersistenceSqlError("ProjectionThreadAttentionAuditRepository.deleteByThreadId:query"),
++      ),
++    );
++
++  return {
++    upsert,
++    listByThreadId,
++    deleteByThreadId,
++  } satisfies ProjectionThreadAttentionAuditRepositoryShape;
++});
++
++export const ProjectionThreadAttentionAuditRepositoryLive = Layer.effect(
++  ProjectionThreadAttentionAuditRepository,
++  makeProjectionThreadAttentionAuditRepository,
++);
+diff --git a/apps/server/src/persistence/Migrations.ts b/apps/server/src/persistence/Migrations.ts
+index 8abbe87fc..4271dfd29 100644
+--- a/apps/server/src/persistence/Migrations.ts
++++ b/apps/server/src/persistence/Migrations.ts
+@@ -56,6 +56,7 @@ import Migration0040 from "./Migrations/040_ProjectionProjectFaviconPath.ts";
+ import Migration0041 from "./Migrations/041_AuthSessionClientConnection.ts";
+ import Migration0042 from "./Migrations/042_ProjectionThreadLinkedPullRequest.ts";
+ import Migration0043 from "./Migrations/043_ProjectionThreadsUnsettledAt.ts";
++import Migration0044 from "./Migrations/044_ProjectionThreadAttentionAudit.ts";
+ 
+ /**
+  * Migration loader with all migrations defined inline.
+@@ -111,6 +112,7 @@ export const migrationEntries = [
+   [41, "AuthSessionClientConnection", Migration0041],
+   [42, "ProjectionThreadLinkedPullRequest", Migration0042],
+   [43, "ProjectionThreadsUnsettledAt", Migration0043],
++  [44, "ProjectionThreadAttentionAudit", Migration0044],
+ ] as const;
+ 
+ export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
+diff --git a/apps/server/src/persistence/Migrations/044_ProjectionThreadAttentionAudit.test.ts b/apps/server/src/persistence/Migrations/044_ProjectionThreadAttentionAudit.test.ts
+new file mode 100644
+index 000000000..96ea22fd6
+--- /dev/null
++++ b/apps/server/src/persistence/Migrations/044_ProjectionThreadAttentionAudit.test.ts
+@@ -0,0 +1,37 @@
++import { assert, it } from "@effect/vitest";
++import * as Effect from "effect/Effect";
++import * as Layer from "effect/Layer";
++import * as SqlClient from "effect/unstable/sql/SqlClient";
++
++import { runMigrations } from "../Migrations.ts";
++import * as NodeSqliteClient from "../NodeSqliteClient.ts";
++
++const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
++
++layer("044_ProjectionThreadAttentionAudit", (it) => {
++  it.effect("creates the attention audit table and bounded-read index", () =>
++    Effect.gen(function* () {
++      const sql = yield* SqlClient.SqlClient;
++
++      yield* runMigrations({ toMigrationInclusive: 43 });
++      yield* runMigrations({ toMigrationInclusive: 44 });
++
++      const columns = yield* sql<{ readonly name: string }>`
++        PRAGMA table_info(projection_thread_attention_audit)
++      `;
++      assert.deepEqual(
++        columns.map((column) => column.name),
++        ["event_id", "thread_id", "turn_id", "request_id", "kind", "sequence", "occurred_at"],
++      );
++
++      const indexes = yield* sql<{ readonly name: string }>`
++        PRAGMA index_list(projection_thread_attention_audit)
++      `;
++      assert.isTrue(
++        indexes.some(
++          (index) => index.name === "idx_projection_thread_attention_audit_thread_sequence",
++        ),
++      );
++    }),
++  );
++});
+diff --git a/apps/server/src/persistence/Migrations/044_ProjectionThreadAttentionAudit.ts b/apps/server/src/persistence/Migrations/044_ProjectionThreadAttentionAudit.ts
+new file mode 100644
+index 000000000..913c98319
+--- /dev/null
++++ b/apps/server/src/persistence/Migrations/044_ProjectionThreadAttentionAudit.ts
+@@ -0,0 +1,23 @@
++import * as Effect from "effect/Effect";
++import * as SqlClient from "effect/unstable/sql/SqlClient";
++
++export default Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++
++  yield* sql`
++    CREATE TABLE IF NOT EXISTS projection_thread_attention_audit (
++      event_id TEXT PRIMARY KEY,
++      thread_id TEXT NOT NULL,
++      turn_id TEXT,
++      request_id TEXT,
++      kind TEXT NOT NULL,
++      sequence INTEGER NOT NULL,
++      occurred_at TEXT NOT NULL
++    )
++  `;
++
++  yield* sql`
++    CREATE INDEX IF NOT EXISTS idx_projection_thread_attention_audit_thread_sequence
++    ON projection_thread_attention_audit(thread_id, sequence DESC, event_id DESC)
++  `;
++});
+diff --git a/apps/server/src/persistence/Services/ProjectionThreadAttentionAudit.ts b/apps/server/src/persistence/Services/ProjectionThreadAttentionAudit.ts
+new file mode 100644
+index 000000000..a5e2ae6ab
+--- /dev/null
++++ b/apps/server/src/persistence/Services/ProjectionThreadAttentionAudit.ts
+@@ -0,0 +1,50 @@
++/**
++ * ProjectionThreadAttentionAuditRepository - Durable thread attention audit projection.
++ *
++ * Stores compact, non-sensitive transitions derived from orchestration events.
++ *
++ * @module ProjectionThreadAttentionAuditRepository
++ */
++import { OrchestrationThreadAttentionAuditEntry, PositiveInt, ThreadId } from "@t3tools/contracts";
++import * as Context from "effect/Context";
++import type * as Effect from "effect/Effect";
++import * as Schema from "effect/Schema";
++
++import type { ProjectionRepositoryError } from "../Errors.ts";
++
++export const ListProjectionThreadAttentionAuditInput = Schema.Struct({
++  threadId: ThreadId,
++  limit: PositiveInt,
++});
++export type ListProjectionThreadAttentionAuditInput =
++  typeof ListProjectionThreadAttentionAuditInput.Type;
++
++export const DeleteProjectionThreadAttentionAuditInput = Schema.Struct({
++  threadId: ThreadId,
++});
++export type DeleteProjectionThreadAttentionAuditInput =
++  typeof DeleteProjectionThreadAttentionAuditInput.Type;
++
++export interface ProjectionThreadAttentionAuditRepositoryShape {
++  readonly upsert: (
++    entry: OrchestrationThreadAttentionAuditEntry,
++  ) => Effect.Effect<void, ProjectionRepositoryError>;
++
++  readonly listByThreadId: (
++    input: ListProjectionThreadAttentionAuditInput,
++  ) => Effect.Effect<
++    ReadonlyArray<OrchestrationThreadAttentionAuditEntry>,
++    ProjectionRepositoryError
++  >;
++
++  readonly deleteByThreadId: (
++    input: DeleteProjectionThreadAttentionAuditInput,
++  ) => Effect.Effect<void, ProjectionRepositoryError>;
++}
++
++export class ProjectionThreadAttentionAuditRepository extends Context.Service<
++  ProjectionThreadAttentionAuditRepository,
++  ProjectionThreadAttentionAuditRepositoryShape
++>()(
++  "t3/persistence/Services/ProjectionThreadAttentionAudit/ProjectionThreadAttentionAuditRepository",
++) {}
+diff --git a/packages/contracts/src/orchestration.test.ts b/packages/contracts/src/orchestration.test.ts
+index 4ae91d27c..e588f1d3e 100644
+--- a/packages/contracts/src/orchestration.test.ts
++++ b/packages/contracts/src/orchestration.test.ts
+@@ -14,6 +14,8 @@ import {
+   OrchestrationGetFullThreadDiffInput,
+   OrchestrationGetTurnDiffInput,
+   OrchestrationLatestTurn,
++  OrchestrationThreadAttentionAuditEntry,
++  OrchestrationThreadAttentionAuditKind,
+   ProjectCreatedPayload,
+   ProjectMetaUpdatedPayload,
+   OrchestrationProposedPlan,
+@@ -51,6 +53,12 @@ const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(Orchestration
+ const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
+ const decodeOrchestrationThread = Schema.decodeUnknownEffect(OrchestrationThread);
+ const decodeOrchestrationThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
++const decodeThreadAttentionAuditEntry = Schema.decodeUnknownEffect(
++  OrchestrationThreadAttentionAuditEntry,
++);
++const decodeThreadAttentionAuditKind = Schema.decodeUnknownEffect(
++  OrchestrationThreadAttentionAuditKind,
++);
+ const encodeThreadCreatedPayload = Schema.encodeEffect(ThreadCreatedPayload);
+ 
+ function getOptionValue(
+@@ -658,6 +666,40 @@ it.effect("decodes thread settled and unsettled events", () =>
+   }),
+ );
+ 
++it.effect("decodes the closed thread attention audit contract", () =>
++  Effect.gen(function* () {
++    const kinds = [
++      "approval.requested",
++      "approval.resolved",
++      "provider.approval.respond.failed",
++      "user-input.requested",
++      "user-input.resolved",
++      "provider.user-input.respond.failed",
++      "thread.settled",
++      "thread.unsettled",
++    ] as const;
++
++    for (const kind of kinds) {
++      assert.strictEqual(yield* decodeThreadAttentionAuditKind(kind), kind);
++    }
++
++    const entry = yield* decodeThreadAttentionAuditEntry({
++      eventId: "event-attention-1",
++      threadId: "thread-1",
++      turnId: "turn-1",
++      requestId: "request-1",
++      kind: "approval.requested",
++      sequence: 42,
++      occurredAt: "2026-01-01T00:00:00.000Z",
++    });
++    assert.strictEqual(entry.kind, "approval.requested");
++    assert.strictEqual(entry.sequence, 42);
++
++    const invalidKind = yield* decodeThreadAttentionAuditKind("runtime.error").pipe(Effect.exit);
++    assert.isTrue(Exit.isFailure(invalidKind));
++  }),
++);
++
+ it.effect("accepts provider-scoped model options in thread.turn.start", () =>
+   Effect.gen(function* () {
+     const parsed = yield* decodeThreadTurnStartCommand({
+diff --git a/packages/contracts/src/orchestration.ts b/packages/contracts/src/orchestration.ts
+index bbfaa1b59..9e20da6bb 100644
+--- a/packages/contracts/src/orchestration.ts
++++ b/packages/contracts/src/orchestration.ts
+@@ -401,6 +401,31 @@ export const OrchestrationThreadActivity = Schema.Struct({
+ });
+ export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Type;
+ 
++export const OrchestrationThreadAttentionAuditKind = Schema.Literals([
++  "approval.requested",
++  "approval.resolved",
++  "provider.approval.respond.failed",
++  "user-input.requested",
++  "user-input.resolved",
++  "provider.user-input.respond.failed",
++  "thread.settled",
++  "thread.unsettled",
++]);
++export type OrchestrationThreadAttentionAuditKind =
++  typeof OrchestrationThreadAttentionAuditKind.Type;
++
++export const OrchestrationThreadAttentionAuditEntry = Schema.Struct({
++  eventId: EventId,
++  threadId: ThreadId,
++  turnId: Schema.NullOr(TurnId),
++  requestId: Schema.NullOr(ApprovalRequestId),
++  kind: OrchestrationThreadAttentionAuditKind,
++  sequence: NonNegativeInt,
++  occurredAt: IsoDateTime,
++});
++export type OrchestrationThreadAttentionAuditEntry =
++  typeof OrchestrationThreadAttentionAuditEntry.Type;
++
+ const OrchestrationLatestTurnState = Schema.Literals([
+   "running",
+   "interrupted",
