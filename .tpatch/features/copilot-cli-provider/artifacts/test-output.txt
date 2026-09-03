@@ -1,26 +1,26 @@
-# Test run — 2026-09-02T20:08:36Z
+# Test run — 2026-09-03T07:41:02Z
 # Command: pnpm exec vp test run packages/contracts/src/settings.test.ts packages/contracts/src/providerRuntime.test.ts apps/server/src/provider/Drivers/CopilotDriver.test.ts apps/server/src/provider/Layers/copilotClientOptions.test.ts apps/server/src/provider/Layers/CopilotProvider.test.ts apps/server/src/provider/Layers/CopilotAdapter.test.ts apps/server/src/provider/Layers/ProviderInstanceRegistryHydration.test.ts apps/server/src/textGeneration/CopilotTextGeneration.test.ts apps/web/src/components/settings/ProviderSettingsForm.test.ts apps/web/src/components/settings/SettingsPanels.logic.test.ts apps/web/src/components/chat/providerIconUtils.test.ts scripts/lib/cli-external-packages.test.ts
-# Directory: /Users/jdbencardinop/.copilot/session-state/5356b3ce-564e-49e0-bac9-23c27a03328b/files/phase0-copilot-worktree
+# Directory: /Users/jdbencardinop/Documents/Proyectos/tesserabox/t3code
 
 
-[1m[30m[46m RUN [49m[39m[22m [36mv4.1.9 [39m[90m/Users/jdbencardinop/.copilot/session-state/5356b3ce-564e-49e0-bac9-23c27a03328b/files/phase0-copilot-worktree[39m
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.9 [39m[90m/Users/jdbencardinop/Documents/Proyectos/tesserabox/t3code[39m
 
- [32m✓[39m packages/contracts/src/providerRuntime.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 9[2mms[22m[39m
- [32m✓[39m packages/contracts/src/settings.test.ts [2m([22m[2m68 tests[22m[2m)[22m[32m 20[2mms[22m[39m
- [32m✓[39m apps/web/src/components/settings/SettingsPanels.logic.test.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 3[2mms[22m[39m
- [32m✓[39m apps/server/src/provider/Layers/copilotClientOptions.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 3[2mms[22m[39m
- [32m✓[39m apps/server/src/provider/Layers/CopilotProvider.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 12[2mms[22m[39m
- [32m✓[39m apps/server/src/textGeneration/CopilotTextGeneration.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 24[2mms[22m[39m
- [32m✓[39m apps/server/src/provider/Layers/CopilotAdapter.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 70[2mms[22m[39m
+ [32m✓[39m packages/contracts/src/providerRuntime.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m packages/contracts/src/settings.test.ts [2m([22m[2m68 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m apps/server/src/provider/Layers/copilotClientOptions.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m apps/server/src/provider/Layers/CopilotProvider.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m apps/server/src/textGeneration/CopilotTextGeneration.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 35[2mms[22m[39m
+ [32m✓[39m apps/server/src/provider/Layers/CopilotAdapter.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 75[2mms[22m[39m
+ [32m✓[39m apps/web/src/components/settings/SettingsPanels.logic.test.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 6[2mms[22m[39m
  [32m✓[39m apps/server/src/provider/Drivers/CopilotDriver.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 6[2mms[22m[39m
- [32m✓[39m scripts/lib/cli-external-packages.test.ts [2m([22m[2m15 tests[22m[2m)[22m[33m 778[2mms[22m[39m
-     [33m[2m✓[22m[39m finds the runtime-external packages on disk [33m 770[2mms[22m[39m
+ [32m✓[39m scripts/lib/cli-external-packages.test.ts [2m([22m[2m15 tests[22m[2m)[22m[33m 678[2mms[22m[39m
+     [33m[2m✓[22m[39m finds the runtime-external packages on disk [33m 673[2mms[22m[39m
  [32m✓[39m apps/web/src/components/chat/providerIconUtils.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 1[2mms[22m[39m
- [32m✓[39m apps/web/src/components/settings/ProviderSettingsForm.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 2[2mms[22m[39m
- [32m✓[39m apps/server/src/provider/Layers/ProviderInstanceRegistryHydration.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m apps/web/src/components/settings/ProviderSettingsForm.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m apps/server/src/provider/Layers/ProviderInstanceRegistryHydration.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 2[2mms[22m[39m
 
 [2m Test Files [22m [1m[32m12 passed[39m[22m[90m (12)[39m
-[2m      Tests [22m [1m[32m163 passed[39m[22m[90m (163)[39m
-[2m   Start at [22m 13:08:34
-[2m   Duration [22m 1.46s[2m (transform 2.35s, setup 0ms, import 6.51s, tests 931ms, environment 1ms)[22m
+[2m      Tests [22m [1m[32m167 passed[39m[22m[90m (167)[39m
+[2m   Start at [22m 00:41:01
+[2m   Duration [22m 1.52s[2m (transform 2.39s, setup 0ms, import 6.57s, tests 844ms, environment 1ms)[22m
 

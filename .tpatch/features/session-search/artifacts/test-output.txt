@@ -1,43 +1,19 @@
-# Test run — 2026-09-02T20:15:28Z
-# Command: pnpm exec vp run --filter t3 --filter @t3tools/contracts --filter @t3tools/shared --filter @t3tools/web --filter @t3tools/mobile --filter @t3tools/scripts typecheck
+# Test run — 2026-09-03T07:41:10Z
+# Command: pnpm exec vp test run packages/contracts/src/keybindings.test.ts apps/web/src/keybindings.test.ts apps/web/src/components/settings/KeybindingsSettings.logic.test.ts apps/web/src/components/CommandPalette.logic.test.ts apps/web/src/components/chat/sessionSearch.test.ts apps/web/src/components/chat/MessagesTimeline.logic.test.ts
 # Directory: /Users/jdbencardinop/Documents/Proyectos/tesserabox/t3code
 
-~/packages/contracts$ tsgo --noEmit ⊘ cache disabled
 
-~/packages/shared$ tsgo --noEmit ⊘ cache disabled
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.9 [39m[90m/Users/jdbencardinop/Documents/Proyectos/tesserabox/t3code[39m
 
-~/apps/web$ tsgo --noEmit ⊘ cache disabled
-~/scripts$ tsgo --noEmit ⊘ cache disabled
-~/apps/mobile$ tsc --noEmit ⊘ cache disabled
-build-desktop-artifact.ts(1717,7): suggestion TS377092: These 2 consecutive `catchTag` transformations can be collapsed into a single `catchTags` call. effect(multipleCatchTag)
+ [32m✓[39m packages/contracts/src/keybindings.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m apps/web/src/keybindings.test.ts [2m([22m[2m53 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m apps/web/src/components/settings/KeybindingsSettings.logic.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m apps/web/src/components/chat/sessionSearch.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m apps/web/src/components/chat/MessagesTimeline.logic.test.ts [2m([22m[2m51 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m apps/web/src/components/CommandPalette.logic.test.ts [2m([22m[2m22 tests[22m[2m)[22m[32m 5[2mms[22m[39m
 
+[2m Test Files [22m [1m[32m6 passed[39m[22m[90m (6)[39m
+[2m      Tests [22m [1m[32m161 passed[39m[22m[90m (161)[39m
+[2m   Start at [22m 00:41:09
+[2m   Duration [22m 793ms[2m (transform 1.16s, setup 0ms, import 3.27s, tests 41ms, environment 0ms)[22m
 
-~/apps/server$ tsgo --noEmit ⊘ cache disabled
-src/auth/dpop.ts(118,20): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/cli/theme.ts(263,16): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/cli/theme.ts(302,12): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/cli/theme.ts(305,12): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/cli/theme.ts(323,12): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/cli/theme.ts(328,12): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/cli/theme.ts(333,12): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/cli/theme.ts(341,12): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/cli/theme.ts(482,16): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/cli/theme.ts(517,16): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/cli/theme.ts(521,18): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/cli/theme.ts(525,16): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/orchestration/decider.ts(431,16): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/orchestration/decider.ts(553,16): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/orchestration/decider.ts(565,16): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/orchestration/decider.ts(577,16): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/orchestration/decider.ts(744,16): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/orchestration/decider.ts(1120,18): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/orchestration/workflowScriptQuery.ts(35,12): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/orchestration/workflowScriptQuery.ts(63,12): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/orchestration/workflowScriptQuery.ts(68,12): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/provider/Layers/ClaudeAdapter.ts(4715,16): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-src/provider/Layers/OpenCodeAdapter.ts(1576,19): suggestion TS377016: `Effect.void` represents the same outcome as `Effect.succeed(undefined)` or `Effect.succeed(void 0)`. effect(effectSucceedWithVoid)
-src/pullRequest/GitLabPullRequestCli.ts(1147,18): suggestion TS377019: This `yield* Effect.fail(...)` passes a yieldable error value. `yield*` represents that value directly without wrapping it in `Effect.fail`. effect(unnecessaryFailYieldableError)
-
-
----
-vp run: 0/6 cache hit (0%). (Run `vp run --last-details` for full details)
