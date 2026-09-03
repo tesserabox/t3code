@@ -2,18 +2,41 @@
   "id": "tws-identity-bindings",
   "slug": "tws-identity-bindings",
   "title": "Persist product-owned opaque TWS workspace, feature, stack-node, and workspace-project bindings. Store mutable TWS stable-id/registry/path/name/branch/repository locators separately from primary IDs, preserve repository identity as grouping metadata only, support multi-repo features and nullable worktree materialization, provide bounded SQL lookup/list APIs and ambiguity-safe pure locator matching, and add migrations/tests. Build on the read-only TWS adapter but add no UI, RPC, polling, automatic mutation, or path-based routing.",
-  "state": "implementing",
+  "state": "applied",
   "compatibility": "unknown",
   "requested_at": "2026-09-03T09:30:57Z",
-  "updated_at": "2026-09-03T09:32:55Z",
-  "last_command": "apply --mode started",
-  "notes": "Implementation in progress",
-  "apply": {},
+  "updated_at": "2026-09-03T10:07:38Z",
+  "last_command": "verify",
+  "notes": "landed at 2026-09-03T10:07:53Z",
+  "apply": {
+    "completed_at": "2026-09-03T10:07:20Z",
+    "base_commit": "ae62583898a1853f5f248d082054ccce0d259f50",
+    "has_patch": true
+  },
   "reconcile": {},
   "depends_on": [
     {
       "slug": "tws-readonly-cli-adapter",
-      "kind": "soft"
+      "kind": "hard"
+    },
+    {
+      "slug": "durable-thread-attention-ledger",
+      "kind": "hard"
+    },
+    {
+      "slug": "hosting-work-item-contracts",
+      "kind": "hard"
     }
-  ]
+  ],
+  "verify": {
+    "verified_at": "2026-09-03T10:07:35Z",
+    "passed": true,
+    "recipe_hash_at_verify": "63b18576300252c49752400e437a32d5e390d34ddd19cc92e84336fbf7760217",
+    "patch_hash_at_verify": "2aff1a6c2726968b459e9282584f83e05798580a82ac77d9a0ecc9e90b05645e",
+    "parent_snapshot": {
+      "durable-thread-attention-ledger": "applied",
+      "hosting-work-item-contracts": "applied",
+      "tws-readonly-cli-adapter": "applied"
+    }
+  }
 }
