@@ -401,6 +401,31 @@ export const OrchestrationThreadActivity = Schema.Struct({
 });
 export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Type;
 
+export const OrchestrationThreadAttentionAuditKind = Schema.Literals([
+  "approval.requested",
+  "approval.resolved",
+  "provider.approval.respond.failed",
+  "user-input.requested",
+  "user-input.resolved",
+  "provider.user-input.respond.failed",
+  "thread.settled",
+  "thread.unsettled",
+]);
+export type OrchestrationThreadAttentionAuditKind =
+  typeof OrchestrationThreadAttentionAuditKind.Type;
+
+export const OrchestrationThreadAttentionAuditEntry = Schema.Struct({
+  eventId: EventId,
+  threadId: ThreadId,
+  turnId: Schema.NullOr(TurnId),
+  requestId: Schema.NullOr(ApprovalRequestId),
+  kind: OrchestrationThreadAttentionAuditKind,
+  sequence: NonNegativeInt,
+  occurredAt: IsoDateTime,
+});
+export type OrchestrationThreadAttentionAuditEntry =
+  typeof OrchestrationThreadAttentionAuditEntry.Type;
+
 const OrchestrationLatestTurnState = Schema.Literals([
   "running",
   "interrupted",

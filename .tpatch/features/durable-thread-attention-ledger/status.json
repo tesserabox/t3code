@@ -7,7 +7,7 @@
   "requested_at": "2026-09-03T08:27:14Z",
   "updated_at": "2026-09-03T08:42:13Z",
   "last_command": "verify",
-  "notes": "Patch recorded",
+  "notes": "landed at 2026-09-03T08:43:14Z",
   "apply": {
     "completed_at": "2026-09-03T08:42:06Z",
     "base_commit": "45ae25ab3f1682c87f93a6f2c7be77db10bcc969",

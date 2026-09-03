@@ -14,6 +14,8 @@ import {
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationLatestTurn,
+  OrchestrationThreadAttentionAuditEntry,
+  OrchestrationThreadAttentionAuditKind,
   ProjectCreatedPayload,
   ProjectMetaUpdatedPayload,
   OrchestrationProposedPlan,
@@ -51,6 +53,12 @@ const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(Orchestration
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
 const decodeOrchestrationThread = Schema.decodeUnknownEffect(OrchestrationThread);
 const decodeOrchestrationThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
+const decodeThreadAttentionAuditEntry = Schema.decodeUnknownEffect(
+  OrchestrationThreadAttentionAuditEntry,
+);
+const decodeThreadAttentionAuditKind = Schema.decodeUnknownEffect(
+  OrchestrationThreadAttentionAuditKind,
+);
 const encodeThreadCreatedPayload = Schema.encodeEffect(ThreadCreatedPayload);
 
 function getOptionValue(
@@ -655,6 +663,40 @@ it.effect("decodes thread settled and unsettled events", () =>
 
     assert.strictEqual(settled.type, "thread.settled");
     assert.strictEqual(unsettled.type, "thread.unsettled");
+  }),
+);
+
+it.effect("decodes the closed thread attention audit contract", () =>
+  Effect.gen(function* () {
+    const kinds = [
+      "approval.requested",
+      "approval.resolved",
+      "provider.approval.respond.failed",
+      "user-input.requested",
+      "user-input.resolved",
+      "provider.user-input.respond.failed",
+      "thread.settled",
+      "thread.unsettled",
+    ] as const;
+
+    for (const kind of kinds) {
+      assert.strictEqual(yield* decodeThreadAttentionAuditKind(kind), kind);
+    }
+
+    const entry = yield* decodeThreadAttentionAuditEntry({
+      eventId: "event-attention-1",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      requestId: "request-1",
+      kind: "approval.requested",
+      sequence: 42,
+      occurredAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(entry.kind, "approval.requested");
+    assert.strictEqual(entry.sequence, 42);
+
+    const invalidKind = yield* decodeThreadAttentionAuditKind("runtime.error").pipe(Effect.exit);
+    assert.isTrue(Exit.isFailure(invalidKind));
   }),
 );
 
