@@ -83,6 +83,7 @@ import {
   backgroundActivityOverrideSettings,
   buildProviderInstanceUpdatePatch,
   durationToSeconds,
+  isMigratedLegacyCopilotDefault,
   normalizeIntervalSeconds,
   PROVIDER_HEALTH_INTERVAL_STEP_SECONDS,
 } from "./SettingsPanels.logic";
@@ -577,6 +578,7 @@ export function EnvironmentProviderSettings({
     readonly instance: ProviderInstanceConfig;
     readonly driver: ProviderDriverKind;
     readonly isDefault: boolean;
+    readonly writesLegacyProviderSettings: boolean;
     readonly isDirty?: boolean;
   }
 
@@ -634,9 +636,17 @@ export function EnvironmentProviderSettings({
     };
     const effectiveInstance: ProviderInstanceConfig | undefined =
       explicitInstance ?? synthesizedInstance();
+    const hasLegacyCopilotDefault =
+      driver === "githubCopilot" &&
+      Object.entries(settings.providerInstances ?? {}).some(([id, instance]) =>
+        isMigratedLegacyCopilotDefault({
+          driver: instance.driver,
+          instanceId: id as ProviderInstanceId,
+        }),
+      );
     // Only the default slot depends on the legacy blob; custom instances for
     // the driver must still render even when the slot has nothing to show.
-    if (effectiveInstance !== undefined) {
+    if (effectiveInstance !== undefined && !hasLegacyCopilotDefault) {
       const isDirty =
         explicitInstance !== undefined || !Equal.equals(legacyConfig, defaultLegacyConfig);
       rows.push({
@@ -644,22 +654,38 @@ export function EnvironmentProviderSettings({
         instance: effectiveInstance,
         driver,
         isDefault: true,
+        writesLegacyProviderSettings: true,
         isDirty,
       });
     }
     for (const [id, instance] of instancesByDriver.get(providerSettings.provider) ?? []) {
       if (id === defaultInstanceId) continue;
-      rows.push({ instanceId: id, instance, driver: instance.driver, isDefault: false });
+      const isMigratedDefault = isMigratedLegacyCopilotDefault({
+        driver: instance.driver,
+        instanceId: id,
+      });
+      rows.push({
+        instanceId: id,
+        instance,
+        driver: instance.driver,
+        isDefault: isMigratedDefault,
+        writesLegacyProviderSettings: false,
+      });
     }
   }
   for (const [driver, list] of instancesByDriver) {
     if (visibleDriverKinds.has(driver)) continue;
     for (const [id, instance] of list) {
+      const isMigratedDefault = isMigratedLegacyCopilotDefault({
+        driver: instance.driver,
+        instanceId: id,
+      });
       rows.push({
         instanceId: id,
         instance,
         driver: instance.driver,
-        isDefault: defaultSlotIdsBySource.has(String(id)),
+        isDefault: isMigratedDefault || defaultSlotIdsBySource.has(String(id)),
+        writesLegacyProviderSettings: !isMigratedDefault && defaultSlotIdsBySource.has(String(id)),
       });
     }
   }
@@ -681,7 +707,7 @@ export function EnvironmentProviderSettings({
         instanceId: row.instanceId,
         instance: next,
         driver: row.driver,
-        isDefault: row.isDefault,
+        isDefault: row.writesLegacyProviderSettings,
         textGenerationModelSelection: options?.textGenerationModelSelection,
       }),
     );

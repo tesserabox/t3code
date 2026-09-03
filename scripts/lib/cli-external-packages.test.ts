@@ -48,6 +48,12 @@ describe("shouldBundleCliDependency", () => {
       "@yuuang/ffi-rs-win32-x64-msvc",
       "@ff-labs/fff-node",
       "@clerk/electron-passkeys",
+      "@github/copilot-sdk",
+      "@github/copilot-darwin-arm64",
+      "koffi",
+      "@koromix/koffi-darwin-arm64",
+      "vscode-jsonrpc",
+      "zod",
       "msgpackr-extract",
       "@msgpackr-extract/msgpackr-extract-win32-x64",
     ]) {
@@ -74,11 +80,13 @@ describe("selectCliRuntimeExternalDependencies", () => {
       selectCliRuntimeExternalDependencies({
         "@effect/platform-bun": "1.0.0",
         "@ff-labs/fff-node": "2.0.0",
+        "@github/copilot-sdk": "1.0.8",
         effect: "3.0.0",
         "node-pty": "4.0.0",
       }),
       {
         "@ff-labs/fff-node": "2.0.0",
+        "@github/copilot-sdk": "1.0.8",
         "node-pty": "4.0.0",
       },
     );
@@ -87,7 +95,7 @@ describe("selectCliRuntimeExternalDependencies", () => {
   it("selects every external root declared by the server", () => {
     assert.deepStrictEqual(
       Object.keys(selectCliRuntimeExternalDependencies(serverPackageJson.dependencies)).sort(),
-      ["@ff-labs/fff-node", "msgpackr-extract", "node-pty"],
+      ["@ff-labs/fff-node", "@github/copilot-sdk", "msgpackr-extract", "node-pty"],
     );
   });
 });
@@ -189,9 +197,9 @@ it.layer(NodeServices.layer)("external package dependency closure", (it) => {
         if (!manifest) continue;
 
         const declared = {
-          ...(manifest.dependencies ?? {}),
-          ...(manifest.optionalDependencies ?? {}),
-          ...(manifest.peerDependencies ?? {}),
+          ...manifest.dependencies,
+          ...manifest.optionalDependencies,
+          ...manifest.peerDependencies,
         };
         for (const dependency of Object.keys(declared)) {
           if (!isRuntimeExternal(dependency)) {

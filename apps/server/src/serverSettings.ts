@@ -61,6 +61,10 @@ const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const COPILOT_DRIVER = ProviderDriverKind.make("githubCopilot");
+const LEGACY_COPILOT_DRIVER = ProviderDriverKind.make("copilot");
+const COPILOT_INSTANCE = ProviderInstanceId.make("githubCopilot");
+const LEGACY_COPILOT_INSTANCE = ProviderInstanceId.make("copilot");
 
 /**
  * Fold the legacy in-config `enabled` flag into the envelope-level
@@ -110,12 +114,55 @@ const foldProviderInstanceEnabledFlags = (settings: ServerSettings): ServerSetti
   };
 };
 
+/**
+ * Imported Copilot feature branches used `copilot` before upstream reserved
+ * `githubCopilot`. Preserve instance ids for thread routing while presenting
+ * the canonical driver to the runtime and clients.
+ */
+export const migrateLegacyCopilotSettings = (settings: ServerSettings): ServerSettings => {
+  let changed = false;
+  const providerInstances: Record<string, ProviderInstanceConfig> = {};
+  for (const [instanceId, instance] of Object.entries(settings.providerInstances)) {
+    if (instance.driver === LEGACY_COPILOT_DRIVER) {
+      changed = true;
+      providerInstances[instanceId] = { ...instance, driver: COPILOT_DRIVER };
+    } else {
+      providerInstances[instanceId] = instance;
+    }
+  }
+
+  const legacyConfig = settings.providers.copilot;
+  if (
+    legacyConfig !== undefined &&
+    providerInstances[LEGACY_COPILOT_INSTANCE] === undefined &&
+    providerInstances[COPILOT_INSTANCE] === undefined
+  ) {
+    const { enabled, ...config } = legacyConfig;
+    changed = true;
+    providerInstances[LEGACY_COPILOT_INSTANCE] = {
+      driver: COPILOT_DRIVER,
+      enabled,
+      config,
+    };
+  }
+
+  return changed
+    ? {
+        ...settings,
+        providerInstances: providerInstances as ServerSettings["providerInstances"],
+      }
+    : settings;
+};
+
+const applyProviderSettingsMigrations = (settings: ServerSettings): ServerSettings =>
+  migrateLegacyCopilotSettings(foldProviderInstanceEnabledFlags(settings));
+
 const normalizeServerSettings = (
   settings: ServerSettings,
 ): Effect.Effect<ServerSettings, ServerSettingsError> =>
   encodeServerSettings(settings).pipe(
     Effect.flatMap(decodeServerSettings),
-    Effect.map(foldProviderInstanceEnabledFlags),
+    Effect.map(applyProviderSettingsMigrations),
     Effect.mapError(
       (cause) =>
         new ServerSettingsError({
@@ -237,6 +284,10 @@ const PersistedOptionalProviderSettings = Schema.Struct({
       cursor: Schema.optionalKey(Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) })),
       grok: Schema.optionalKey(Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) })),
       opencode: Schema.optionalKey(Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) })),
+      githubCopilot: Schema.optionalKey(
+        Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) }),
+      ),
+      copilot: Schema.optionalKey(Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) })),
     }),
   ),
 });
@@ -264,7 +315,9 @@ function restoreUsedProviders(
       instance.enabled === undefined &&
       (instance.driver === "cursor" ||
         instance.driver === "grok" ||
-        instance.driver === "opencode") &&
+        instance.driver === "opencode" ||
+        instance.driver === "githubCopilot" ||
+        instance.driver === "copilot") &&
       usedProviderInstances.has(instanceId)
         ? { ...instance, enabled: true }
         : instance,
@@ -287,6 +340,23 @@ function restoreUsedProviders(
         ...settings.providers.opencode,
         enabled: persisted.providers?.opencode?.enabled ?? usedProviders.has("opencode"),
       },
+      githubCopilot: {
+        ...settings.providers.githubCopilot,
+        enabled:
+          persisted.providers?.githubCopilot?.enabled ??
+          (usedProviders.has("githubCopilot") ? true : settings.providers.githubCopilot.enabled),
+      },
+      ...(settings.providers.copilot !== undefined || usedProviders.has("copilot")
+        ? {
+            copilot: {
+              ...(settings.providers.copilot ?? DEFAULT_SERVER_SETTINGS.providers.githubCopilot),
+              enabled:
+                persisted.providers?.copilot?.enabled ??
+                settings.providers.copilot?.enabled ??
+                usedProviders.has("copilot"),
+            },
+          }
+        : {}),
     },
     providerInstances,
   };
@@ -334,6 +404,10 @@ const PERSISTED_SERVER_SETTINGS_DEFAULTS = {
     cursor: { ...DEFAULT_SERVER_SETTINGS.providers.cursor, enabled: undefined },
     grok: { ...DEFAULT_SERVER_SETTINGS.providers.grok, enabled: undefined },
     opencode: { ...DEFAULT_SERVER_SETTINGS.providers.opencode, enabled: undefined },
+    githubCopilot: {
+      ...DEFAULT_SERVER_SETTINGS.providers.githubCopilot,
+      enabled: undefined,
+    },
   },
 };
 
@@ -443,13 +517,13 @@ const make = Effect.gen(function* () {
         provider_name AS "providerName",
         provider_instance_id AS "providerInstanceId"
       FROM projection_thread_sessions
-      WHERE provider_name IN ('cursor', 'grok', 'opencode')
+      WHERE provider_name IN ('cursor', 'grok', 'opencode', 'githubCopilot', 'copilot')
       UNION
       SELECT DISTINCT
         provider_name AS "providerName",
         provider_instance_id AS "providerInstanceId"
       FROM provider_session_runtime
-      WHERE provider_name IN ('cursor', 'grok', 'opencode')
+      WHERE provider_name IN ('cursor', 'grok', 'opencode', 'githubCopilot', 'copilot')
     `.pipe(
       Effect.mapError(
         (cause) =>
@@ -461,7 +535,7 @@ const make = Effect.gen(function* () {
       ),
     );
 
-    return foldProviderInstanceEnabledFlags(
+    return applyProviderSettingsMigrations(
       restoreUsedProviders(settings, persisted, providerHistory),
     );
   });

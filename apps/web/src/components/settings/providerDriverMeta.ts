@@ -1,13 +1,22 @@
 import {
   ClaudeSettings,
   CodexSettings,
+  CopilotSettings,
   CursorSettings,
   GrokSettings,
   OpenCodeSettings,
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import type * as Schema from "effect/Schema";
-import { ClaudeAI, CursorIcon, GrokIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
+import {
+  ClaudeAI,
+  CursorIcon,
+  GithubCopilotIcon,
+  GrokIcon,
+  type Icon,
+  OpenAI,
+  OpenCodeIcon,
+} from "../Icons";
 
 type ProviderSettingsSchema = {
   readonly fields: Readonly<Record<string, Schema.Top>>;
@@ -34,6 +43,16 @@ export interface ProviderClientDefinition {
   readonly badgeLabel?: string;
 }
 
+const COPILOT_DRIVER = ProviderDriverKind.make("githubCopilot");
+const LEGACY_COPILOT_DRIVER = ProviderDriverKind.make("copilot");
+const COPILOT_CLIENT_DEFINITION: ProviderClientDefinition = {
+  value: COPILOT_DRIVER,
+  label: "GitHub Copilot",
+  icon: GithubCopilotIcon,
+  badgeLabel: "Preview",
+  settingsSchema: CopilotSettings,
+};
+
 export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
   {
     value: ProviderDriverKind.make("codex"),
@@ -47,6 +66,7 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     icon: ClaudeAI,
     settingsSchema: ClaudeSettings,
   },
+  COPILOT_CLIENT_DEFINITION,
   {
     value: ProviderDriverKind.make("cursor"),
     label: "Cursor",
@@ -71,9 +91,12 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
 
 export const PROVIDER_CLIENT_DEFINITION_BY_VALUE: Partial<
   Record<ProviderDriverKind, ProviderClientDefinition>
-> = Object.fromEntries(
-  PROVIDER_CLIENT_DEFINITIONS.map((definition) => [definition.value, definition]),
-);
+> = {
+  ...Object.fromEntries(
+    PROVIDER_CLIENT_DEFINITIONS.map((definition) => [definition.value, definition]),
+  ),
+  [LEGACY_COPILOT_DRIVER]: COPILOT_CLIENT_DEFINITION,
+};
 
 export const DRIVER_OPTIONS = PROVIDER_CLIENT_DEFINITIONS;
 export const DRIVER_OPTION_BY_VALUE = PROVIDER_CLIENT_DEFINITION_BY_VALUE;

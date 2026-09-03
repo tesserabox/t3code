@@ -49,6 +49,19 @@ describe("ProviderSettingsForm helpers", () => {
     ]);
   });
 
+  it("exposes Copilot settings under the canonical and legacy driver kinds", () => {
+    const canonical = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("githubCopilot")];
+    const legacy = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("copilot")];
+
+    expect(canonical).toBeDefined();
+    expect(legacy).toBe(canonical);
+    expect(deriveProviderSettingsFields(canonical!).map((field) => field.key)).toEqual([
+      "binaryPath",
+      "homePath",
+      "enableConfigDiscovery",
+    ]);
+  });
+
   it("preserves unknown config keys while omitting empty configurable fields", () => {
     const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
     expect(opencode).toBeDefined();

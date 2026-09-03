@@ -31,6 +31,16 @@ export const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   "@yuuang/",
   "@ff-labs/",
   "@clerk/electron-passkeys",
+  // The Copilot SDK resolves its platform CLI package dynamically at runtime,
+  // and its optional FFI transport loads Koffi relative to the real package
+  // tree. Keeping the complete dependency closure external lets desktop
+  // staging install the correct target binaries instead of stranding dynamic
+  // imports inside the server bundle.
+  "@github/copilot",
+  "@koromix/",
+  "koffi",
+  "vscode-jsonrpc",
+  "zod",
   "@msgpackr-extract/",
   "msgpackr-extract",
   "node-gyp-build",

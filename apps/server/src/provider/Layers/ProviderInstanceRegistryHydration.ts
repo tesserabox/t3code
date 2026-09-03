@@ -43,6 +43,7 @@
  */
 import {
   defaultInstanceIdForDriver,
+  ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
   ServerSettings,
@@ -56,6 +57,9 @@ import { BUILT_IN_DRIVERS, type BuiltInDriversEnv } from "../builtInDrivers.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderInstanceRegistryMutator } from "../Services/ProviderInstanceRegistryMutator.ts";
 import { ProviderInstanceRegistryMutableLayer } from "./ProviderInstanceRegistryLive.ts";
+
+const COPILOT_DRIVER = ProviderDriverKind.make("githubCopilot");
+const LEGACY_COPILOT_DRIVER = ProviderDriverKind.make("copilot");
 
 /**
  * Synthesize a `ProviderInstanceConfigMap` from a `ServerSettings` snapshot.
@@ -73,9 +77,29 @@ import { ProviderInstanceRegistryMutableLayer } from "./ProviderInstanceRegistry
 export const deriveProviderInstanceConfigMap = (
   settings: ServerSettings,
 ): ProviderInstanceConfigMap => {
-  const merged: Record<string, ProviderInstanceConfig> = { ...settings.providerInstances };
+  const merged: Record<string, ProviderInstanceConfig> = Object.fromEntries(
+    Object.entries(settings.providerInstances).map(([instanceId, instance]) => [
+      instanceId,
+      instance.driver === LEGACY_COPILOT_DRIVER
+        ? { ...instance, driver: COPILOT_DRIVER }
+        : instance,
+    ]),
+  );
 
   for (const driver of BUILT_IN_DRIVERS) {
+    const legacyCopilotInstance = merged[LEGACY_COPILOT_DRIVER];
+    if (driver.driverKind === COPILOT_DRIVER) {
+      if (legacyCopilotInstance?.driver === COPILOT_DRIVER) {
+        continue;
+      }
+      if (legacyCopilotInstance === undefined && settings.providers.copilot !== undefined) {
+        merged[LEGACY_COPILOT_DRIVER] = {
+          driver: driver.driverKind,
+          config: settings.providers.copilot,
+        };
+        continue;
+      }
+    }
     const instanceId = defaultInstanceIdForDriver(driver.driverKind);
     if (instanceId in merged) {
       // Explicit `providerInstances` entry for this slot — user-authored

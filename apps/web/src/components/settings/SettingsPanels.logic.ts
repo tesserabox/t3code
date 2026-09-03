@@ -281,6 +281,16 @@ export function buildProviderInstanceUpdatePatch(input: {
   };
 }
 
+export function isMigratedLegacyCopilotDefault(input: {
+  readonly driver: ProviderDriverKind;
+  readonly instanceId: ProviderInstanceId;
+}): boolean {
+  return (
+    (input.driver === "githubCopilot" || input.driver === "copilot") &&
+    input.instanceId === "copilot"
+  );
+}
+
 // ── Background-activity interval helpers ─────────────────────────────
 // Shared by the General panel's interval rows and the Providers panel's
 // health-check row.

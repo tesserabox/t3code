@@ -15,6 +15,7 @@ allowBuilds:
   electron: true
   electron-winstaller: false
   esbuild: true
+  koffi: true
   msgpackr-extract: true
   msw: false
   node-pty: true
@@ -96,6 +97,9 @@ overrides:
   "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-linux-x64-musl": "-"
   "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-win32-arm64": "-"
   "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-win32-x64": "-"
+  # Copilot SDK 1.0.8 loads the platform package's ./sdk export. Copilot CLI
+  # 1.0.82 removed that export, so keep the SDK on its compatible runtime.
+  "@github/copilot-sdk@1.0.8>@github/copilot": 1.0.75
   "@clerk/backend": "catalog:"
   "@clerk/clerk-js": "catalog:"
   "@clerk/clerk-js>@base-org/account": "-"

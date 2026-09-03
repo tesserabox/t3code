@@ -238,6 +238,31 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     // Legacy `providers` struct is still hydrated with its per-driver defaults
     // so existing call sites keep working through the migration.
     expect(decoded.providers.codex.enabled).toBe(true);
+    expect(decoded.providers.githubCopilot.enabled).toBe(false);
+    expect(decoded.providers.copilot).toBeUndefined();
+  });
+
+  it("preserves the imported legacy Copilot settings key", () => {
+    const decoded = decodeServerSettings({
+      providers: {
+        copilot: {
+          enabled: true,
+          homePath: "~/.copilot-work",
+          enableConfigDiscovery: false,
+        },
+      },
+    });
+
+    expect(decoded.providers.copilot).toMatchObject({
+      enabled: true,
+      homePath: "~/.copilot-work",
+      enableConfigDiscovery: false,
+    });
+    expect(encodeServerSettings(decoded).providers?.copilot).toMatchObject({
+      enabled: true,
+      homePath: "~/.copilot-work",
+      enableConfigDiscovery: false,
+    });
   });
 
   it("decodes a multi-instance map mixing first-party and fork drivers", () => {
@@ -288,6 +313,7 @@ describe("provider enabled defaults", () => {
     const decoded = decodeServerSettings({});
     expect(decoded.providers.codex.enabled).toBe(true);
     expect(decoded.providers.claudeAgent.enabled).toBe(true);
+    expect(decoded.providers.githubCopilot.enabled).toBe(false);
     expect(decoded.providers.cursor.enabled).toBe(false);
     expect(decoded.providers.grok.enabled).toBe(false);
     expect(decoded.providers.opencode.enabled).toBe(false);
@@ -295,6 +321,7 @@ describe("provider enabled defaults", () => {
 
   it("derives per-driver defaults from the settings schemas", () => {
     expect(defaultEnabledForDriver(ProviderDriverKind.make("codex"))).toBe(true);
+    expect(defaultEnabledForDriver(ProviderDriverKind.make("githubCopilot"))).toBe(false);
     expect(defaultEnabledForDriver(ProviderDriverKind.make("cursor"))).toBe(false);
     expect(defaultEnabledForDriver(ProviderDriverKind.make("grok"))).toBe(false);
     // Unknown fork drivers stay enabled; their own build decides otherwise.

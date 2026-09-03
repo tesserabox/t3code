@@ -23,6 +23,25 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.providerInstanceId).toBe("ollama_local");
   });
 
+  it("accepts bounded Copilot SDK provenance", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "session.started",
+      eventId: "event-copilot-session",
+      provider: "githubCopilot",
+      providerInstanceId: "githubCopilot",
+      createdAt: "2026-02-28T00:00:00.000Z",
+      threadId: "thread-copilot",
+      payload: { message: "started" },
+      raw: {
+        source: "copilot.sdk.session-event",
+        messageType: "session.start",
+        payload: { sessionId: "native-session" },
+      },
+    });
+
+    expect(parsed.raw?.source).toBe("copilot.sdk.session-event");
+  });
+
   it("decodes turn.plan.updated for plan rendering", () => {
     const parsed = decodeRuntimeEvent({
       type: "turn.plan.updated",

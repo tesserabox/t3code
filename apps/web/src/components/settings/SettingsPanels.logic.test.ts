@@ -16,6 +16,7 @@ import {
   getChangedTypographySettingLabels,
   isSamePreviewViewport,
   hasChangedBackgroundActivitySettings,
+  isMigratedLegacyCopilotDefault,
   isProjectGroupingEnabled,
   projectGroupingModeFromToggle,
   resolveBackgroundActivityProfileOption,
@@ -237,6 +238,34 @@ describe("buildProviderInstanceUpdatePatch", () => {
       instanceId,
       instance: nextInstance,
       driver: ProviderDriverKind.make("codex"),
+      isDefault: false,
+    });
+
+    expect(patch.providerInstances?.[instanceId]).toEqual(nextInstance);
+    expect(patch.providers).toBeUndefined();
+  });
+
+  it("treats the migrated Copilot id as a non-deletable default without rewriting mirrors", () => {
+    const instanceId = ProviderInstanceId.make("copilot");
+    const driver = ProviderDriverKind.make("githubCopilot");
+    const nextInstance = {
+      driver,
+      enabled: true,
+      config: { homePath: "/Users/example/.copilot" },
+    } satisfies ProviderInstanceConfig;
+
+    expect(isMigratedLegacyCopilotDefault({ driver, instanceId })).toBe(true);
+    expect(
+      isMigratedLegacyCopilotDefault({
+        driver: ProviderDriverKind.make("copilot"),
+        instanceId,
+      }),
+    ).toBe(true);
+    const patch = buildProviderInstanceUpdatePatch({
+      settings: DEFAULT_SERVER_SETTINGS,
+      instanceId,
+      instance: nextInstance,
+      driver,
       isDefault: false,
     });
 
