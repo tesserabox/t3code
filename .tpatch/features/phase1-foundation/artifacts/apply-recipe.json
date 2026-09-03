@@ -1,0 +1,25 @@
+{
+  "feature": "phase1-foundation",
+  "operations": [
+    {
+      "type": "ensure-directory",
+      "path": "apps/server/src/tws/"
+    },
+    {
+      "type": "ensure-directory",
+      "path": "apps/server/src/persistence/Migrations/"
+    },
+    {
+      "type": "ensure-directory",
+      "path": "apps/server/src/persistence/Services/"
+    },
+    {
+      "type": "ensure-directory",
+      "path": "apps/server/src/persistence/Layers/"
+    },
+    {
+      "type": "ensure-directory",
+      "path": "packages/contracts/src/"
+    }
+  ]
+}
