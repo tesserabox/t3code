@@ -2,12 +2,22 @@
   "id": "tws-readonly-cli-adapter",
   "slug": "tws-readonly-cli-adapter",
   "title": "Add a version-pinned, read-only TWS v1.2.14 CLI adapter. Use ProcessRunner with direct arguments and bounded output; consume only public version, registry list/check, status --json, and stack status --json surfaces; reject nonzero exits, invalid JSON, missing required keys, and unsupported schema versions; preserve additive fields and raw unknown enum values while deriving safe unknown/attention observations. Do not parse .tws internals, mutate TWS, persist product bindings, expose UI, or infer provider state from TWS agent_state.",
-  "state": "implementing",
+  "state": "applied",
   "compatibility": "unknown",
   "requested_at": "2026-09-03T08:55:59Z",
-  "updated_at": "2026-09-03T08:58:05Z",
-  "last_command": "apply --mode started",
-  "notes": "Implementation in progress",
-  "apply": {},
-  "reconcile": {}
+  "updated_at": "2026-09-03T09:12:46Z",
+  "last_command": "verify",
+  "notes": "landed at 2026-09-03T09:13:03Z",
+  "apply": {
+    "completed_at": "2026-09-03T09:12:05Z",
+    "base_commit": "9b737465b514bc0f879f0dcb6dbd1e707f81dff3",
+    "has_patch": true
+  },
+  "reconcile": {},
+  "verify": {
+    "verified_at": "2026-09-03T09:12:44Z",
+    "passed": true,
+    "recipe_hash_at_verify": "4bfa4b96fed5cd2cca4ca6e0262a85b58d991986fef7e00113ee016a854d8ec5",
+    "patch_hash_at_verify": "e0aec536d901c1c604647ad10144b4da0e4d6b24df67ae4979cf47a165429cfa"
+  }
 }
