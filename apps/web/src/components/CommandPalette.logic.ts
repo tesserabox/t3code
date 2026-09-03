@@ -79,6 +79,41 @@ export function reduceCommandPaletteUiState(
   }
 }
 
+export interface CommandPaletteCloseCoordinator {
+  readonly deferUntilClosed: (action: () => void) => void;
+  readonly takeDeferredAction: () => (() => void) | null;
+  readonly consumeShouldRestoreFocus: () => boolean;
+  readonly reset: () => void;
+}
+
+export function createCommandPaletteCloseCoordinator(): CommandPaletteCloseCoordinator {
+  let deferredAction: (() => void) | null = null;
+  let suppressNextFocusRestore = false;
+
+  return {
+    deferUntilClosed: (action) => {
+      deferredAction = action;
+      suppressNextFocusRestore = true;
+    },
+    takeDeferredAction: () => {
+      const action = deferredAction;
+      deferredAction = null;
+      return action;
+    },
+    consumeShouldRestoreFocus: () => {
+      if (!suppressNextFocusRestore) {
+        return true;
+      }
+      suppressNextFocusRestore = false;
+      return false;
+    },
+    reset: () => {
+      deferredAction = null;
+      suppressNextFocusRestore = false;
+    },
+  };
+}
+
 export interface CommandPaletteThreadContentMatch {
   readonly source: "user" | "assistant";
   readonly snippet: string;
@@ -105,6 +140,7 @@ export interface CommandPaletteItem {
 export interface CommandPaletteActionItem extends CommandPaletteItem {
   readonly kind: "action";
   readonly keepOpen?: boolean;
+  readonly deferRunUntilClosed?: boolean;
   readonly run: () => Promise<void>;
 }
 

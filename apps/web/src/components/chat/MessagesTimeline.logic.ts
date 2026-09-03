@@ -1,17 +1,18 @@
 import * as Equal from "effect/Equal";
 import { renderCodexDirectivesForCopy } from "@t3tools/client-runtime/codex-markdown-directives";
 import {
+  normalizeCompactToolLabel,
   omitSupersededLifecycleMarkers,
   summarizeToolGroup,
   toolGroupSummaryKind,
   type ToolGroupSummaryKind,
 } from "@t3tools/client-runtime/work-log/presentation";
 export {
-  normalizeCompactToolLabel,
   summarizeToolGroup,
   toolGroupAction,
   workLogEntryIsLocalCodeSearch,
 } from "@t3tools/client-runtime/work-log/presentation";
+export { normalizeCompactToolLabel };
 import {
   formatDuration,
   workEntryDisplayIndicatesToolFailure,
@@ -21,6 +22,7 @@ import {
   type WorkLogEntry,
 } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
+import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import { type MessageId, type OrchestrationLatestTurn, type TurnId } from "@t3tools/contracts";
 
 export const TIMELINE_MINIMAP_ITEM_SPACING = 8;
@@ -39,6 +41,30 @@ export function workEntryIsVisibleInGroup(
         entry.sourceActivityKind === "task.progress")) ||
     !workEntryIndicatesToolNeutralStatus(entry)
   );
+}
+
+function capitalizePhrase(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return value;
+  }
+  return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
+}
+
+export function workEntryDisplayText(
+  entry: Pick<WorkLogEntry, "changedFiles" | "command" | "detail" | "label" | "toolTitle">,
+  workspaceRoot: string | undefined,
+): string {
+  if (entry.command) return entry.command;
+  if (entry.detail) return entry.detail;
+  const [firstPath] = entry.changedFiles ?? [];
+  if (firstPath) {
+    const displayPath = formatWorkspaceRelativePath(firstPath, workspaceRoot);
+    return (entry.changedFiles?.length ?? 0) === 1
+      ? displayPath
+      : `${displayPath} +${(entry.changedFiles?.length ?? 1) - 1} more`;
+  }
+  return capitalizePhrase(normalizeCompactToolLabel(entry.toolTitle ?? entry.label));
 }
 
 export interface TimelineEndState {
@@ -348,7 +374,7 @@ interface TurnFold {
  * user sends a message, the previous turn is still the "active" one until the
  * server creates the new turn, and folding must not flicker through that window.
  */
-function deriveUnsettledTurnId(
+export function deriveUnsettledTurnId(
   latestTurn: TimelineLatestTurn | null,
   runningTurnId: TurnId | null,
 ): TurnId | null {
@@ -360,6 +386,30 @@ function deriveUnsettledTurnId(
   }
   const isSettled = latestTurn.completedAt !== null && latestTurn.state !== "running";
   return isSettled ? null : latestTurn.turnId;
+}
+
+export interface TimelineWorkVisibilityContext {
+  readonly isWorking: boolean;
+  readonly unsettledTurnId: TurnId | null;
+}
+
+export function workEntryIsInActiveTimelineRun(
+  entry: WorkLogEntry,
+  context: TimelineWorkVisibilityContext,
+): boolean {
+  return (
+    context.isWorking &&
+    context.unsettledTurnId !== null &&
+    entry.toolLifecycleStatus === "inProgress" &&
+    entry.turnId === context.unsettledTurnId
+  );
+}
+
+export function workEntryIsVisibleInTimelineGroup(
+  entry: WorkLogEntry,
+  context: TimelineWorkVisibilityContext,
+): boolean {
+  return workEntryIsVisibleInGroup(entry, workEntryIsInActiveTimelineRun(entry, context));
 }
 
 function lastUserMessageIndex(timelineEntries: ReadonlyArray<TimelineEntry>): number {
@@ -376,6 +426,51 @@ function timelineEntryTurnId(entry: TimelineEntry): TurnId | null {
     return entry.proposedPlan.turnId;
   }
   return entry.kind === "work" ? (entry.entry.turnId ?? null) : null;
+}
+
+export interface ActiveTimelineWorkState {
+  readonly activeTurnHeaderIndex: number;
+  readonly entries: ReadonlyArray<Extract<TimelineEntry, { kind: "work" }>>;
+}
+
+export function deriveActiveTimelineWorkState(
+  timelineEntries: ReadonlyArray<TimelineEntry>,
+  context: TimelineWorkVisibilityContext,
+): ActiveTimelineWorkState {
+  let activeTurnHeaderIndex = timelineEntries.length;
+  if (context.isWorking) {
+    const latestUserMessageIndex = lastUserMessageIndex(timelineEntries);
+    const firstOwnedAfterUser =
+      context.unsettledTurnId === null
+        ? -1
+        : timelineEntries.findIndex(
+            (entry, index) =>
+              index > latestUserMessageIndex &&
+              timelineEntryTurnId(entry) === context.unsettledTurnId,
+          );
+    activeTurnHeaderIndex =
+      firstOwnedAfterUser >= 0 ? firstOwnedAfterUser : latestUserMessageIndex + 1;
+  }
+
+  const entryBelongsToActiveTurn = (entry: TimelineEntry, index: number) =>
+    context.isWorking &&
+    index >= activeTurnHeaderIndex &&
+    (context.unsettledTurnId === null || timelineEntryTurnId(entry) === context.unsettledTurnId);
+  const entries: Array<Extract<TimelineEntry, { kind: "work" }>> = [];
+  for (let index = timelineEntries.length - 1; index >= activeTurnHeaderIndex; index -= 1) {
+    const entry = timelineEntries[index]!;
+    if (
+      !entryBelongsToActiveTurn(entry, index) ||
+      entry.kind !== "work" ||
+      entry.entry.agentSpawn !== undefined ||
+      entry.entry.tone === "error"
+    ) {
+      break;
+    }
+    entries.unshift(entry);
+  }
+
+  return { activeTurnHeaderIndex, entries };
 }
 
 function workEntryIsActiveTurnActivity(entry: WorkLogEntry): boolean {
@@ -525,6 +620,7 @@ export function deriveMessagesTimelineRows(input: {
   runningTurnId?: TurnId | null;
   expandedTurnIds?: ReadonlySet<TurnId>;
   expandedWorkGroupIds?: ReadonlySet<string>;
+  revealedEntryId?: string | null;
   isWorking: boolean;
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
@@ -545,50 +641,29 @@ export function deriveMessagesTimelineRows(input: {
     latestTurn: input.latestTurn ?? null,
     unsettledTurnId,
   });
+  const revealedEntryId = input.revealedEntryId ?? null;
+  const turnFoldIsExpanded = (fold: TurnFold) =>
+    input.expandedTurnIds?.has(fold.turnId) === true ||
+    (revealedEntryId !== null && fold.hiddenEntryIds.has(revealedEntryId));
   const collapsedEntryIds = new Set<string>();
   for (const fold of foldsByAnchorEntryId.values()) {
-    if (!input.expandedTurnIds?.has(fold.turnId)) {
+    if (!turnFoldIsExpanded(fold)) {
       for (const entryId of fold.hiddenEntryIds) {
         collapsedEntryIds.add(entryId);
       }
     }
   }
 
-  let activeTurnHeaderIndex = input.timelineEntries.length;
-  if (input.isWorking) {
-    const latestUserMessageIndex = lastUserMessageIndex(input.timelineEntries);
-    const firstOwnedAfterUser =
-      unsettledTurnId === null
-        ? -1
-        : input.timelineEntries.findIndex(
-            (entry, index) =>
-              index > latestUserMessageIndex && timelineEntryTurnId(entry) === unsettledTurnId,
-          );
-    activeTurnHeaderIndex =
-      firstOwnedAfterUser >= 0 ? firstOwnedAfterUser : latestUserMessageIndex + 1;
-  }
-  const entryBelongsToActiveTurn = (entry: TimelineEntry, index: number) =>
-    input.isWorking &&
-    index >= activeTurnHeaderIndex &&
-    (unsettledTurnId === null || timelineEntryTurnId(entry) === unsettledTurnId);
-  const workEntryIsInActiveRun = (entry: WorkLogEntry) =>
-    input.isWorking &&
-    unsettledTurnId !== null &&
-    entry.toolLifecycleStatus === "inProgress" &&
-    entry.turnId === unsettledTurnId;
-  const activeToolEntries: Array<Extract<TimelineEntry, { kind: "work" }>> = [];
-  for (let index = input.timelineEntries.length - 1; index >= activeTurnHeaderIndex; index -= 1) {
-    const entry = input.timelineEntries[index]!;
-    if (
-      !entryBelongsToActiveTurn(entry, index) ||
-      entry.kind !== "work" ||
-      entry.entry.agentSpawn !== undefined ||
-      entry.entry.tone === "error"
-    ) {
-      break;
-    }
-    activeToolEntries.unshift(entry);
-  }
+  const workVisibilityContext = {
+    isWorking: input.isWorking,
+    unsettledTurnId,
+  } satisfies TimelineWorkVisibilityContext;
+  const entryIsInActiveRun = (entry: WorkLogEntry) =>
+    workEntryIsInActiveTimelineRun(entry, workVisibilityContext);
+  const { activeTurnHeaderIndex, entries: activeToolEntries } = deriveActiveTimelineWorkState(
+    input.timelineEntries,
+    workVisibilityContext,
+  );
   const visibleActiveToolEntries = omitSupersededLifecycleMarkers(
     activeToolEntries.filter((entry) => workEntryIsVisibleInGroup(entry.entry, true)),
     (entry) => entry.entry,
@@ -611,7 +686,10 @@ export function deriveMessagesTimelineRows(input: {
             entry: displayedToolEntry.entry,
             groupedEntries: visibleActiveToolEntries.map((entry) => entry.entry),
             groupId,
-            expanded: input.expandedWorkGroupIds?.has(groupId) ?? false,
+            expanded:
+              input.expandedWorkGroupIds?.has(groupId) === true ||
+              (revealedEntryId !== null &&
+                visibleActiveToolEntries.some((entry) => entry.id === revealedEntryId)),
             active: latestRunningToolEntry !== undefined,
           };
         })()
@@ -666,7 +744,7 @@ export function deriveMessagesTimelineRows(input: {
         createdAt: anchoredTurnFold.createdAt,
         turnId: anchoredTurnFold.turnId,
         label: anchoredTurnFold.label,
-        expanded: input.expandedTurnIds?.has(anchoredTurnFold.turnId) ?? false,
+        expanded: turnFoldIsExpanded(anchoredTurnFold),
       });
     }
 
@@ -710,15 +788,18 @@ export function deriveMessagesTimelineRows(input: {
       }
       const visibleGroupedEntries = omitSupersededLifecycleMarkers(
         groupedEntries.filter((entry) =>
-          workEntryIsVisibleInGroup(entry, workEntryIsInActiveRun(entry)),
+          workEntryIsVisibleInTimelineGroup(entry, workVisibilityContext),
         ),
         (entry) => entry,
       );
       if (visibleGroupedEntries.length > 0) {
-        const activeInProgressToolEntries = visibleGroupedEntries.filter(workEntryIsInActiveRun);
+        const activeInProgressToolEntries = visibleGroupedEntries.filter(entryIsInActiveRun);
         if (activeInProgressToolEntries.length > 0) {
           const groupId = workGroupId(timelineEntry.id, timelineEntry.entry);
-          const expanded = input.expandedWorkGroupIds?.has(groupId) ?? false;
+          const expanded =
+            input.expandedWorkGroupIds?.has(groupId) === true ||
+            (revealedEntryId !== null &&
+              visibleGroupedEntries.some((entry) => entry.id === revealedEntryId));
           const latestActiveToolEntry = activeInProgressToolEntries.at(-1)!;
           nextRows.push({
             kind: "work-live",
@@ -745,7 +826,10 @@ export function deriveMessagesTimelineRows(input: {
           }
         } else {
           const groupId = workGroupId(timelineEntry.id, timelineEntry.entry);
-          const expanded = input.expandedWorkGroupIds?.has(groupId) ?? false;
+          const expanded =
+            input.expandedWorkGroupIds?.has(groupId) === true ||
+            (revealedEntryId !== null &&
+              visibleGroupedEntries.some((entry) => entry.id === revealedEntryId));
           const summaryKind = toolGroupSummaryKind(visibleGroupedEntries);
           const latestToolEntry = visibleGroupedEntries.findLast(workLogEntryIsToolLike);
           nextRows.push({
@@ -841,6 +925,39 @@ export function deriveMessagesTimelineRows(input: {
   }
 
   return nextRows;
+}
+
+export function messagesTimelineRowContainsEntry(
+  row: MessagesTimelineRow,
+  entryId: string,
+): boolean {
+  switch (row.kind) {
+    case "message":
+    case "proposed-plan":
+      return row.id === entryId;
+    case "work":
+      return row.groupedEntries.some((entry) => entry.id === entryId);
+    case "work-live":
+      return !row.expanded && row.groupedEntries.some((entry) => entry.id === entryId);
+    case "work-toggle":
+    case "turn-fold":
+    case "working":
+    case "thinking":
+      return false;
+  }
+}
+
+export function findMessagesTimelineRowIndex(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  entryId: string,
+): number {
+  const directIndex = rows.findIndex((row) => messagesTimelineRowContainsEntry(row, entryId));
+  if (directIndex >= 0) {
+    return directIndex;
+  }
+  return rows.findIndex(
+    (row) => row.kind === "work-live" && row.groupedEntries.some((entry) => entry.id === entryId),
+  );
 }
 
 export function computeStableMessagesTimelineRows(

@@ -33,6 +33,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   type KeyboardEvent,
@@ -96,7 +97,8 @@ import { MessageCopyButton } from "./MessageCopyButton";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
-  normalizeCompactToolLabel,
+  findMessagesTimelineRowIndex,
+  messagesTimelineRowContainsEntry,
   resolveAssistantMessageCopyState,
   resolveTimelineIsAtEnd,
   resolveTimelineMinimapHasPersistentGutter,
@@ -107,12 +109,22 @@ import {
   resolveTimelineMinimapTopPercent,
   shouldPreserveAssistantLineBreaks,
   toolGroupAction,
+  workEntryDisplayText,
   workEntryIsVisibleInGroup,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
   TIMELINE_MINIMAP_MIN_ITEMS,
   type TimelineLatestTurn,
 } from "./MessagesTimeline.logic";
+import {
+  deriveSessionSearchMatches,
+  INITIAL_SESSION_SEARCH_STATE,
+  navigateSessionSearchMatch,
+  reduceSessionSearchState,
+  resolveSessionSearchMatchIndex,
+} from "./sessionSearch";
+import { SessionSearchBar } from "./SessionSearchBar";
+import { onOpenSessionSearch } from "../../sessionSearchBus";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
@@ -172,6 +184,7 @@ interface TimelineRowSharedState {
   onToggleWorkGroup: (groupId: string, anchorKey: string) => void;
   agentPanelModel: AgentPanelModel;
   onOpenAgents: () => void;
+  activeSearchEntryId: string | null;
 }
 
 interface TimelineRowActivityState {
@@ -313,6 +326,69 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   topFadeEnabled = false,
   loadEarlier = null,
 }: MessagesTimelineProps) {
+  const [sessionSearchState, dispatchSessionSearch] = useReducer(
+    reduceSessionSearchState,
+    INITIAL_SESSION_SEARCH_STATE,
+  );
+  const previousRouteThreadKeyRef = useRef(routeThreadKey);
+  useEffect(() => {
+    if (previousRouteThreadKeyRef.current === routeThreadKey) {
+      return;
+    }
+    previousRouteThreadKeyRef.current = routeThreadKey;
+    dispatchSessionSearch({ type: "thread-changed" });
+  }, [routeThreadKey]);
+  useEffect(
+    () =>
+      onOpenSessionSearch(() => {
+        dispatchSessionSearch({ type: "open" });
+      }),
+    [],
+  );
+  const closeSessionSearch = useCallback(() => {
+    dispatchSessionSearch({ type: "close" });
+  }, []);
+  const sessionSearchMatches = useMemo(
+    () =>
+      sessionSearchState.open
+        ? deriveSessionSearchMatches(timelineEntries, sessionSearchState.query, {
+            isWorking,
+            latestTurn,
+            runningTurnId,
+            workspaceRoot,
+          })
+        : [],
+    [
+      isWorking,
+      latestTurn,
+      runningTurnId,
+      sessionSearchState.open,
+      sessionSearchState.query,
+      timelineEntries,
+      workspaceRoot,
+    ],
+  );
+  const activeSessionSearchMatchIndex = resolveSessionSearchMatchIndex(
+    sessionSearchMatches,
+    sessionSearchState.activeMatchKey,
+  );
+  const activeSearchMatch =
+    activeSessionSearchMatchIndex < 0
+      ? null
+      : (sessionSearchMatches[activeSessionSearchMatchIndex] ?? null);
+  const navigateSessionSearch = useCallback(
+    (direction: "next" | "previous") => {
+      const match = navigateSessionSearchMatch(
+        sessionSearchMatches,
+        sessionSearchState.activeMatchKey,
+        direction,
+      );
+      if (match) {
+        dispatchSessionSearch({ type: "select-match", matchKey: match.key });
+      }
+    },
+    [sessionSearchMatches, sessionSearchState.activeMatchKey],
+  );
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
   const [disclosureToggleSettling, setDisclosureToggleSettling] = useState(false);
@@ -444,6 +520,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         runningTurnId,
         expandedTurnIds,
         expandedWorkGroupIds,
+        revealedEntryId: activeSearchMatch?.entryId ?? null,
         isWorking,
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
@@ -455,6 +532,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       runningTurnId,
       expandedTurnIds,
       expandedWorkGroupIds,
+      activeSearchMatch?.entryId,
       isWorking,
       activeTurnStartedAt,
       turnDiffSummaryByAssistantMessageId,
@@ -462,6 +540,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
+  const activeSearchRowIndex = useMemo(
+    () =>
+      activeSearchMatch === null
+        ? -1
+        : findMessagesTimelineRowIndex(rows, activeSearchMatch.entryId),
+    [activeSearchMatch, rows],
+  );
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
   const [timelineViewportElement, setTimelineViewportElement] = useState<HTMLDivElement | null>(
     null,
@@ -522,6 +607,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [handleScroll, rows.length]);
 
   useEffect(() => {
+    if (activeSearchMatch === null || activeSearchRowIndex < 0) {
+      return;
+    }
+    onManualNavigation();
+    const frame = requestAnimationFrame(() => {
+      void listRef.current?.scrollToIndex({
+        index: activeSearchRowIndex,
+        animated: false,
+        viewOffset: 64,
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeSearchMatch?.key, activeSearchRowIndex, listRef, onManualNavigation]);
+
+  useEffect(() => {
     if (!timelineViewportElement) {
       return;
     }
@@ -566,6 +666,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onToggleWorkGroup,
       agentPanelModel,
       onOpenAgents,
+      activeSearchEntryId: activeSearchMatch?.entryId ?? null,
     }),
     [
       timestampFormat,
@@ -585,6 +686,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onToggleWorkGroup,
       agentPanelModel,
       onOpenAgents,
+      activeSearchMatch?.entryId,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -608,7 +710,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [],
   );
 
-  if (rows.length === 0 && !isWorking) {
+  if (rows.length === 0 && !isWorking && !sessionSearchState.open) {
     if (hideEmptyPlaceholder) {
       return null;
     }
@@ -623,6 +725,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     <TimelineRowCtx value={sharedState}>
       <TimelineRowActivityCtx value={activityState}>
         <div ref={setTimelineViewportElement} className="relative h-full min-h-0">
+          {sessionSearchState.open ? (
+            <SessionSearchBar
+              query={sessionSearchState.query}
+              onQueryChange={(query) => {
+                dispatchSessionSearch({ type: "query-changed", query });
+              }}
+              matchCount={sessionSearchMatches.length}
+              currentMatchIndex={activeSessionSearchMatchIndex}
+              focusRequestId={sessionSearchState.focusRequestId}
+              onNext={() => navigateSessionSearch("next")}
+              onPrevious={() => navigateSessionSearch("previous")}
+              onClose={closeSessionSearch}
+              hasUnloadedHistory={loadEarlier !== null}
+              loadingEarlierHistory={loadEarlier?.loading ?? false}
+              onLoadEarlierHistory={loadEarlier?.onLoadEarlier}
+            />
+          ) : null}
           <LegendList<MessagesTimelineRow>
             ref={listRef}
             data={rows}
@@ -634,7 +753,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
             contentInsetEndAdjustment={contentInsetEndAdjustment}
             maintainScrollAtEnd={
-              anchoredEndSpace || !liveFollowEnabled || disclosureToggleSettling
+              anchoredEndSpace ||
+              !liveFollowEnabled ||
+              disclosureToggleSettling ||
+              activeSearchMatch !== null
                 ? false
                 : TIMELINE_MAINTAIN_SCROLL_AT_END
             }
@@ -969,10 +1091,13 @@ type TimelineWorkEntry = Extract<MessagesTimelineRow, { kind: "work" }>["grouped
 type TimelineRow = MessagesTimelineRow;
 
 const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: TimelineRow }) {
+  const { activeSearchEntryId } = use(TimelineRowCtx);
   const isExpandedToolGroupEntry = row.kind === "work" && row.isExpandedToolGroupEntry;
   const isLastExpandedToolGroupEntry = row.kind === "work" && row.isLastExpandedToolGroupEntry;
   const isExpandedToolGroupHeader =
     (row.kind === "work-toggle" && row.expanded) || (row.kind === "work-live" && row.expanded);
+  const isActiveSearchRow =
+    activeSearchEntryId !== null && messagesTimelineRowContainsEntry(row, activeSearchEntryId);
 
   return (
     <div
@@ -996,7 +1121,11 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
                 ? "pb-2"
                 : "pb-4",
         row.kind === "message" && row.message.role === "assistant" ? "group/assistant" : null,
+        isActiveSearchRow &&
+          "rounded-md bg-warning/8 ring-2 ring-warning/50 ring-offset-2 ring-offset-background",
       )}
+      aria-current={isActiveSearchRow ? "true" : undefined}
+      data-session-search-active={isActiveSearchRow ? "true" : undefined}
       data-timeline-row-id={row.id}
       data-timeline-row-kind={row.kind}
       data-message-id={row.kind === "message" ? row.message.id : undefined}
@@ -1184,6 +1313,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           terminalContexts={terminalContexts}
           skills={ctx.skills}
           markdownCwd={ctx.markdownCwd}
+          forceExpanded={ctx.activeSearchEntryId === row.id}
         />
       </div>
       <div className="flex w-full max-w-[80%] items-center justify-end pe-1 text-xs tabular-nums opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
@@ -1327,6 +1457,7 @@ function ProposedPlanTimelineRow({
         threadRef={ctx.threadRef ?? undefined}
         cwd={ctx.markdownCwd}
         workspaceRoot={ctx.workspaceRoot}
+        forceExpanded={ctx.activeSearchEntryId === row.id}
       />
     </div>
   );
@@ -1784,12 +1915,14 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   terminalContexts: ParsedTerminalContextEntry[];
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   markdownCwd: string | undefined;
+  forceExpanded?: boolean;
   footer?: ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
   const hasVisibleBody = props.text.trim().length > 0 || props.terminalContexts.length > 0;
   const canCollapse = hasVisibleBody && shouldCollapseUserMessage(props.text);
-  const isCollapsed = canCollapse && !expanded;
+  const isExpanded = expanded || props.forceExpanded === true;
+  const isCollapsed = canCollapse && !isExpanded;
 
   return (
     <div>
@@ -1825,17 +1958,17 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
           )}
           data-user-message-footer="true"
         >
-          {canCollapse ? (
+          {canCollapse && !props.forceExpanded ? (
             <Button
               type="button"
               size="xs"
               variant="ghost"
-              aria-expanded={expanded}
+              aria-expanded={isExpanded}
               data-scroll-anchor-ignore
               onClick={() => setExpanded((value) => !value)}
               className="-ml-1 h-6 rounded-md px-1.5 text-secondary-label text-xs hover:bg-muted/55 hover:text-message-foreground"
             >
-              {expanded ? "Show less" : "Show full message"}
+              {isExpanded ? "Show less" : "Show full message"}
             </Button>
           ) : null}
           {props.footer ? (
@@ -2195,21 +2328,6 @@ function workToneIcon(tone: TimelineWorkEntry["tone"]): {
   };
 }
 
-function workEntryPreview(
-  workEntry: Pick<TimelineWorkEntry, "detail" | "command" | "changedFiles">,
-  workspaceRoot: string | undefined,
-) {
-  if (workEntry.command) return workEntry.command;
-  if (workEntry.detail) return workEntry.detail;
-  if ((workEntry.changedFiles?.length ?? 0) === 0) return null;
-  const [firstPath] = workEntry.changedFiles ?? [];
-  if (!firstPath) return null;
-  const displayPath = formatWorkspaceRelativePath(firstPath, workspaceRoot);
-  return workEntry.changedFiles!.length === 1
-    ? displayPath
-    : `${displayPath} +${workEntry.changedFiles!.length - 1} more`;
-}
-
 function workEntryRawCommand(
   workEntry: Pick<TimelineWorkEntry, "command" | "rawCommand">,
 ): string | null {
@@ -2237,7 +2355,7 @@ function liveWorkEntryLabel(
     return `${verb} command`;
   }
 
-  return workEntryPreview(workEntry, workspaceRoot) ?? toolWorkEntryHeading(workEntry);
+  return workEntryDisplayText(workEntry, workspaceRoot);
 }
 
 function buildToolCallExpandedBody(
@@ -2296,21 +2414,6 @@ function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
   }
 
   return workToneIcon(workEntry.tone).iconName;
-}
-
-function capitalizePhrase(value: string): string {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) {
-    return value;
-  }
-  return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
-}
-
-function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
-  if (!workEntry.toolTitle) {
-    return capitalizePhrase(normalizeCompactToolLabel(workEntry.label));
-  }
-  return capitalizePhrase(normalizeCompactToolLabel(workEntry.toolTitle));
 }
 
 const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation();
@@ -2441,7 +2544,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
   const showFailedIndicator = workEntryDisplayIndicatesToolFailure(workEntry);
   const entryIconName =
     showWarningIndicator || showFailedIndicator ? "circle-alert" : workEntryIconName(workEntry);
-  const displayText = workEntryPreview(workEntry, workspaceRoot) ?? toolWorkEntryHeading(workEntry);
+  const displayText = workEntryDisplayText(workEntry, workspaceRoot);
   const expandedBody = buildToolCallExpandedBody(workEntry, workspaceRoot);
   const viewedImagePath = workEntryViewedImagePath(workEntry);
   const viewedImage =

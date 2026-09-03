@@ -5,6 +5,7 @@ import {
   browseInputEndPaddingClass,
   buildBrowseGroups,
   buildThreadActionItems,
+  createCommandPaletteCloseCoordinator,
   enumerateCommandPaletteItems,
   filterPinnedBrowseEntries,
   filterCommandPaletteGroups,
@@ -110,6 +111,36 @@ describe("reduceCommandPaletteUiState", () => {
       mode: "command",
       openIntent: null,
     });
+  });
+});
+
+describe("createCommandPaletteCloseCoordinator", () => {
+  it("runs deferred work after close and suppresses composer focus in either callback order", () => {
+    const closeCompleteFirst = createCommandPaletteCloseCoordinator();
+    const firstAction = vi.fn();
+    closeCompleteFirst.deferUntilClosed(firstAction);
+    closeCompleteFirst.takeDeferredAction()?.();
+    expect(closeCompleteFirst.consumeShouldRestoreFocus()).toBe(false);
+    expect(firstAction).toHaveBeenCalledOnce();
+    expect(closeCompleteFirst.consumeShouldRestoreFocus()).toBe(true);
+
+    const finalFocusFirst = createCommandPaletteCloseCoordinator();
+    const secondAction = vi.fn();
+    finalFocusFirst.deferUntilClosed(secondAction);
+    expect(finalFocusFirst.consumeShouldRestoreFocus()).toBe(false);
+    finalFocusFirst.takeDeferredAction()?.();
+    expect(secondAction).toHaveBeenCalledOnce();
+  });
+
+  it("resets an abandoned deferred action before the next open cycle", () => {
+    const coordinator = createCommandPaletteCloseCoordinator();
+    const action = vi.fn();
+    coordinator.deferUntilClosed(action);
+    coordinator.reset();
+
+    expect(coordinator.takeDeferredAction()).toBeNull();
+    expect(coordinator.consumeShouldRestoreFocus()).toBe(true);
+    expect(action).not.toHaveBeenCalled();
   });
 });
 

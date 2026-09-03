@@ -4,10 +4,194 @@ import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
+  findMessagesTimelineRowIndex,
+  messagesTimelineRowContainsEntry,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   shouldPreserveAssistantLineBreaks,
 } from "./MessagesTimeline.logic";
+
+const SEARCH_REVEAL_BASE_INPUT = {
+  isWorking: false,
+  activeTurnStartedAt: null,
+  turnDiffSummaryByAssistantMessageId: new Map(),
+  revertTurnCountByUserMessageId: new Map(),
+};
+
+describe("search result reveal", () => {
+  it("expands only the settled turn containing the active result", () => {
+    const timelineEntries = [
+      {
+        id: "user-1",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:00Z",
+        message: {
+          id: "user-1" as never,
+          role: "user" as const,
+          text: "First request",
+          turnId: null,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "assistant-one",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:01Z",
+        message: {
+          id: "assistant-one" as never,
+          role: "assistant" as const,
+          text: "Hidden first result",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:01Z",
+          updatedAt: "2026-01-01T00:00:02Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "assistant-one-final",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:03Z",
+        message: {
+          id: "assistant-one-final" as never,
+          role: "assistant" as const,
+          text: "First final",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:03Z",
+          updatedAt: "2026-01-01T00:00:04Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "user-2",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:05Z",
+        message: {
+          id: "user-2" as never,
+          role: "user" as const,
+          text: "Second request",
+          turnId: null,
+          createdAt: "2026-01-01T00:00:05Z",
+          updatedAt: "2026-01-01T00:00:05Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "assistant-two",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:06Z",
+        message: {
+          id: "assistant-two" as never,
+          role: "assistant" as const,
+          text: "Hidden second result",
+          turnId: "turn-2" as never,
+          createdAt: "2026-01-01T00:00:06Z",
+          updatedAt: "2026-01-01T00:00:07Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "assistant-two-final",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:08Z",
+        message: {
+          id: "assistant-two-final" as never,
+          role: "assistant" as const,
+          text: "Second final",
+          turnId: "turn-2" as never,
+          createdAt: "2026-01-01T00:00:08Z",
+          updatedAt: "2026-01-01T00:00:09Z",
+          streaming: false,
+        },
+      },
+    ];
+
+    const rows = deriveMessagesTimelineRows({
+      ...SEARCH_REVEAL_BASE_INPUT,
+      timelineEntries,
+      revealedEntryId: "assistant-one",
+    });
+
+    expect(
+      rows
+        .filter((row) => row.kind === "turn-fold")
+        .map((row) => ({ turnId: row.turnId, expanded: row.expanded })),
+    ).toEqual([
+      { turnId: "turn-1", expanded: true },
+      { turnId: "turn-2", expanded: false },
+    ]);
+    expect(rows[findMessagesTimelineRowIndex(rows, "assistant-one")]?.id).toBe("assistant-one");
+    expect(
+      messagesTimelineRowContainsEntry(
+        rows[findMessagesTimelineRowIndex(rows, "assistant-one")]!,
+        "assistant-one",
+      ),
+    ).toBe(true);
+    expect(findMessagesTimelineRowIndex(rows, "assistant-two")).toBe(-1);
+  });
+
+  it("expands only the work group containing the active result", () => {
+    const work = (id: string, createdAt: string) => ({
+      id,
+      kind: "work" as const,
+      createdAt,
+      entry: {
+        id,
+        createdAt,
+        label: `Activity ${id}`,
+        tone: "tool" as const,
+      },
+    });
+    const separator = {
+      id: "user-separator",
+      kind: "message" as const,
+      createdAt: "2026-01-01T00:00:03Z",
+      message: {
+        id: "user-separator" as never,
+        role: "user" as const,
+        text: "Separate groups",
+        turnId: null,
+        createdAt: "2026-01-01T00:00:03Z",
+        updatedAt: "2026-01-01T00:00:03Z",
+        streaming: false,
+      },
+    };
+    const rows = deriveMessagesTimelineRows({
+      ...SEARCH_REVEAL_BASE_INPUT,
+      timelineEntries: [
+        work("work-1", "2026-01-01T00:00:01Z"),
+        work("work-2", "2026-01-01T00:00:02Z"),
+        separator,
+        work("work-3", "2026-01-01T00:00:04Z"),
+        work("work-4", "2026-01-01T00:00:05Z"),
+      ],
+      revealedEntryId: "work-2",
+    });
+
+    expect(rows.map((row) => row.id)).toEqual([
+      "work-toggle:work-1",
+      "work-1",
+      "work-2",
+      "user-separator",
+      "work-toggle:work-3",
+    ]);
+    expect(rows.find((row) => row.id === "work-toggle:work-1")).toMatchObject({
+      expanded: true,
+    });
+    expect(rows.find((row) => row.id === "work-toggle:work-3")).toMatchObject({
+      expanded: false,
+    });
+    expect(rows[findMessagesTimelineRowIndex(rows, "work-2")]?.id).toBe("work-2");
+    expect(messagesTimelineRowContainsEntry(rows[0]!, "work-2")).toBe(false);
+    expect(
+      messagesTimelineRowContainsEntry(
+        rows[findMessagesTimelineRowIndex(rows, "work-2")]!,
+        "work-2",
+      ),
+    ).toBe(true);
+  });
+});
 
 describe("shouldPreserveAssistantLineBreaks", () => {
   it("preserves Claude insight formatting without changing regular markdown", () => {
