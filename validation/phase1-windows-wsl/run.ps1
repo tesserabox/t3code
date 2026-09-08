@@ -2,7 +2,7 @@
 param(
   [string]$Repository = "https://github.com/tesseracode/t3code.git",
   [string]$SourceBranch = "phase1/foundation",
-  [string]$ExpectedSourceCommit = "1910f22c210836cde7e13e9d7fcae0819d431c2a",
+  [string]$ExpectedSourceCommit = "39295aed7a950a925791579661e79c4ff6b9072e",
   [string]$ExpectedServerVersion = "t3 v0.0.37",
   [string]$SourceRoot = "$env:USERPROFILE\src\t3code-phase1-validation-source",
   [string]$WslDistro = "Ubuntu",
@@ -16,8 +16,8 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-if ($PSVersionTable.PSVersion.Major -lt 7) {
-  throw "PowerShell 7 or newer is required. Run this script with pwsh."
+if ($PSVersionTable.PSVersion -lt [version]"7.3") {
+  throw "PowerShell 7.3 or newer is required. Run this script with pwsh."
 }
 if ($env:OS -ne "Windows_NT" -or -not [Environment]::Is64BitOperatingSystem) {
   throw "This harness requires native Windows x64."
@@ -121,13 +121,14 @@ function Invoke-Captured {
     [string]$WorkingDirectory
   )
   $previous = Get-Location
+  $stderrPath = Join-Path $logRoot ("captured-{0}.stderr.log" -f [guid]::NewGuid().ToString("N"))
   try {
     if ($WorkingDirectory) {
       Set-Location $WorkingDirectory
     }
-    $output = & $FilePath @Arguments 2>&1
+    $output = & $FilePath @Arguments 2> $stderrPath
     if ($LASTEXITCODE -ne 0) {
-      throw "'$FilePath' exited with code $LASTEXITCODE.`n$($output -join "`n")"
+      throw "'$FilePath' exited with code $LASTEXITCODE. See local stderr log: $stderrPath"
     }
     return ($output -join "`n").Trim()
   } finally {
@@ -136,7 +137,9 @@ function Invoke-Captured {
 }
 
 function Convert-ToWslPath([string]$WindowsPath) {
-  return Invoke-Captured "wsl.exe" @("-d", $WslDistro, "--", "wslpath", "-a", "-u", $WindowsPath)
+  return Invoke-Captured "wsl.exe" @(
+    "-d", $WslDistro, "--exec", "wslpath", "-a", "-u", $WindowsPath
+  )
 }
 
 function Convert-KeyValueOutput([string]$Output) {
@@ -316,34 +319,36 @@ try {
 
   $distroNames = (& wsl.exe --list --quiet) |
     ForEach-Object {
-      $_.Replace([char]0, "").Trim().TrimStart([char]0xFEFF).TrimStart([char]0xFFFD)
+      $_.Replace([string][char]0, "").Trim().TrimStart([char]0xFEFF).TrimStart([char]0xFFFD)
     } |
     Where-Object { $_ }
   if (-not ($distroNames | Where-Object { $_ -ieq $WslDistro })) {
     throw "WSL distro '$WslDistro' was not found. Available: $($distroNames -join ', ')"
   }
   $wslList = ((& wsl.exe --list --verbose) -join "`n").
-    Replace([char]0, "").
+    Replace([string][char]0, "").
     TrimStart([char]0xFEFF).
     TrimStart([char]0xFFFD)
   $escapedDistro = [Regex]::Escape($WslDistro)
   if ($wslList -notmatch "(?m)^\s*\*?\s*$escapedDistro\s+\S+\s+2\s*$") {
     throw "Distro '$WslDistro' is not WSL2.`n$wslList"
   }
-  $wslArchitecture = Invoke-Captured "wsl.exe" @("-d", $WslDistro, "--", "uname", "-m")
+  $wslArchitecture = Invoke-Captured "wsl.exe" @(
+    "-d", $WslDistro, "--exec", "uname", "-m"
+  )
   if ($wslArchitecture -ne "x86_64") {
     throw "The WSL distro must be x86_64; found '$wslArchitecture'."
   }
   Invoke-Checked "wsl.exe" @(
-    "-d", $WslDistro, "--", "bash", "-lc",
+    "-d", $WslDistro, "--exec", "bash", "-lc",
     "for tool in bash curl file flock g++ git inotifywait make python3 sha256sum tar; do command -v `"`$tool`" >/dev/null || { printf 'Missing WSL tool: %s\n' `"`$tool`" >&2; exit 3; }; done"
   )
   $wslAccountHome = Invoke-Captured "wsl.exe" @(
-    "-d", $WslDistro, "--", "bash", "-lc",
+    "-d", $WslDistro, "--exec", "bash", "-lc",
     "getent passwd `"`$(id -u)`" | cut -d: -f6"
   )
   $wslObservedHome = Invoke-Captured "wsl.exe" @(
-    "-d", $WslDistro, "--", "bash", "-lc",
+    "-d", $WslDistro, "--exec", "bash", "-lc",
     "printf '%s' `"`$HOME`""
   )
   if (-not $wslAccountHome -or $wslObservedHome -ne $wslAccountHome) {
@@ -360,9 +365,9 @@ try {
   if (-not $vsInstall.Trim()) {
     throw "MSVC x64 build tools were not found."
   }
-  $vsSpectre = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64.Spectre -property installationPath) -join "`n"
+  $vsSpectre = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre -property installationPath) -join "`n"
   if (-not $vsSpectre.Trim()) {
-    throw "Install Microsoft.VisualStudio.Component.VC.Tools.x86.x64.Spectre."
+    throw "Install Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre."
   }
 
   $summary.handoffCommit = Invoke-Captured $git @("-C", $PSScriptRoot, "rev-parse", "HEAD")
@@ -432,16 +437,24 @@ try {
 
   if (-not $SkipFocusedTests) {
     Write-Step "Running focused desktop and WSL tests"
-    Invoke-Checked $vp @(
-      "test", "run",
-      "scripts/build-desktop-artifact.test.ts",
-      "apps/desktop/src/backend/DesktopBackendConfiguration.test.ts",
-      "apps/desktop/src/backend/DesktopBackendManager.test.ts",
-      "apps/desktop/src/backend/DesktopBackendPool.test.ts",
-      "apps/desktop/src/wsl/DesktopWslBackend.test.ts",
-      "apps/desktop/src/wsl/DesktopWslEnvironment.test.ts",
-      "apps/desktop/src/wsl/DesktopWslServerTree.test.ts"
-    ) $SourceRoot
+    $summary.focusedTests = [ordered]@{ status = "running"; files = 7 }
+    Save-Summary
+    try {
+      Invoke-Checked $vp @(
+        "test", "run",
+        "scripts/build-desktop-artifact.test.ts",
+        "apps/desktop/src/backend/DesktopBackendConfiguration.test.ts",
+        "apps/desktop/src/backend/DesktopBackendManager.test.ts",
+        "apps/desktop/src/backend/DesktopBackendPool.test.ts",
+        "apps/desktop/src/wsl/DesktopWslBackend.test.ts",
+        "apps/desktop/src/wsl/DesktopWslEnvironment.test.ts",
+        "apps/desktop/src/wsl/DesktopWslServerTree.test.ts"
+      ) $SourceRoot
+    } catch {
+      $summary.focusedTests.status = "failed"
+      Save-Summary
+      throw
+    }
   }
   $summary.focusedTests = [ordered]@{
     status = if ($SkipFocusedTests) { "skipped-by-operator" } else { "passed" }
@@ -456,7 +469,7 @@ try {
   $buildWslScript = Convert-ToWslPath (Join-Path $PSScriptRoot "build-wsl-prebuild.sh")
   $prebuildWsl = Convert-ToWslPath $prebuild
   Invoke-Checked "wsl.exe" @(
-    "-d", $WslDistro, "--", "bash", $buildWslScript,
+    "-d", $WslDistro, "--exec", "bash", $buildWslScript,
     $Repository, $SourceBranch, $ExpectedSourceCommit, $prebuildWsl
   )
   if (-not (Test-Path $prebuild)) {
@@ -752,7 +765,7 @@ try {
   Write-Step "Starting packaged WSL backend"
   $wslStarted = $true
   $wslOutput = Invoke-Captured "wsl.exe" @(
-    "-d", $WslDistro, "--", "bash", $wslRuntimeScript,
+    "-d", $WslDistro, "--exec", "bash", $wslRuntimeScript,
     "start", $runId, [string]$WslPort, $wslArchivePath, $wslArchiveHash
   )
   $wslMetadata = Convert-KeyValueOutput $wslOutput
@@ -769,7 +782,9 @@ try {
   try {
     $wslHttpStatus = Wait-Http $wslUrl 30
   } catch {
-    $wslIp = (Invoke-Captured "wsl.exe" @("-d", $WslDistro, "--", "hostname", "-I")).Split(" ")[0]
+    $wslIp = (Invoke-Captured "wsl.exe" @(
+      "-d", $WslDistro, "--exec", "hostname", "-I"
+    )).Split(" ")[0]
     $wslUrl = "http://${wslIp}:$WslPort/"
     $wslHttpStatus = Wait-Http $wslUrl 30
   }
@@ -803,16 +818,16 @@ try {
   Write-Step "Verifying Windows write to Linux inotify"
   $wslProject = "$($wslMetadata.isolatedHome)/inotify-project"
   Invoke-Checked "wsl.exe" @(
-    "-d", $WslDistro, "--", "bash", "-lc",
+    "-d", $WslDistro, "--exec", "bash", "-lc",
     "mkdir -p '$wslProject'; rm -f '$wslProject/watcher-ready.txt'; printf 'before\n' > '$wslProject/watched.txt'"
   )
   $windowsProject = Invoke-Captured "wsl.exe" @(
-    "-d", $WslDistro, "--", "wslpath", "-w", "$wslProject"
+    "-d", $WslDistro, "--exec", "wslpath", "-w", "$wslProject"
   )
   $inotifyHandle = Start-CapturedProcess `
     -FilePath "wsl.exe" `
     -Arguments @(
-      "-d", $WslDistro, "--", "bash", "-lc",
+      "-d", $WslDistro, "--exec", "bash", "-lc",
       "timeout 20s bash -c `"inotifywait -m -e close_write --format '%e %w%f' '$wslProject/watched.txt' 2> >(tee '$wslProject/watcher-ready.txt' >&2) | head -n 1`""
     ) `
     -StdoutPath (Join-Path $logRoot "inotify.stdout.log") `
@@ -873,7 +888,7 @@ try {
   $summary.nativeBackend.restartPid = $nativeHandle.Process.Id
 
   $wslRestartOutput = Invoke-Captured "wsl.exe" @(
-    "-d", $WslDistro, "--", "bash", $wslRuntimeScript,
+    "-d", $WslDistro, "--exec", "bash", $wslRuntimeScript,
     "restart", $runId, [string]$WslPort, $wslArchivePath, $wslArchiveHash
   )
   $wslRestartMetadata = Convert-KeyValueOutput $wslRestartOutput
@@ -885,7 +900,7 @@ try {
   $summary.wslBackend.restartEnvironmentId = $wslRestartMetadata.environmentId
   $summary.wslBackend.restartPid = [int]$wslRestartMetadata.pid
   $wslLog = Invoke-Captured "wsl.exe" @(
-    "-d", $WslDistro, "--", "bash", "-lc",
+    "-d", $WslDistro, "--exec", "bash", "-lc",
     "cat '$($wslMetadata.logFile)'"
   )
   $summary.wslBackend.migration44Applied = $wslLog -match "44_ProjectionThreadAttentionAudit"
@@ -896,7 +911,7 @@ try {
   Save-Summary
 
   Write-Step "Verifying raw missing-distro isolation"
-  & wsl.exe -d "T3-Intentionally-Missing-Distro" -- true 2>$null
+  & wsl.exe -d "T3-Intentionally-Missing-Distro" --exec true 2>$null
   $missingDistroExit = $LASTEXITCODE
   if ($missingDistroExit -eq 0) {
     throw "The intentionally missing distro unexpectedly succeeded."
@@ -935,7 +950,7 @@ try {
   if ($wslStarted -and $wslRuntimeScript) {
     try {
       Invoke-Checked "wsl.exe" @(
-        "-d", $WslDistro, "--", "bash", $wslRuntimeScript,
+        "-d", $WslDistro, "--exec", "bash", $wslRuntimeScript,
         "stop", $runId, [string]$WslPort
       )
     } catch {

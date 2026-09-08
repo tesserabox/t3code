@@ -84,6 +84,7 @@ Packaged versions:
 | Harness-owned Windows processes stopped | NOT RUN |
 | Harness-owned WSL process stopped | NOT RUN |
 | Synthetic Copilot session deleted | NOT RUN |
+| Validation-owned WSL `.t3` and `.copilot` removed | NOT RUN |
 | Retained `%TEMP%` build stage deleted after evidence capture | NOT RUN |
 | No product-source commit/push/PR/workflow | NOT RUN |
 

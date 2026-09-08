@@ -11,7 +11,7 @@ Phase 1 foundation. It is not intended to merge into `main` or
   `7032ad0c135d451554c552daa9178783a11b5cd7` or a descendant on
   `validation/phase1-windows-wsl`
 - Source branch: `phase1/foundation`
-- Source commit: `1910f22c210836cde7e13e9d7fcae0819d431c2a`
+- Source commit: `39295aed7a950a925791579661e79c4ff6b9072e`
 - Desktop version: `0.0.37`
 - Target: Windows x64 plus an x64 Ubuntu WSL2 distro
 
@@ -25,9 +25,13 @@ validation-only files on this branch never enter the packaged app.
 - Do not copy or print Copilot credentials.
 - The Windows Copilot probe uses the current user's normal Copilot home only
   for authentication and deletes the synthetic session it creates.
-- The WSL smoke test and integrated desktop launch use a run-specific Linux
-  `HOME`. `launch-desktop.ps1` refuses to launch unless WSL proves that this
-  value crosses the Windows/WSL boundary.
+- The automated WSL smoke test uses a run-specific Linux home and explicit T3
+  base directory.
+- WSL determines `HOME` from `/etc/passwd`; Windows `HOME/u` forwarding cannot
+  override it. The integrated launcher therefore fails closed unless the
+  selected WSL account has no pre-existing `.t3` or `.copilot`. It records
+  ownership of the directories the validation may create so they can be
+  removed by exact path afterward.
 - Raw server logs remain local because logs can contain machine paths and
   runtime identifiers. Report only the sanitized summary.
 - Every process stopped by the harness was started by the harness and is
@@ -58,7 +62,7 @@ The agent should inspect these before installing anything:
 ### Windows
 
 - Windows 11 x64
-- PowerShell 7 (`pwsh`)
+- PowerShell 7.3 or newer (`pwsh`)
 - Git for Windows
 - Node.js 24.x with Corepack
 - Rustup and stable `x86_64-pc-windows-msvc`
@@ -66,6 +70,7 @@ The agent should inspect these before installing anything:
   - Desktop development with C++
   - MSVC x64 tools
   - Spectre-mitigated x64 libraries
+    (`Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre`)
 - A Windows Copilot CLI login for the current user
 
 ### WSL
@@ -84,6 +89,9 @@ sudo apt-get install -y \
 
 The helper installs Node `24.20.0` below the current WSL user's home when no
 compatible Node 24 is available. It does not use `sudo` for Node.
+
+The harness uses `wsl.exe --exec` for direct argument forwarding. This avoids
+the extra shell interpretation that `--` produced on the validated host.
 
 ## Automated validation
 
@@ -148,18 +156,23 @@ pwsh -NoLogo -NoProfile -File .\validation\phase1-windows-wsl\launch-desktop.ps1
 ```
 
 The launcher reuses the automated run's disposable Windows T3 home and
-run-specific WSL home. It also isolates Electron `APPDATA`. It prints and
-records the exact PID. The Windows process receives an explicit
+requires both `$HOME/.t3` and `$HOME/.copilot` to be absent in the selected WSL
+account before it launches. If either exists, stop and use a disposable distro
+or another WSL account rather than moving, reading, or deleting existing state.
+The launcher also isolates Electron `APPDATA`, prints and records the exact
+PID, and marks the new WSL state paths as validation-owned. The Windows process
+receives an explicit
 `COPILOT_HOME=%USERPROFILE%\.copilot`, so forwarding Linux `HOME` does not move
 the Windows Copilot credential lookup.
 
 Perform these checks:
 
 1. Open **Settings → Connections**.
-2. In **WSL backend**, select `Ubuntu`, then choose **Run both backends**.
+2. In **WSL backend**, select the same distro recorded in `run-summary.json`
+   (`Ubuntu` by default), then choose **Run both backends**.
 3. Confirm the primary Windows environment remains connected while the local
    WSL environment transitions from Connecting to connected.
-4. Create a small Git repository on Windows and one in the isolated Linux home:
+4. Create a small Git repository on Windows and one in the guarded Linux home:
 
    ```powershell
    $winProject = Join-Path $env:USERPROFILE "t3-phase1-ui-windows"
@@ -168,28 +181,24 @@ Perform these checks:
 
    $launch = Get-Content "<run-directory>\desktop-launch.json" -Raw |
      ConvertFrom-Json
-   $oldHome = $env:HOME
    $oldWslEnv = $env:WSLENV
    try {
-     $env:HOME = $launch.wslHome
      $env:WSLENV = $launch.wslEnv
-     wsl.exe -d Ubuntu -- bash -lc `
+     wsl.exe -d $launch.wslDistro --exec bash -lc `
        'mkdir -p "$HOME/t3-phase1-ui-wsl" && git -C "$HOME/t3-phase1-ui-wsl" init'
    } finally {
-     $env:HOME = $oldHome
      $env:WSLENV = $oldWslEnv
    }
    ```
 
-   Replace `<run-directory>` with the path printed by `run.ps1`.
 5. Add the Windows repository to the Windows environment and the Linux
    repository to the WSL environment.
 6. Start a GitHub Copilot thread in the Windows project. Ask it to run
    `Write-Output WINDOWS_UI_APPROVAL_OK`, approve the command in T3, and require
    the final response `WINDOWS_UI_TURN_OK`.
-7. If the isolated WSL Copilot home is unauthenticated, run the packaged Linux
+7. If the guarded WSL Copilot home is unauthenticated, run the packaged Linux
    Copilot executable from the WSL runtime with `login` and complete its device
-   flow. Use the same isolated environment:
+   flow:
 
    ```powershell
    $summary = Get-Content "<run-directory>\run-summary.json" -Raw |
@@ -197,14 +206,11 @@ Perform these checks:
    $launch = Get-Content "<run-directory>\desktop-launch.json" -Raw |
      ConvertFrom-Json
    $linuxCopilot = "$($summary.wslBackend.runtimeRoot)/node_modules/@github/copilot-linux-x64/copilot"
-   $oldHome = $env:HOME
    $oldWslEnv = $env:WSLENV
    try {
-     $env:HOME = $launch.wslHome
      $env:WSLENV = $launch.wslEnv
-     wsl.exe -d Ubuntu -- $linuxCopilot login
+     wsl.exe -d $launch.wslDistro --exec $linuxCopilot login
    } finally {
-     $env:HOME = $oldHome
      $env:WSLENV = $oldWslEnv
    }
    ```
@@ -222,9 +228,21 @@ Perform these checks:
     `T3-Intentionally-Missing-Distro`, and relaunch. Confirm the Windows
     backend stays usable and Settings shows an explicit recoverable WSL error.
     Restore the backed-up disposable settings file afterward.
-12. After results are captured, delete the retained stage path recorded in
-    `run-summary.json`. It is a disposable multi-gigabyte build tree under
-    `%TEMP%`; keep the NSIS installer and sanitized run evidence.
+12. Stop the recorded desktop PID and remove only the guarded WSL state that
+    the launcher proved did not exist before validation:
+
+    ```powershell
+    pwsh -NoLogo -NoProfile -File .\validation\phase1-windows-wsl\launch-desktop.ps1 `
+      -RunDirectory "<run-directory>" `
+      -Stop `
+      -CleanupWslState
+    ```
+
+    Delete the two validation project directories separately only after
+    confirming their exact paths.
+13. Delete the retained stage path recorded in `run-summary.json` only after
+    the desktop process has exited. It is a disposable multi-gigabyte build
+    tree under `%TEMP%`; keep the NSIS installer and sanitized run evidence.
 
 Record each check as `PASS`, `FAIL`, or `NOT RUN`. A failure is useful evidence;
 do not change product code merely to make the report green.

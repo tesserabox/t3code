@@ -13,7 +13,7 @@ Repository and handoff:
 - Read `AGENTS.md` and
   `validation/phase1-windows-wsl/README.md` completely before running commands.
 - The immutable product source under test is branch `phase1/foundation`,
-  commit `1910f22c210836cde7e13e9d7fcae0819d431c2a`.
+  commit `39295aed7a950a925791579661e79c4ff6b9072e`.
 - The validation branch is a temporary handoff. Do not merge it into the
   product source.
 
@@ -26,9 +26,9 @@ Authority and safety:
   prerequisites.
 - You have permission to launch and interact with the locally built Electron
   app and local browser UI for this validation.
-- Never use an existing T3 Code Windows or WSL state directory. Preserve the
-  run-specific `T3CODE_HOME`, `APPDATA`, Linux `HOME`, and `WSLENV` isolation
-  described by the handoff.
+- Never use an existing T3 Code Windows or WSL state directory. The integrated
+  launcher must refuse if the selected WSL account already has `.t3` or
+  `.copilot`; use a human-approved disposable distro/account in that case.
 - Never print, copy, commit, or return credentials, device codes, pairing URLs,
   or Copilot auth files. If a Copilot device login is required, pause only for
   the human to complete the browser step.
@@ -52,7 +52,8 @@ Execution:
    git status --short
    ```
 2. Inspect prerequisites from the README. Install only what is missing. Use
-   PowerShell 7 (`pwsh`), not Windows PowerShell 5.1, for the runner.
+   PowerShell 7.3 or newer (`pwsh`), not Windows PowerShell 5.1, for the
+   runner.
 3. Run:
 
    ```powershell
@@ -84,6 +85,8 @@ Execution:
 8. Stop all exact PIDs started by the validation. Do not delete evidence before
    reporting it. Delete the exact retained `%TEMP%` stage recorded in
    `run-summary.json` after integrated evidence is captured; do not use a glob.
+   Use `launch-desktop.ps1 -Stop -CleanupWslState` to remove only WSL state
+   whose pre-run absence and validation ownership were recorded.
 
 Reporting:
 
