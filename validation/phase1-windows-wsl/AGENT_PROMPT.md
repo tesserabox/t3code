@@ -8,6 +8,8 @@ Repository and handoff:
 
 - Clone `https://github.com/tesseracode/t3code.git`.
 - Checkout branch `validation/phase1-windows-wsl`.
+- Require commit `7032ad0c135d451554c552daa9178783a11b5cd7` to be an ancestor
+  of `HEAD`; it is the reviewed validation baseline.
 - Read `AGENTS.md` and
   `validation/phase1-windows-wsl/README.md` completely before running commands.
 - The immutable product source under test is branch `phase1/foundation`,
@@ -40,7 +42,15 @@ Authority and safety:
 Execution:
 
 1. Verify that the validation branch is current and the worktree has no
-   unexpected tracked changes.
+   unexpected tracked changes:
+
+   ```powershell
+   git merge-base --is-ancestor `
+     7032ad0c135d451554c552daa9178783a11b5cd7 `
+     HEAD
+   if ($LASTEXITCODE -ne 0) { throw "Validation baseline is missing." }
+   git status --short
+   ```
 2. Inspect prerequisites from the README. Install only what is missing. Use
    PowerShell 7 (`pwsh`), not Windows PowerShell 5.1, for the runner.
 3. Run:

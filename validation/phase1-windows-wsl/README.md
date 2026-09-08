@@ -7,6 +7,9 @@ Phase 1 foundation. It is not intended to merge into `main` or
 ## Frozen source under test
 
 - Repository: `https://github.com/tesseracode/t3code.git`
+- Validation baseline:
+  `7032ad0c135d451554c552daa9178783a11b5cd7` or a descendant on
+  `validation/phase1-windows-wsl`
 - Source branch: `phase1/foundation`
 - Source commit: `1910f22c210836cde7e13e9d7fcae0819d431c2a`
 - Desktop version: `0.0.37`
