@@ -1,4 +1,0 @@
- docs/operations/release.md             |  18 ++-
- scripts/build-desktop-artifact.test.ts | 225 +++++++++++++++++++++++++++++
- scripts/build-desktop-artifact.ts      | 254 ++++++++++++++++++++++++++++++++-
- 3 files changed, 494 insertions(+), 3 deletions(-)

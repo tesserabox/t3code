@@ -1,0 +1,15 @@
+ .tpatch/FEATURES.md                                |   1 +
+ .../copilot-windows-payload-pruning/analysis.md    |  43 --
+ .../artifacts/apply-recipe.json                    |  26 -
+ .../artifacts/apply-session.json                   |   6 -
+ .../artifacts/patch-generations.json               |  54 --
+ .../artifacts/post-apply-diff.txt                  |   4 -
+ .../artifacts/post-apply.patch                     | 597 -----------------
+ .../copilot-windows-payload-pruning/exploration.md |  45 --
+ .../patches/001-apply.patch                        | 733 ---------------------
+ .../patches/002-record.patch                       | 597 -----------------
+ .../copilot-windows-payload-pruning/record.md      |  34 -
+ .../copilot-windows-payload-pruning/request.md     |   8 -
+ .../copilot-windows-payload-pruning/spec.md        |  34 -
+ .../copilot-windows-payload-pruning/status.json    |  32 -
+ 14 files changed, 1 insertion(+), 2213 deletions(-)
