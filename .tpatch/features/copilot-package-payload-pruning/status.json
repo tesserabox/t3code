@@ -1,0 +1,32 @@
+{
+  "id": "copilot-package-payload-pruning",
+  "slug": "copilot-package-payload-pruning",
+  "title": "Prune Copilot CLI native payloads that are unreachable from T3's SDK server mode when packaging Windows plus WSL. Preserve target Windows and glibc Linux CLI executables, core runtime natives, search tools, specialized clipboard bindings, Koffi, and computer-use; remove duplicate or interactive-only natives so the Windows payload remains within the upstream 80-file budget.",
+  "state": "applied",
+  "compatibility": "unknown",
+  "requested_at": "2026-09-09T02:40:21Z",
+  "updated_at": "2026-09-09T02:41:13Z",
+  "last_command": "verify",
+  "notes": "landed at 2026-09-09T02:41:08Z",
+  "apply": {
+    "completed_at": "2026-09-09T02:40:53Z",
+    "base_commit": "ee3377d45c2895073315d4135ef104e53d8cb1ca",
+    "has_patch": true
+  },
+  "reconcile": {},
+  "depends_on": [
+    {
+      "slug": "windows-portable-packaging-tests",
+      "kind": "hard"
+    }
+  ],
+  "verify": {
+    "verified_at": "2026-09-09T02:41:10Z",
+    "passed": true,
+    "recipe_hash_at_verify": "99cbab8aa05211acf6d270e642f6189c2e8780f402d621db3f77d41df14fd1c7",
+    "patch_hash_at_verify": "a9135c35e2158a5a813dd57261e2da99d4a543a27e4f941f1a3066600c843dc5",
+    "parent_snapshot": {
+      "windows-portable-packaging-tests": "applied"
+    }
+  }
+}
