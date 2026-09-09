@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "feature": "windows-portable-packaging-tests",
+  "current_generation": 1,
+  "generations": [
+    {
+      "generation": 1,
+      "generation_id": "pg_8556fa0c6302",
+      "kind": "record",
+      "patch_sha256": "23c8db1aebbae84fa3971f607ef0bdcf0f7962495f2eff786798c3afe9fa7faa",
+      "git_patch_id": "88f8dc0cc308eef2e1ecd79fb6045dc43182addc",
+      "git_patch_id_algorithm": "git-patch-id-stable",
+      "recipe_sha256": "5a531c8a1456697b19931438b9a14804c8998f95da3ed82ddd9758310fd8572e",
+      "canonical_patch": "artifacts/post-apply.patch",
+      "audit_patch": "",
+      "base_commit": "1910f22c210836cde7e13e9d7fcae0819d431c2a",
+      "upper": {
+        "kind": "working-tree",
+        "ref": "working-tree",
+        "commit": ""
+      },
+      "capture": {
+        "mode": "working-tree-all",
+        "pathspecs": [
+          "packages/shared/package.json",
+          "packages/shared/src/testing/symlinks.ts",
+          "scripts/build-desktop-artifact.test.ts"
+        ],
+        "claim_ids": []
+      },
+      "touched_paths": [
+        "packages/shared/package.json",
+        "packages/shared/src/testing/symlinks.ts",
+        "scripts/build-desktop-artifact.test.ts"
+      ],
+      "dependencies": [
+        {
+          "slug": "phase1-foundation",
+          "kind": "hard",
+          "satisfied_by": "",
+          "parent_generation": 1,
+          "parent_patch_sha256": "b61fc4bc72887930d063b571588a1e4ed43b0fde5d5ec75c32c7175b0783ea07",
+          "parent_recipe_sha256": "71897d8909979e86addf8ba9702dbae83dab222e4d018026917265b94887e17f"
+        }
+      ],
+      "refs": {
+        "anchors": "",
+        "fingerprints": "",
+        "relations": "",
+        "vector_manifest": ""
+      }
+    }
+  ]
+}
