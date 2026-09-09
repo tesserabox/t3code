@@ -229,10 +229,25 @@ the selected distro, then reuses it for later launches of the same update. The
 Windows-side `wsl-server-tree/<version>` extraction remains a fallback and is
 removed after the distro-local runtime passes preflight.
 
+When the Copilot SDK is present, the shared Windows/WSL server stage removes
+native payloads that its `copilot-cli` SDK server mode cannot reach: duplicate
+generic clipboard bindings, Linux-musl Koffi, and the interactive CLI's voice,
+webview, and Foundry Local loaders. Target Windows and glibc-Linux Copilot
+executables, core runtime natives, search helpers, specialized clipboard
+bindings, Koffi, and the Windows computer-use plugin remain. Pruning happens
+before both `server.asar` and `wsl-runtime.tar.gz` are created so the two
+runtime forms stay aligned and the upstream 80-file installation budget is
+preserved. The WSL archive then omits the retained Windows Copilot and Koffi
+packages because its extracted runtime uses only their glibc-Linux counterparts;
+`server.asar` keeps both platforms for the native Windows backend and mounted
+WSL fallback.
+
 The artifact builder rejects a Windows package when any of these invariants
 break:
 
 - `resources/server.asar` is absent or does not contain the server entry.
+- A staged Copilot SDK payload is missing a reviewed target executable,
+  runtime native, search helper, clipboard binding, or Koffi binding.
 - Any file marked unpacked in the ASAR header is absent from
   `resources/server.asar.unpacked`.
 - On same-architecture Windows builds, the packaged primary cannot load the fff
@@ -242,7 +257,8 @@ break:
   sidecar, the sidecar digest does not match the emitted archive, or required
   Linux runtime members are absent.
 - The emitted WSL archive contains Windows/Darwin node-pty payloads, ConPTY,
-  pnpm install metadata, or Windows-only FFF, ffi-rs, or msgpackr bindings.
+  pnpm install metadata, or Windows-only Copilot, Koffi, FFF, ffi-rs, or
+  msgpackr bindings.
 - The external Windows resource monitor is absent.
 - The unpacked Windows application contains more than 80 files.
 

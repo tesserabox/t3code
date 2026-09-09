@@ -1,0 +1,597 @@
+diff --git a/docs/operations/release.md b/docs/operations/release.md
+index e5a4d3544..14fb11144 100644
+--- a/docs/operations/release.md
++++ b/docs/operations/release.md
+@@ -229,10 +229,25 @@ the selected distro, then reuses it for later launches of the same update. The
+ Windows-side `wsl-server-tree/<version>` extraction remains a fallback and is
+ removed after the distro-local runtime passes preflight.
+ 
++When the Copilot SDK is present, the shared Windows/WSL server stage removes
++native payloads that its `copilot-cli` SDK server mode cannot reach: duplicate
++generic clipboard bindings, Linux-musl Koffi, and the interactive CLI's voice,
++webview, and Foundry Local loaders. Target Windows and glibc-Linux Copilot
++executables, core runtime natives, search helpers, specialized clipboard
++bindings, Koffi, and the Windows computer-use plugin remain. Pruning happens
++before both `server.asar` and `wsl-runtime.tar.gz` are created so the two
++runtime forms stay aligned and the upstream 80-file installation budget is
++preserved. The WSL archive then omits the retained Windows Copilot and Koffi
++packages because its extracted runtime uses only their glibc-Linux counterparts;
++`server.asar` keeps both platforms for the native Windows backend and mounted
++WSL fallback.
++
+ The artifact builder rejects a Windows package when any of these invariants
+ break:
+ 
+ - `resources/server.asar` is absent or does not contain the server entry.
++- A staged Copilot SDK payload is missing a reviewed target executable,
++  runtime native, search helper, clipboard binding, or Koffi binding.
+ - Any file marked unpacked in the ASAR header is absent from
+   `resources/server.asar.unpacked`.
+ - On same-architecture Windows builds, the packaged primary cannot load the fff
+@@ -242,7 +257,8 @@ break:
+   sidecar, the sidecar digest does not match the emitted archive, or required
+   Linux runtime members are absent.
+ - The emitted WSL archive contains Windows/Darwin node-pty payloads, ConPTY,
+-  pnpm install metadata, or Windows-only FFF, ffi-rs, or msgpackr bindings.
++  pnpm install metadata, or Windows-only Copilot, Koffi, FFF, ffi-rs, or
++  msgpackr bindings.
+ - The external Windows resource monitor is absent.
+ - The unpacked Windows application contains more than 80 files.
+ 
+diff --git a/scripts/build-desktop-artifact.test.ts b/scripts/build-desktop-artifact.test.ts
+index cbfed7505..6b707aa23 100644
+--- a/scripts/build-desktop-artifact.test.ts
++++ b/scripts/build-desktop-artifact.test.ts
+@@ -18,6 +18,7 @@ import {
+   BuildCommandFailedError,
+   buildWslRuntimeArchiveArgs,
+   parseWslRuntimeArchiveMembers,
++  CopilotSdkServerPayloadPruneError,
+   DesktopDmgBackgroundSourceMissingError,
+   createStageWorkspaceConfig,
+   createStagePatchedDependencies,
+@@ -35,6 +36,7 @@ import {
+   MacPasskeySigningConfigurationResolutionError,
+   MissingMacPasskeyProvisioningProfileError,
+   packWindowsServerAsar,
++  pruneCopilotSdkServerPayload,
+   renderMacPasskeyEntitlements,
+   resolveClerkPasskeyNativeArtifacts,
+   resolveMacPasskeySigningConfiguration,
+@@ -245,6 +247,227 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
+ });
+ 
+ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
++  it.effect("prunes only Copilot natives unused by SDK server mode", () =>
++    Effect.scoped(
++      Effect.gen(function* () {
++        const fs = yield* FileSystem.FileSystem;
++        const path = yield* Path.Path;
++        const stageDir = yield* fs.makeTempDirectoryScoped({
++          prefix: "t3-copilot-server-payload-",
++        });
++        const retainedFiles = [
++          "node_modules/@github/copilot-win32-x64/copilot.exe",
++          "node_modules/@github/copilot-win32-x64/prebuilds/win32-x64/cli-native.node",
++          "node_modules/@github/copilot-win32-x64/prebuilds/win32-x64/runtime.node",
++          "node_modules/@github/copilot-win32-x64/ripgrep/bin/win32-x64/rg.exe",
++          "node_modules/@github/copilot-win32-x64/tgrep/bin/win32-x64/tgrep.exe",
++          "node_modules/@github/copilot-win32-x64/clipboard/node_modules/@teddyzhu/clipboard-win32-x64-msvc/clipboard.win32-x64-msvc.node",
++          "node_modules/@github/copilot-linux-x64/copilot",
++          "node_modules/@github/copilot-linux-x64/prebuilds/linux-x64/cli-native.node",
++          "node_modules/@github/copilot-linux-x64/prebuilds/linux-x64/runtime.node",
++          "node_modules/@github/copilot-linux-x64/ripgrep/bin/linux-x64/rg",
++          "node_modules/@github/copilot-linux-x64/tgrep/bin/linux-x64/tgrep",
++          "node_modules/@github/copilot-linux-x64/clipboard/node_modules/@teddyzhu/clipboard-linux-x64-gnu/clipboard.linux-x64-gnu.node",
++          "node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node",
++          "node_modules/@koromix/koffi-linux-x64/linux_x64/koffi.node",
++          "node_modules/@github/copilot-win32-x64/builtin-plugins/computer-use/0.1.71/win32-x64/CopilotComputerUse.exe",
++          "node_modules/@github/copilot-win32-x64/builtin-plugins/computer-use/0.1.71/win32-x64/computer-use-mcp.exe",
++        ];
++        const nativeFiles = [...retainedFiles];
++        const genericClipboardBindings = [
++          "clipboard.darwin-arm64.node",
++          "clipboard.darwin-x64.node",
++          "clipboard.linux-arm64-gnu.node",
++          "clipboard.linux-x64-gnu.node",
++          "clipboard.win32-arm64-msvc.node",
++          "clipboard.win32-x64-msvc.node",
++        ];
++        for (const platformPackage of ["copilot-win32-x64", "copilot-linux-x64"]) {
++          nativeFiles.push(
++            ...genericClipboardBindings.map(
++              (binding) =>
++                `node_modules/@github/${platformPackage}/clipboard/node_modules/@teddyzhu/clipboard/${binding}`,
++            ),
++            ...["foundry-local-sdk", "pvrecorder", "webview"].map(
++              (directory) =>
++                `node_modules/@github/${platformPackage}/${directory}/native-${directory}.node`,
++            ),
++          );
++        }
++        nativeFiles.push("node_modules/@koromix/koffi-linux-x64/musl_x64/koffi.node");
++
++        const sdkManifestPath = path.join(
++          stageDir,
++          "node_modules/@github/copilot-sdk/package.json",
++        );
++        yield* fs.makeDirectory(path.dirname(sdkManifestPath), { recursive: true });
++        yield* fs.writeFileString(sdkManifestPath, '{"name":"@github/copilot-sdk"}');
++        const copilotManifestPath = path.join(
++          stageDir,
++          "node_modules/@github/copilot/package.json",
++        );
++        yield* fs.makeDirectory(path.dirname(copilotManifestPath), { recursive: true });
++        yield* fs.writeFileString(
++          copilotManifestPath,
++          '{"name":"@github/copilot","version":"1.0.75"}',
++        );
++        for (const nativeFile of nativeFiles) {
++          const filePath = path.join(stageDir, nativeFile);
++          yield* fs.makeDirectory(path.dirname(filePath), { recursive: true });
++          yield* fs.writeFileString(filePath, nativeFile);
++        }
++
++        const result = yield* pruneCopilotSdkServerPayload({ stageDir, arch: "x64" });
++
++        assert.isTrue(result.pruned);
++        assert.lengthOf(result.removedNativeFiles, 19);
++        for (const retainedFile of retainedFiles) {
++          assert.isTrue(yield* fs.exists(path.join(stageDir, retainedFile)));
++        }
++        for (const removedFile of result.removedNativeFiles) {
++          assert.isFalse(yield* fs.exists(path.join(stageDir, removedFile)));
++        }
++      }),
++    ),
++  );
++
++  it.effect("prunes the non-target search binaries from arm64 Copilot packages", () =>
++    Effect.scoped(
++      Effect.gen(function* () {
++        const fs = yield* FileSystem.FileSystem;
++        const path = yield* Path.Path;
++        const stageDir = yield* fs.makeTempDirectoryScoped({
++          prefix: "t3-copilot-arm64-server-payload-",
++        });
++        const retainedFiles = [
++          "node_modules/@github/copilot-win32-arm64/copilot.exe",
++          "node_modules/@github/copilot-win32-arm64/prebuilds/win32-arm64/cli-native.node",
++          "node_modules/@github/copilot-win32-arm64/prebuilds/win32-arm64/runtime.node",
++          "node_modules/@github/copilot-win32-arm64/ripgrep/bin/win32-arm64/rg.exe",
++          "node_modules/@github/copilot-win32-arm64/tgrep/bin/win32-arm64/tgrep.exe",
++          "node_modules/@github/copilot-win32-arm64/clipboard/node_modules/@teddyzhu/clipboard-win32-arm64-msvc/clipboard.win32-arm64-msvc.node",
++          "node_modules/@github/copilot-linux-arm64/copilot",
++          "node_modules/@github/copilot-linux-arm64/prebuilds/linux-arm64/cli-native.node",
++          "node_modules/@github/copilot-linux-arm64/prebuilds/linux-arm64/runtime.node",
++          "node_modules/@github/copilot-linux-arm64/ripgrep/bin/linux-arm64/rg",
++          "node_modules/@github/copilot-linux-arm64/tgrep/bin/linux-arm64/tgrep",
++          "node_modules/@github/copilot-linux-arm64/clipboard/node_modules/@teddyzhu/clipboard-linux-arm64-gnu/clipboard.linux-arm64-gnu.node",
++          "node_modules/@koromix/koffi-win32-arm64/win32_arm64/koffi.node",
++          "node_modules/@koromix/koffi-linux-arm64/linux_arm64/koffi.node",
++        ];
++        const removableFiles = [
++          "node_modules/@github/copilot-win32-arm64/ripgrep/bin/win32-x64/rg.exe",
++          "node_modules/@github/copilot-win32-arm64/tgrep/bin/win32-x64/tgrep.exe",
++          "node_modules/@github/copilot-linux-arm64/ripgrep/bin/linux-x64/rg",
++          "node_modules/@github/copilot-linux-arm64/tgrep/bin/linux-x64/tgrep",
++          "node_modules/@koromix/koffi-linux-arm64/musl_arm64/koffi.node",
++        ];
++        const genericClipboardBindings = [
++          "clipboard.darwin-arm64.node",
++          "clipboard.darwin-x64.node",
++          "clipboard.linux-arm64-gnu.node",
++          "clipboard.linux-x64-gnu.node",
++          "clipboard.win32-arm64-msvc.node",
++          "clipboard.win32-x64-msvc.node",
++        ];
++        for (const platformPackage of ["copilot-win32-arm64", "copilot-linux-arm64"]) {
++          removableFiles.push(
++            ...genericClipboardBindings.map(
++              (binding) =>
++                `node_modules/@github/${platformPackage}/clipboard/node_modules/@teddyzhu/clipboard/${binding}`,
++            ),
++            `node_modules/@github/${platformPackage}/foundry-local-sdk/native-foundry.node`,
++            `node_modules/@github/${platformPackage}/webview/native-webview.node`,
++          );
++        }
++        removableFiles.push(
++          "node_modules/@github/copilot-win32-arm64/pvrecorder/native-pvrecorder.node",
++        );
++
++        for (const manifest of [
++          "node_modules/@github/copilot-sdk/package.json",
++          "node_modules/@github/copilot/package.json",
++        ]) {
++          const manifestPath = path.join(stageDir, manifest);
++          yield* fs.makeDirectory(path.dirname(manifestPath), { recursive: true });
++          yield* fs.writeFileString(
++            manifestPath,
++            manifest.includes("copilot-sdk")
++              ? '{"name":"@github/copilot-sdk"}'
++              : '{"name":"@github/copilot","version":"1.0.75"}',
++          );
++        }
++        for (const file of [...retainedFiles, ...removableFiles]) {
++          const filePath = path.join(stageDir, file);
++          yield* fs.makeDirectory(path.dirname(filePath), { recursive: true });
++          yield* fs.writeFileString(filePath, file);
++        }
++
++        const result = yield* pruneCopilotSdkServerPayload({ stageDir, arch: "arm64" });
++
++        assert.isTrue(result.pruned);
++        assert.lengthOf(result.removedNativeFiles, 20);
++        for (const retainedFile of retainedFiles) {
++          assert.isTrue(yield* fs.exists(path.join(stageDir, retainedFile)));
++        }
++        for (const removedFile of removableFiles) {
++          assert.isFalse(yield* fs.exists(path.join(stageDir, removedFile)));
++        }
++      }),
++    ),
++  );
++
++  it.effect("leaves server stages without Copilot unchanged", () =>
++    Effect.scoped(
++      Effect.gen(function* () {
++        const fs = yield* FileSystem.FileSystem;
++        const stageDir = yield* fs.makeTempDirectoryScoped({
++          prefix: "t3-server-payload-without-copilot-",
++        });
++
++        const result = yield* pruneCopilotSdkServerPayload({ stageDir, arch: "x64" });
++
++        assert.deepStrictEqual(result, { pruned: false, removedNativeFiles: [] });
++      }),
++    ),
++  );
++
++  it.effect("rejects a staged Copilot payload missing target-native files", () =>
++    Effect.scoped(
++      Effect.gen(function* () {
++        const fs = yield* FileSystem.FileSystem;
++        const path = yield* Path.Path;
++        const stageDir = yield* fs.makeTempDirectoryScoped({
++          prefix: "t3-incomplete-copilot-server-payload-",
++        });
++        const sdkManifestPath = path.join(
++          stageDir,
++          "node_modules/@github/copilot-sdk/package.json",
++        );
++        yield* fs.makeDirectory(path.dirname(sdkManifestPath), { recursive: true });
++        yield* fs.writeFileString(sdkManifestPath, '{"name":"@github/copilot-sdk"}');
++        const copilotManifestPath = path.join(
++          stageDir,
++          "node_modules/@github/copilot/package.json",
++        );
++        yield* fs.makeDirectory(path.dirname(copilotManifestPath), { recursive: true });
++        yield* fs.writeFileString(
++          copilotManifestPath,
++          '{"name":"@github/copilot","version":"1.0.75"}',
++        );
++
++        const error = yield* pruneCopilotSdkServerPayload({
++          stageDir,
++          arch: "x64",
++        }).pipe(Effect.flip);
++
++        assert.instanceOf(error, CopilotSdkServerPayloadPruneError);
++        assert.include(error.missingFiles, "node_modules/@github/copilot-win32-x64/copilot.exe");
++        assert.include(error.missingFiles, "node_modules/@github/copilot-linux-x64/copilot");
++      }),
++    ),
++  );
++
+   it("resolves the dedicated nightly updater channel from nightly versions", () => {
+     assert.equal(resolveDesktopUpdateChannel("0.0.17-nightly.20260413.42"), "nightly");
+     assert.equal(resolveDesktopUpdateChannel("0.0.17"), "latest");
+@@ -1487,6 +1710,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
+       "-czf",
+       "apps/desktop/prod-resources/wsl-runtime.tar.gz",
+       "--exclude=node_modules/@anthropic-ai/claude-agent-sdk-*",
++      "--exclude=node_modules/@github/copilot-win32-*",
++      "--exclude=node_modules/@koromix/koffi-win32-*",
+       "--exclude=node_modules/.bin*",
+       "--exclude=node_modules/.pnpm*",
+       "--exclude=node_modules/.modules.yaml*",
+diff --git a/scripts/build-desktop-artifact.ts b/scripts/build-desktop-artifact.ts
+index 8709be2a2..d4ee2e875 100644
+--- a/scripts/build-desktop-artifact.ts
++++ b/scripts/build-desktop-artifact.ts
+@@ -87,7 +87,7 @@ const RepoRoot = Effect.service(Path.Path).pipe(
+ );
+ const encodeJsonString = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+ const decodeWorkspaceConfig = Schema.decodeEffect(fromYaml(WorkspaceConfig));
+-const decodeNodePtyManifest = Schema.decodeUnknownEffect(
++const decodePackageVersionManifest = Schema.decodeUnknownEffect(
+   Schema.fromJsonString(Schema.Struct({ version: Schema.String })),
+ );
+ const encodeStageWorkspaceConfig = Schema.encodeEffect(fromYaml(StageWorkspaceConfig));
+@@ -530,6 +530,30 @@ export class WslNodePtyPrebuildMissingError extends Schema.TaggedErrorClass<WslN
+   }
+ }
+ 
++export class CopilotSdkServerPayloadPruneError extends Schema.TaggedErrorClass<CopilotSdkServerPayloadPruneError>()(
++  "CopilotSdkServerPayloadPruneError",
++  {
++    reason: Schema.Literals([
++      "required-target-missing",
++      "unsupported-runtime-version",
++      "prunable-layout-missing",
++    ]),
++    stageDir: Schema.String,
++    missingFiles: Schema.Array(Schema.String),
++    runtimeVersion: Schema.optionalKey(Schema.String),
++  },
++) {
++  override get message(): string {
++    if (this.reason === "unsupported-runtime-version") {
++      return `The staged Copilot runtime version ${this.runtimeVersion ?? "unknown"} has not been reviewed for SDK server payload pruning.`;
++    }
++    if (this.reason === "prunable-layout-missing") {
++      return "The staged Copilot SDK server payload does not match the reviewed prunable native layout.";
++    }
++    return `The staged Copilot SDK server payload is missing ${String(this.missingFiles.length)} required target files.`;
++  }
++}
++
+ export class WindowsServerSidecarPackError extends Schema.TaggedErrorClass<WindowsServerSidecarPackError>()(
+   "WindowsServerSidecarPackError",
+   {
+@@ -880,6 +904,8 @@ export const WSL_RUNTIME_ARCHIVE_CONTENT_ROOTS = ["apps/server/dist", "node_modu
+ // WSL out of the compressed archive.
+ export const WSL_RUNTIME_ARCHIVE_EXCLUDED_PREFIXES = [
+   "node_modules/@anthropic-ai/claude-agent-sdk-",
++  "node_modules/@github/copilot-win32-",
++  "node_modules/@koromix/koffi-win32-",
+   "node_modules/.bin",
+   "node_modules/.pnpm",
+   "node_modules/.modules.yaml",
+@@ -2287,6 +2313,223 @@ const assertPlatformBuildResources = Effect.fn("assertPlatformBuildResources")(f
+   }
+ });
+ 
++const COPILOT_SDK_INTERACTIVE_RUNTIME_DIRECTORIES = [
++  "foundry-local-sdk",
++  "pvrecorder",
++  "webview",
++] as const;
++const COPILOT_PRUNED_RUNTIME_VERSION = "1.0.75";
++const COPILOT_GENERIC_CLIPBOARD_NATIVE_PATTERN = /^clipboard\..+\.node$/u;
++const SERVER_NATIVE_FILE_PATTERN = /\.(?:node|dll|exe|dylib|so(?:\..*)?)$/u;
++
++const collectNativePayloadFiles = Effect.fn("desktopArtifact.collectNativePayloadFiles")(
++  function* (root: string) {
++    const fs = yield* FileSystem.FileSystem;
++    const path = yield* Path.Path;
++    if (!(yield* fs.exists(root).pipe(Effect.orElseSucceed(() => false)))) {
++      return [] as string[];
++    }
++
++    const pendingDirectories = [root];
++    const files: string[] = [];
++    while (pendingDirectories.length > 0) {
++      const directory = pendingDirectories.pop();
++      if (directory === undefined) break;
++      for (const entry of yield* fs.readDirectory(directory)) {
++        const entryPath = path.join(directory, entry);
++        const stat = yield* fs.stat(entryPath);
++        if (stat.type === "Directory") {
++          pendingDirectories.push(entryPath);
++        } else if (stat.type === "File" && SERVER_NATIVE_FILE_PATTERN.test(entry)) {
++          files.push(entryPath);
++        }
++      }
++    }
++    return files;
++  },
++);
++
++export const pruneCopilotSdkServerPayload = Effect.fn(
++  "desktopArtifact.pruneCopilotSdkServerPayload",
++)(function* (input: {
++  readonly stageDir: string;
++  readonly arch: "x64" | "arm64";
++}) {
++  const fs = yield* FileSystem.FileSystem;
++  const path = yield* Path.Path;
++  const nodeModulesDir = path.join(input.stageDir, "node_modules");
++  const sdkManifestPath = path.join(nodeModulesDir, "@github", "copilot-sdk", "package.json");
++  if (!(yield* fs.exists(sdkManifestPath).pipe(Effect.orElseSucceed(() => false)))) {
++    return { pruned: false, removedNativeFiles: [] as ReadonlyArray<string> } as const;
++  }
++  const copilotManifestPath = path.join(nodeModulesDir, "@github", "copilot", "package.json");
++  const copilotManifestSource = yield* fs
++    .readFileString(copilotManifestPath)
++    .pipe(Effect.orElseSucceed(() => ""));
++  const copilotManifest =
++    copilotManifestSource === ""
++      ? null
++      : yield* decodePackageVersionManifest(copilotManifestSource).pipe(
++          Effect.orElseSucceed(() => null),
++        );
++  if (copilotManifest?.version !== COPILOT_PRUNED_RUNTIME_VERSION) {
++    return yield* new CopilotSdkServerPayloadPruneError({
++      reason: "unsupported-runtime-version",
++      stageDir: input.stageDir,
++      missingFiles: copilotManifest === null ? ["node_modules/@github/copilot/package.json"] : [],
++      ...(copilotManifest === null ? {} : { runtimeVersion: copilotManifest.version }),
++    });
++  }
++
++  const targetPackages = [
++    {
++      packageName: `copilot-win32-${input.arch}`,
++      platformTarget: `win32-${input.arch}`,
++      executableName: "copilot.exe",
++      searchExecutableNames: ["rg.exe", "tgrep.exe"],
++      clipboardPackageName: `clipboard-win32-${input.arch}-msvc`,
++      clipboardBindingName: `clipboard.win32-${input.arch}-msvc.node`,
++      koffiPackageName: `koffi-win32-${input.arch}`,
++      koffiDirectoryName: `win32_${input.arch}`,
++    },
++    {
++      packageName: `copilot-linux-${input.arch}`,
++      platformTarget: `linux-${input.arch}`,
++      executableName: "copilot",
++      searchExecutableNames: ["rg", "tgrep"],
++      clipboardPackageName: `clipboard-linux-${input.arch}-gnu`,
++      clipboardBindingName: `clipboard.linux-${input.arch}-gnu.node`,
++      koffiPackageName: `koffi-linux-${input.arch}`,
++      koffiDirectoryName: `linux_${input.arch}`,
++    },
++  ] as const;
++
++  const requiredFiles = targetPackages.flatMap((target) => {
++    const packageDir = path.join(nodeModulesDir, "@github", target.packageName);
++    return [
++      path.join(packageDir, target.executableName),
++      path.join(packageDir, "prebuilds", target.platformTarget, "cli-native.node"),
++      path.join(packageDir, "prebuilds", target.platformTarget, "runtime.node"),
++      path.join(
++        packageDir,
++        "clipboard",
++        "node_modules",
++        "@teddyzhu",
++        target.clipboardPackageName,
++        target.clipboardBindingName,
++      ),
++      path.join(
++        packageDir,
++        "ripgrep",
++        "bin",
++        target.platformTarget,
++        target.searchExecutableNames[0],
++      ),
++      path.join(
++        packageDir,
++        "tgrep",
++        "bin",
++        target.platformTarget,
++        target.searchExecutableNames[1],
++      ),
++      path.join(
++        nodeModulesDir,
++        "@koromix",
++        target.koffiPackageName,
++        target.koffiDirectoryName,
++        "koffi.node",
++      ),
++    ];
++  });
++  const missingFiles: string[] = [];
++  for (const requiredFile of requiredFiles) {
++    const stat = yield* fs.stat(requiredFile).pipe(Effect.orElseSucceed(() => null));
++    if (stat?.type !== "File") {
++      missingFiles.push(path.relative(input.stageDir, requiredFile).replaceAll(path.sep, "/"));
++    }
++  }
++  if (missingFiles.length > 0) {
++    return yield* new CopilotSdkServerPayloadPruneError({
++      reason: "required-target-missing",
++      stageDir: input.stageDir,
++      missingFiles,
++    });
++  }
++
++  const removedNativeFiles: string[] = [];
++  const recordNativeFiles = (files: ReadonlyArray<string>) =>
++    removedNativeFiles.push(
++      ...files.map((file) => path.relative(input.stageDir, file).replaceAll(path.sep, "/")),
++    );
++
++  for (const target of targetPackages) {
++    const packageDir = path.join(nodeModulesDir, "@github", target.packageName);
++    const genericClipboardDir = path.join(
++      packageDir,
++      "clipboard",
++      "node_modules",
++      "@teddyzhu",
++      "clipboard",
++    );
++    if (yield* fs.exists(genericClipboardDir).pipe(Effect.orElseSucceed(() => false))) {
++      for (const entry of yield* fs.readDirectory(genericClipboardDir)) {
++        if (!COPILOT_GENERIC_CLIPBOARD_NATIVE_PATTERN.test(entry)) continue;
++        const nativePath = path.join(genericClipboardDir, entry);
++        recordNativeFiles([nativePath]);
++        yield* fs.remove(nativePath);
++      }
++    }
++
++    for (const directoryName of COPILOT_SDK_INTERACTIVE_RUNTIME_DIRECTORIES) {
++      const directory = path.join(packageDir, directoryName);
++      const nativeFiles = yield* collectNativePayloadFiles(directory);
++      if (yield* fs.exists(directory).pipe(Effect.orElseSucceed(() => false))) {
++        recordNativeFiles(nativeFiles);
++        yield* fs.remove(directory, { recursive: true, force: true });
++      }
++    }
++
++    for (const toolName of ["ripgrep", "tgrep"]) {
++      const binDirectory = path.join(packageDir, toolName, "bin");
++      if (!(yield* fs.exists(binDirectory).pipe(Effect.orElseSucceed(() => false)))) continue;
++      for (const binTarget of yield* fs.readDirectory(binDirectory)) {
++        if (binTarget === target.platformTarget) continue;
++        const targetDirectory = path.join(binDirectory, binTarget);
++        const nativeFiles = yield* collectNativePayloadFiles(targetDirectory);
++        recordNativeFiles(nativeFiles);
++        yield* fs.remove(targetDirectory, { recursive: true, force: true });
++      }
++    }
++  }
++
++  const linuxMuslKoffiDir = path.join(
++    nodeModulesDir,
++    "@koromix",
++    `koffi-linux-${input.arch}`,
++    `musl_${input.arch}`,
++  );
++  const muslNativeFiles = yield* collectNativePayloadFiles(linuxMuslKoffiDir);
++  if (muslNativeFiles.length > 0) {
++    recordNativeFiles(muslNativeFiles);
++    yield* fs.remove(linuxMuslKoffiDir, { recursive: true, force: true });
++  }
++
++  removedNativeFiles.sort();
++  const expectedRemovedNativeFiles = input.arch === "x64" ? 19 : 20;
++  if (removedNativeFiles.length !== expectedRemovedNativeFiles) {
++    return yield* new CopilotSdkServerPayloadPruneError({
++      reason: "prunable-layout-missing",
++      stageDir: input.stageDir,
++      missingFiles: [],
++      runtimeVersion: copilotManifest.version,
++    });
++  }
++  yield* Effect.log(
++    `[desktop-artifact] Pruned ${String(removedNativeFiles.length)} Copilot ${copilotManifest.version} natives unused by SDK server mode.`,
++  );
++  return { pruned: true, removedNativeFiles } as const;
++});
++
+ // Stage the prebuilt Linux node-pty binary into the packaged app so the WSL
+ // backend never compiles on the user's machine. node-pty publishes no Linux
+ // prebuilt and the WSL Linux Node can't load the Windows/Electron binary, so the
+@@ -2334,7 +2577,7 @@ const stageWslNodePtyPrebuild = Effect.fn("stageWslNodePtyPrebuild")(function* (
+ 
+   const manifestPath = path.join(nodePtyDir, "package.json");
+   const pkgRaw = yield* fs.readFileString(manifestPath);
+-  const manifest = yield* decodeNodePtyManifest(pkgRaw).pipe(
++  const manifest = yield* decodePackageVersionManifest(pkgRaw).pipe(
+     Effect.mapError(
+       (cause) =>
+         new WslNodePtyManifestReadError({
+@@ -2511,6 +2754,13 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
+     { label: "vp install --prod (server sidecar)", verbose: input.verbose },
+   );
+ 
++  if (input.arch !== "universal") {
++    yield* pruneCopilotSdkServerPayload({
++      stageDir: serverStageDir,
++      arch: input.arch,
++    });
++  }
++
+   yield* stageWslNodePtyPrebuild({
+     stageAppDir: serverStageDir,
+     arch: input.arch,
