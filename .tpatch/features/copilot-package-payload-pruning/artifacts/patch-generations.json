@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "feature": "copilot-package-payload-pruning",
+  "current_generation": 1,
+  "generations": [
+    {
+      "generation": 1,
+      "generation_id": "pg_077437b2065d",
+      "kind": "record",
+      "patch_sha256": "a9135c35e2158a5a813dd57261e2da99d4a543a27e4f941f1a3066600c843dc5",
+      "git_patch_id": "fbe5792c07855203fd0e308e62ce0542dbbc8c7e",
+      "git_patch_id_algorithm": "git-patch-id-stable",
+      "recipe_sha256": "99cbab8aa05211acf6d270e642f6189c2e8780f402d621db3f77d41df14fd1c7",
+      "canonical_patch": "artifacts/post-apply.patch",
+      "audit_patch": "",
+      "base_commit": "ee3377d45c2895073315d4135ef104e53d8cb1ca",
+      "upper": {
+        "kind": "working-tree",
+        "ref": "working-tree",
+        "commit": ""
+      },
+      "capture": {
+        "mode": "working-tree-all",
+        "pathspecs": [
+          "docs/operations/release.md",
+          "scripts/build-desktop-artifact.test.ts",
+          "scripts/build-desktop-artifact.ts"
+        ],
+        "claim_ids": []
+      },
+      "touched_paths": [
+        "docs/operations/release.md",
+        "scripts/build-desktop-artifact.test.ts",
+        "scripts/build-desktop-artifact.ts"
+      ],
+      "dependencies": [
+        {
+          "slug": "windows-portable-packaging-tests",
+          "kind": "hard",
+          "satisfied_by": "",
+          "parent_generation": 1,
+          "parent_patch_sha256": "23c8db1aebbae84fa3971f607ef0bdcf0f7962495f2eff786798c3afe9fa7faa",
+          "parent_recipe_sha256": "5a531c8a1456697b19931438b9a14804c8998f95da3ed82ddd9758310fd8572e"
+        }
+      ],
+      "refs": {
+        "anchors": "",
+        "fingerprints": "",
+        "relations": "",
+        "vector_manifest": ""
+      }
+    }
+  ]
+}
