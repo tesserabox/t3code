@@ -13,7 +13,7 @@ Repository and handoff:
 - Read `AGENTS.md` and
   `validation/phase1-windows-wsl/README.md` completely before running commands.
 - The immutable product source under test is branch `phase1/foundation`,
-  commit `39295aed7a950a925791579661e79c4ff6b9072e`.
+  commit `3adf3566f162434ce963eb64298210e1d1d47005`.
 - The validation branch is a temporary handoff. Do not merge it into the
   product source.
 

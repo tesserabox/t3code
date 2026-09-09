@@ -25,6 +25,7 @@
 | Linux x64 `node-pty` prebuild | NOT RUN | |
 | Windows x64 NSIS build | NOT RUN | |
 | Windows packaged payload validation | NOT RUN | |
+| Windows payload file count ≤ 80 | NOT RUN | |
 | Packaged dependency versions | NOT RUN | |
 | Packaged native server HTTP/migrations | NOT RUN | |
 | Packaged native forced restart/crash recovery | NOT RUN | |

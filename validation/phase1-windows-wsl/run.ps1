@@ -2,7 +2,7 @@
 param(
   [string]$Repository = "https://github.com/tesseracode/t3code.git",
   [string]$SourceBranch = "phase1/foundation",
-  [string]$ExpectedSourceCommit = "39295aed7a950a925791579661e79c4ff6b9072e",
+  [string]$ExpectedSourceCommit = "3adf3566f162434ce963eb64298210e1d1d47005",
   [string]$ExpectedServerVersion = "t3 v0.0.37",
   [string]$SourceRoot = "$env:USERPROFILE\src\t3code-phase1-validation-source",
   [string]$WslDistro = "Ubuntu",
@@ -435,6 +435,11 @@ try {
   }
   $env:PATH = "$(Split-Path $vp);$env:PATH"
 
+  Write-Step "Ensuring the Electron runtime before parallel tests"
+  Invoke-Checked $corepack @(
+    "pnpm", "--filter", "@t3tools/desktop", "exec", "install-electron"
+  ) $SourceRoot
+
   if (-not $SkipFocusedTests) {
     Write-Step "Running focused desktop and WSL tests"
     $summary.focusedTests = [ordered]@{ status = "running"; files = 7 }
@@ -577,6 +582,12 @@ try {
       throw "Required packaged file is missing: $required"
     }
   }
+  $payloadFileCount = @(
+    Get-ChildItem -LiteralPath $packagedApp -Recurse -File
+  ).Count
+  if ($payloadFileCount -gt 80) {
+    throw "The packaged Windows payload contains $payloadFileCount files after product validation."
+  }
   $recordedWslHash = (Get-Content $wslHashFile -Raw).Trim().ToLowerInvariant()
   if ($recordedWslHash -notmatch "^[0-9a-f]{64}$") {
     throw "The WSL runtime hash sidecar is invalid."
@@ -633,6 +644,8 @@ try {
     installerSize = $installer.Length
     retainedStage = $stage.FullName
     packagedApp = $packagedApp
+    payloadFileCount = $payloadFileCount
+    payloadFileLimit = 80
     appExecutable = $appExecutable
     serverAsar = $serverAsar
     serverVersion = $packagedServerVersion

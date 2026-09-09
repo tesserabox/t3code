@@ -11,7 +11,7 @@ Phase 1 foundation. It is not intended to merge into `main` or
   `7032ad0c135d451554c552daa9178783a11b5cd7` or a descendant on
   `validation/phase1-windows-wsl`
 - Source branch: `phase1/foundation`
-- Source commit: `39295aed7a950a925791579661e79c4ff6b9072e`
+- Source commit: `3adf3566f162434ce963eb64298210e1d1d47005`
 - Desktop version: `0.0.37`
 - Target: Windows x64 plus an x64 Ubuntu WSL2 distro
 
@@ -107,14 +107,17 @@ The runner:
 1. verifies Windows x64, PowerShell, Node, Rust, MSVC/Spectre, WSL2, and distro
    architecture;
 2. checks out the frozen source commit separately;
-3. installs only the root, desktop, server, and script dependency closures;
+3. installs only the root, desktop, server, and script dependency closures,
+   then installs the pinned Electron runtime serially so parallel test imports
+   cannot race its first-use extraction;
 4. runs the seven focused desktop packaging/backend/WSL test files;
 5. builds Linux x64 `node-pty` inside WSL;
 6. builds the unsigned Windows x64 NSIS artifact with `--wsl-prebuild`;
    the runner clears ambient desktop/Vite overrides, refuses root `.env` files,
    and forces a fresh unsigned non-mock build;
 7. validates `server.asar`, smart-unpacked native files, the resource monitor,
-   the WSL archive and digest, and exact Copilot/Koffi versions;
+   the WSL archive and digest, the 80-file payload budget, and exact
+   Copilot/Koffi versions;
 8. starts and restarts the packaged Windows backend against disposable state;
 9. runs one packaged Copilot tool approval, resumes the same session with the
    packaged native CLI, verifies the CLI turn landed in the original persisted
