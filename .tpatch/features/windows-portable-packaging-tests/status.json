@@ -1,0 +1,32 @@
+{
+  "id": "windows-portable-packaging-tests",
+  "slug": "windows-portable-packaging-tests",
+  "title": "Backport authoritative upstream Windows portability fixes for desktop packaging tests: do not execute text .exe fixtures in host-native probes, accept native path separators, and skip symlink fixtures only when the host cannot create symlinks.",
+  "state": "applied",
+  "compatibility": "unknown",
+  "requested_at": "2026-09-09T02:38:58Z",
+  "updated_at": "2026-09-09T02:39:38Z",
+  "last_command": "verify",
+  "notes": "landed at 2026-09-09T02:39:34Z",
+  "apply": {
+    "completed_at": "2026-09-09T02:39:20Z",
+    "base_commit": "1910f22c210836cde7e13e9d7fcae0819d431c2a",
+    "has_patch": true
+  },
+  "reconcile": {},
+  "depends_on": [
+    {
+      "slug": "phase1-foundation",
+      "kind": "hard"
+    }
+  ],
+  "verify": {
+    "verified_at": "2026-09-09T02:39:34Z",
+    "passed": true,
+    "recipe_hash_at_verify": "5a531c8a1456697b19931438b9a14804c8998f95da3ed82ddd9758310fd8572e",
+    "patch_hash_at_verify": "23c8db1aebbae84fa3971f607ef0bdcf0f7962495f2eff786798c3afe9fa7faa",
+    "parent_snapshot": {
+      "phase1-foundation": "applied"
+    }
+  }
+}
